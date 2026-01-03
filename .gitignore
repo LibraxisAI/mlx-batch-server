@@ -174,16 +174,3 @@ GEMINI.md
 .claude
 .ai-agents/
 .loctree/
-
-# Server runtime
-.mlx-batch-server.pid
-mlx-batch-server.log
-
-# AI Context
-.ai-context/*
-!.ai-context/share/
-!.ai-context/share/summary.md
-!.ai-context/share/timeline.md
-/.ai-context
-playground/api_tester_logs.json
-/logs

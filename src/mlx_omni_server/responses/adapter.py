@@ -17,22 +17,16 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from ..batch import BatchStreamChunk, get_batch_coordinator
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..chat.openai.openai_adapter import OpenAIAdapter
 from ..chat.openai.schema import ChatCompletionRequest, ChatMessage, Role, Tool
-from ..core.config import get_settings
 from ..tools import (
     execute_tool,
     format_tool_result,
     get_tool_definitions,
     is_hosted_tool,
 )
-from ..utils.harmony_parser import (
-    HarmonyStreamingParser,
-    is_harmony_model,
-    parse_harmony_output,
-)
+from ..utils.harmony_parser import is_harmony_model, parse_harmony_output
 from ..utils.logger import logger
 from .normalizer import (
     has_media_content,
@@ -81,54 +75,6 @@ class ResponsesAdapter:
         generator = self._get_chat_generator(model_id)
         return OpenAIAdapter(generator)
 
-    def _should_use_batch(self) -> bool:
-        """Check if batch inference is enabled."""
-        settings = get_settings()
-        return settings.enable_batch_inference
-
-    async def _stream_batch_tokens(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-    ) -> AsyncGenerator[BatchStreamChunk, None]:
-        """Stream tokens through batch coordinator.
-
-        Args:
-            model_id: Model to use
-            messages: Chat messages
-            max_tokens: Max tokens to generate
-            temperature: Sampling temperature
-
-        Yields:
-            BatchStreamChunk for each token
-        """
-        settings = get_settings()
-
-        # Get or create batch coordinator for this model
-        coordinator = get_batch_coordinator(
-            model_id=model_id,
-            completion_batch_size=settings.batch_completion_size,
-            prefill_batch_size=settings.batch_prefill_size,
-            prefill_step_size=settings.batch_prefill_step_size,
-            batch_window_ms=settings.batch_window_ms,
-            max_batch_size=settings.max_batch_size,
-        )
-
-        # Build sampler config from temperature
-        sampler_config = None
-        if temperature is not None:
-            sampler_config = {"temp": temperature}
-
-        # Stream through coordinator
-        async for chunk in coordinator.stream_request(
-            messages=messages,
-            max_tokens=max_tokens or 4096,
-            sampler_config=sampler_config,
-        ):
-            yield chunk
-
     async def generate(
         self,
         request: ResponseRequest,
@@ -148,10 +94,7 @@ class ResponsesAdapter:
         Returns:
             ResponseResponse with generated content
         """
-        # Preserve original model name for response (don't expose local paths)
-        request_model = request.model or self.default_model_id
-        model_id = request_model
-
+        model_id = request.model or self.default_model_id
         if not model_id:
             return build_error_response(
                 "Model not specified",
@@ -166,28 +109,25 @@ class ResponsesAdapter:
             # Check for media content
             if has_media_content(normalised):
                 # Route to vision model
-                return await self._generate_vision(model_id, normalised, request_model)
+                return await self._generate_vision(model_id, normalised)
             else:
                 # Text-only path
-                return await self._generate_text(model_id, normalised, request_model)
+                return await self._generate_text(model_id, normalised)
 
         except Exception as e:
             logger.error(f"Responses generation failed: {e}", exc_info=True)
             return build_error_response(
                 str(e),
                 error_code="internal_error",
-                model=request_model,
+                model=model_id,
             )
 
     async def _generate_text(
         self,
         model_id: str,
         normalised_body: dict[str, Any],
-        request_model: str | None = None,
     ) -> ResponseResponse:
         """Generate text-only response using MLX, with tool support."""
-        # Use request_model for response, fallback to model_id
-        response_model = request_model or model_id
         # Convert to chat messages
         messages = responses_to_chat_messages(normalised_body)
 
@@ -243,12 +183,7 @@ class ResponsesAdapter:
             tool_calls = getattr(choice.message, "tool_calls", None) or []
 
         # Parse Harmony format if applicable (GPT-OSS models)
-        # Resolve model alias to check Harmony (e.g., "chat" -> "gpt-oss-120b")
-        settings = get_settings()
-        resolved_model = settings.get_model_alias(model_id)
-        if (
-            is_harmony_model(resolved_model) or is_harmony_model(model_id)
-        ) and content_text:
+        if is_harmony_model(model_id) and content_text:
             parsed = parse_harmony_output(content_text)
             content_text = parsed["final_text"]
             reasoning_text = parsed["reasoning"] or reasoning_text
@@ -326,7 +261,7 @@ class ResponsesAdapter:
         return ResponseResponse(
             id=f"resp_{uuid.uuid4().hex}",
             created_at=int(time.time()),
-            model=response_model,
+            model=model_id,
             status=ResponseStatus.COMPLETED,
             output=output_items,
             usage=ResponseUsage(
@@ -343,7 +278,6 @@ class ResponsesAdapter:
         self,
         model_id: str,
         normalised_body: dict[str, Any],
-        request_model: str | None = None,
     ) -> ResponseResponse:
         """
         Generate response for vision/multimodal content.
@@ -368,47 +302,27 @@ class ResponsesAdapter:
                     if isinstance(p, dict) and p.get("type") == "input_text"
                 ]
 
-        return await self._generate_text(model_id, text_only_body, request_model)
+        return await self._generate_text(model_id, text_only_body)
 
-    async def generate_stream(  # noqa: PLR0912, PLR0915
+    async def generate_stream(
         self,
         request: ResponseRequest,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
-        Generate streaming response with full OpenAI Responses API compliance.
+        Generate streaming response.
 
-        Yields SSE events compatible with official OpenAI format including:
-        - sequence_number in every event
-        - response.in_progress event
-        - response.reasoning_summary_text.delta for Harmony analysis channel
-        - response.output_text.delta for final content
-
+        Yields SSE events compatible with Responses API streaming format.
         Note: Tool execution in streaming mode executes after stream completes.
         """
-        # Preserve original model name for response (don't expose local paths)
-        request_model = request.model or self.default_model_id
-        model_id = request_model  # May be resolved to full path internally
-
-        # Sequence number counter for OpenAI compliance
-        seq_num = 0
-
-        def make_event(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
-            """Create event with sequence_number."""
-            nonlocal seq_num
-            event = {"type": event_type, "sequence_number": seq_num, **data}
-            seq_num += 1
-            return event
-
+        model_id = request.model or self.default_model_id
         if not model_id:
-            yield make_event(
-                "error",
-                {
-                    "error": {
-                        "message": "Model not specified",
-                        "code": "invalid_request_error",
-                    }
+            yield {
+                "type": "error",
+                "error": {
+                    "message": "Model not specified",
+                    "code": "invalid_request_error",
                 },
-            )
+            }
             return
 
         try:
@@ -457,326 +371,107 @@ class ResponsesAdapter:
             # Get adapter
             adapter = self._get_openai_adapter(model_id)
 
-            # Generate IDs (full 32-char UUID hex)
+            # Generate response ID and item ID
             response_id = f"resp_{uuid.uuid4().hex}"
-            reasoning_item_id = f"rs_{uuid.uuid4().hex}"
-            message_item_id = f"msg_{uuid.uuid4().hex}"
-
-            # Resolve model alias to check Harmony format (chat -> gpt-oss-120b)
-            settings = get_settings()
-            resolved_model = settings.get_model_alias(model_id)
-            is_harmony = is_harmony_model(resolved_model) or is_harmony_model(model_id)
-
-            # Response object template
-            response_obj = {
-                "id": response_id,
-                "object": "response",
-                "status": "in_progress",
-                "model": request_model,
-                "output": [],
-            }
+            item_id = f"msg_{uuid.uuid4().hex[:24]}"
 
             # Emit response.created
-            yield make_event(
-                "response.created",
-                {"response": response_obj.copy()},
-            )
+            yield {
+                "type": "response.created",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "status": "in_progress",
+                    "model": model_id,
+                    "output": [],
+                },
+            }
 
-            # Emit response.in_progress (OpenAI compliance)
-            yield make_event(
-                "response.in_progress",
-                {"response": response_obj.copy()},
-            )
+            # Emit output_item.added
+            yield {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": item_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": [],
+                },
+            }
 
-            # For Harmony models: emit reasoning output_item first
-            if is_harmony:
-                yield make_event(
-                    "response.output_item.added",
-                    {
-                        "output_index": 0,
-                        "item": {
-                            "id": reasoning_item_id,
-                            "type": "reasoning",
-                            "summary": [],
-                        },
-                    },
-                )
-
-            # Initialize streaming state
-            harmony_parser = HarmonyStreamingParser() if is_harmony else None
-            reasoning_text_parts: list[str] = []
-            output_text_parts: list[str] = []
-            message_item_emitted = False
-
-            # Decide streaming mode: batch vs single
-            use_batch = self._should_use_batch()
-
-            # Create unified token stream
-            async def token_stream() -> AsyncGenerator[str, None]:
-                """Unified token stream supporting both batch and single modes."""
-                if use_batch:
-                    # Batch mode: use coordinator
-                    async for batch_chunk in self._stream_batch_tokens(
-                        model_id=model_id,
-                        messages=messages,
-                        max_tokens=normalised.get("max_output_tokens")
-                        or normalised.get("max_tokens"),
-                        temperature=normalised.get("temperature"),
-                    ):
-                        if batch_chunk.text:
-                            yield batch_chunk.text
-                else:
-                    # Single mode: use OpenAI adapter
-                    for chunk in adapter.generate_stream(chat_request):
-                        if not chunk.choices:
-                            continue
-                        delta = chunk.choices[0].delta
-                        if delta and delta.content:
-                            yield delta.content
+            # Emit content_part.added
+            yield {
+                "type": "response.content_part.added",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": "",
+                },
+            }
 
             # Stream content deltas
-            async for raw_content in token_stream():
-                if is_harmony and harmony_parser:
-                    # Use stateful parser for channel separation
-                    event_type, clean_text = harmony_parser.process_delta(raw_content)
-
-                    if not clean_text:
-                        continue  # Skip marker-only chunks
-
-                    if event_type == "reasoning":
-                        # Emit reasoning delta
-                        reasoning_text_parts.append(clean_text)
-                        yield make_event(
-                            "response.reasoning_summary_text.delta",
-                            {
-                                "item_id": reasoning_item_id,
-                                "output_index": 0,
-                                "delta": clean_text,
-                            },
-                        )
-                    elif event_type == "output":
-                        # First output chunk: emit message item
-                        if not message_item_emitted:
-                            # Close reasoning item if we had one
-                            if reasoning_text_parts:
-                                yield make_event(
-                                    "response.reasoning_summary_text.done",
-                                    {
-                                        "item_id": reasoning_item_id,
-                                        "output_index": 0,
-                                        "text": "".join(reasoning_text_parts),
-                                    },
-                                )
-                                yield make_event(
-                                    "response.output_item.done",
-                                    {
-                                        "output_index": 0,
-                                        "item": {
-                                            "id": reasoning_item_id,
-                                            "type": "reasoning",
-                                            "summary": [
-                                                {
-                                                    "type": "summary_text",
-                                                    "text": "".join(
-                                                        reasoning_text_parts
-                                                    ),
-                                                }
-                                            ],
-                                        },
-                                    },
-                                )
-
-                            # Emit message output_item.added
-                            yield make_event(
-                                "response.output_item.added",
-                                {
-                                    "output_index": 1 if reasoning_text_parts else 0,
-                                    "item": {
-                                        "id": message_item_id,
-                                        "type": "message",
-                                        "role": "assistant",
-                                        "status": "in_progress",
-                                        "content": [],
-                                    },
-                                },
-                            )
-                            yield make_event(
-                                "response.content_part.added",
-                                {
-                                    "output_index": 1 if reasoning_text_parts else 0,
-                                    "content_index": 0,
-                                    "part": {"type": "output_text", "text": ""},
-                                },
-                            )
-                            message_item_emitted = True
-
-                        # Emit output delta
-                        output_text_parts.append(clean_text)
-                        yield make_event(
-                            "response.output_text.delta",
-                            {
-                                "output_index": 1 if reasoning_text_parts else 0,
-                                "content_index": 0,
-                                "delta": clean_text,
-                            },
-                        )
-                else:
-                    # Non-Harmony model: simple streaming
-                    if not message_item_emitted:
-                        yield make_event(
-                            "response.output_item.added",
-                            {
-                                "output_index": 0,
-                                "item": {
-                                    "id": message_item_id,
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "status": "in_progress",
-                                    "content": [],
-                                },
-                            },
-                        )
-                        yield make_event(
-                            "response.content_part.added",
-                            {
-                                "output_index": 0,
-                                "content_index": 0,
-                                "part": {"type": "output_text", "text": ""},
-                            },
-                        )
-                        message_item_emitted = True
-
-                    output_text_parts.append(raw_content)
-                    yield make_event(
-                        "response.output_text.delta",
-                        {
+            full_text = ""
+            for chunk in adapter.generate_stream(chat_request):
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        full_text += delta.content
+                        yield {
+                            "type": "response.output_text.delta",
                             "output_index": 0,
                             "content_index": 0,
-                            "delta": raw_content,
-                        },
-                    )
+                            "delta": delta.content,
+                        }
 
-            # Parse final text for Harmony models
-            final_text = "".join(output_text_parts)
-            reasoning_text = (
-                "".join(reasoning_text_parts) if reasoning_text_parts else None
-            )
+            # Emit content_part.done
+            yield {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "content_index": 0,
+                "text": full_text,
+            }
 
-            if is_harmony and harmony_parser:
-                # Final parse for clean output and tool calls
-                parsed = parse_harmony_output(harmony_parser.full_text)
-                if parsed["final_text"]:
-                    final_text = parsed["final_text"]
-                if parsed["reasoning"] and not reasoning_text:
-                    reasoning_text = parsed["reasoning"]
-                if parsed["tool_calls"]:
-                    tc_count = len(parsed["tool_calls"])
-                    logger.info(f"Extracted {tc_count} tool calls from Harmony")
-
-            # Handle case where no message was emitted (all reasoning)
-            if not message_item_emitted:
-                output_index = 1 if reasoning_text_parts else 0
-                yield make_event(
-                    "response.output_item.added",
-                    {
-                        "output_index": output_index,
-                        "item": {
-                            "id": message_item_id,
-                            "type": "message",
-                            "role": "assistant",
-                            "status": "in_progress",
-                            "content": [],
-                        },
-                    },
-                )
-                yield make_event(
-                    "response.content_part.added",
-                    {
-                        "output_index": output_index,
-                        "content_index": 0,
-                        "part": {"type": "output_text", "text": ""},
-                    },
-                )
-
-            # Emit final events
-            output_index = 1 if reasoning_text_parts else 0
-
-            yield make_event(
-                "response.output_text.done",
-                {
-                    "output_index": output_index,
-                    "content_index": 0,
-                    "text": final_text,
-                },
-            )
-
-            yield make_event(
-                "response.content_part.done",
-                {
-                    "output_index": output_index,
-                    "content_index": 0,
-                    "part": {"type": "output_text", "text": final_text},
-                },
-            )
-
-            yield make_event(
-                "response.output_item.done",
-                {
-                    "output_index": output_index,
-                    "item": {
-                        "id": message_item_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{"type": "output_text", "text": final_text}],
-                    },
-                },
-            )
-
-            # Build final output list
-            output_list = []
-            if reasoning_text_parts:
-                output_list.append(
-                    {
-                        "id": reasoning_item_id,
-                        "type": "reasoning",
-                        "summary": [
-                            {"type": "summary_text", "text": reasoning_text or ""}
-                        ],
-                    }
-                )
-            output_list.append(
-                {
-                    "id": message_item_id,
+            # Emit output_item.done
+            yield {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": item_id,
                     "type": "message",
                     "role": "assistant",
                     "status": "completed",
-                    "content": [{"type": "output_text", "text": final_text}],
-                }
-            )
+                    "content": [{"type": "output_text", "text": full_text}],
+                },
+            }
 
             # Emit response.completed
-            yield make_event(
-                "response.completed",
-                {
-                    "response": {
-                        "id": response_id,
-                        "object": "response",
-                        "status": "completed",
-                        "model": request_model,
-                        "output": output_list,
-                    }
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "status": "completed",
+                    "model": model_id,
+                    "output": [
+                        {
+                            "id": item_id,
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [{"type": "output_text", "text": full_text}],
+                        }
+                    ],
                 },
-            )
+            }
 
         except Exception as e:
             logger.error(f"Streaming generation failed: {e}", exc_info=True)
-            yield make_event(
-                "error",
-                {
-                    "error": {
-                        "message": str(e),
-                        "code": "internal_error",
-                    }
+            yield {
+                "type": "error",
+                "error": {
+                    "message": str(e),
+                    "code": "internal_error",
                 },
-            )
+            }

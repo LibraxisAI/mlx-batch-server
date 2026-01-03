@@ -136,32 +136,6 @@ class Settings(BaseSettings):
         description="Successes in half-open to close circuit",
     )
 
-    # === Batch Processing ===
-    enable_batch_inference: bool = Field(
-        default=True,
-        description="Enable batch processing for concurrent requests",
-    )
-    batch_window_ms: int = Field(
-        default=50,
-        description="Time window in ms to collect requests before processing batch",
-    )
-    max_batch_size: int = Field(
-        default=10,
-        description="Maximum number of requests per batch",
-    )
-    batch_completion_size: int = Field(
-        default=32,
-        description="Number of sequences to process per batch step (MLX parameter)",
-    )
-    batch_prefill_size: int = Field(
-        default=8,
-        description="Number of sequences to prefill together",
-    )
-    batch_prefill_step_size: int = Field(
-        default=2048,
-        description="Number of tokens to prefill per step",
-    )
-
     # === Health Check ===
     health_check_interval: int = Field(
         default=30,
@@ -274,12 +248,6 @@ class Settings(BaseSettings):
             "local_timeout": self.local_timeout,
             "max_retries": self.max_retries,
             "health_check_enabled": self.health_check_enabled,
-            # Batch processing
-            "enable_batch_inference": self.enable_batch_inference,
-            "batch_window_ms": self.batch_window_ms,
-            "max_batch_size": self.max_batch_size,
-            "batch_completion_size": self.batch_completion_size,
-            "batch_prefill_size": self.batch_prefill_size,
             # Mask API keys
             "openai_api_key": "***" if self.openai_api_key else None,
             "anthropic_api_key": "***" if self.anthropic_api_key else None,
