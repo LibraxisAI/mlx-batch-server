@@ -513,13 +513,16 @@ class HarmonyStreamingParser:
         text = self.buffer + delta
         self.buffer = ""
 
-        # Check for partial token at end (starts with <| but incomplete)
-        if "<|" in text and not text.endswith("|>"):
-            last_marker_start = text.rfind("<|")
-            if last_marker_start > 0:
-                # Keep partial marker in buffer
-                self.buffer = text[last_marker_start:]
-                text = text[:last_marker_start]
+        # Check for unclosed <| marker at the end
+        # An unclosed marker is a <| without a following |>
+        last_open = text.rfind("<|")
+        if last_open >= 0:
+            # Check if there's a |> AFTER this <|
+            close_after = text.find("|>", last_open + 2)
+            if close_after < 0:
+                # No |> after the last <|, so it's unclosed - buffer it
+                self.buffer = text[last_open:]
+                text = text[:last_open]
 
         # Detect channel switches
         channel_match = _CHANNEL_START_RE.search(text)
