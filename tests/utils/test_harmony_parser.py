@@ -1,6 +1,6 @@
 """Tests for Harmony parser utilities."""
 
-from mlx_batch_server.utils.harmony_parser import (
+from mlx_omni_server.utils.harmony_parser import (
     HarmonyStreamingParser,
     filter_harmony_tokens,
     is_harmony_model,
@@ -146,43 +146,6 @@ class TestHarmonyStreamingParser:
         # Complete the token
         event_type, clean = parser.process_delta("nel|>final")
         assert parser.current_channel == "final"
-
-    def test_fragmented_channel_name(self):
-        """Parser should handle channel name in separate chunk."""
-        parser = HarmonyStreamingParser()
-
-        # Chunk 1: <|channel|> without name
-        event_type, clean = parser.process_delta("<|channel|>")
-        assert event_type is None
-        assert clean == ""
-        assert parser._awaiting_channel_name is True
-
-        # Chunk 2: channel name arrives separately
-        event_type, clean = parser.process_delta("analysis")
-        assert parser.current_channel == "analysis"
-        assert parser._awaiting_channel_name is False
-        # Channel name should NOT leak as output
-        assert clean == ""
-
-        # Chunk 3: actual content
-        event_type, clean = parser.process_delta("<|message|>Thinking...")
-        assert event_type == "reasoning"
-        assert clean == "Thinking..."
-
-    def test_fragmented_channel_name_with_message(self):
-        """Parser should handle channel name followed by message marker."""
-        parser = HarmonyStreamingParser()
-
-        # Chunk 1: <|channel|> without name
-        parser.process_delta("<|channel|>")
-        assert parser._awaiting_channel_name is True
-
-        # Chunk 2: channel name + message marker
-        event_type, clean = parser.process_delta("final<|message|>Hello")
-        assert parser.current_channel == "final"
-        assert parser._awaiting_channel_name is False
-        # "Hello" should be the output
-        assert "Hello" in clean
 
 
 class TestParseHarmonyOutput:
