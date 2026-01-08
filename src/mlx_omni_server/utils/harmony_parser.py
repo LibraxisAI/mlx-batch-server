@@ -464,12 +464,120 @@ def render_harmony_prompt(conversation: Conversation) -> str:
     return conversation.render()
 
 
+# Regex for streaming token filter
+_HARMONY_TOKEN_RE = re.compile(
+    r"<\|(?:channel|message|call|end|start|constrain)\|>(?:\w+)?"
+)
+
+# Regex patterns for streaming channel detection
+_CHANNEL_START_RE = re.compile(r"<\|channel\|>(\w+)")
+_MESSAGE_START_RE = re.compile(r"<\|message\|>")
+_END_TOKEN_RE = re.compile(r"<\|end\|>")
+
+
+class HarmonyStreamingParser:
+    """
+    Stateful parser for Harmony format during streaming.
+
+    Tracks current channel (analysis/final/commentary) and emits
+    appropriate events for reasoning vs output text.
+
+    Usage:
+        parser = HarmonyStreamingParser()
+        for delta in stream:
+            event_type, clean_text = parser.process_delta(delta)
+            if event_type and clean_text:
+                yield {event_type: clean_text}
+    """
+
+    def __init__(self):
+        self.current_channel: str | None = None
+        self.buffer: str = ""  # Buffer for partial tokens
+        self.full_text: str = ""  # Full accumulated text for final parsing
+        self.reasoning_started: bool = False
+        self.message_started: bool = False
+
+    def process_delta(self, delta: str) -> tuple[str | None, str]:
+        """
+        Process streaming delta and return event type and clean text.
+
+        Args:
+            delta: Raw streaming token/chunk
+
+        Returns:
+            Tuple of (event_type, clean_text):
+            - event_type: "reasoning" | "output" | None
+            - clean_text: Text to emit (empty if token is marker)
+        """
+        self.full_text += delta
+        text = self.buffer + delta
+        self.buffer = ""
+
+        # Check for partial token at end (starts with <| but incomplete)
+        if "<|" in text and not text.endswith("|>"):
+            last_marker_start = text.rfind("<|")
+            if last_marker_start > 0:
+                # Keep partial marker in buffer
+                self.buffer = text[last_marker_start:]
+                text = text[:last_marker_start]
+
+        # Detect channel switches
+        channel_match = _CHANNEL_START_RE.search(text)
+        if channel_match:
+            new_channel = channel_match.group(1).lower()
+            self.current_channel = new_channel
+
+        # Strip all Harmony tokens for clean output
+        clean_text = _HARMONY_TOKEN_RE.sub("", text).strip()
+
+        # Determine event type based on current channel
+        event_type: str | None = None
+        if clean_text:
+            if self.current_channel == "analysis":
+                event_type = "reasoning"
+                self.reasoning_started = True
+            elif self.current_channel in ("final", None):
+                event_type = "output"
+                self.message_started = True
+            # commentary channel (tool calls) - skip for now, parsed at end
+
+        return event_type, clean_text
+
+    def get_state(self) -> dict[str, Any]:
+        """Get current parser state for debugging."""
+        return {
+            "current_channel": self.current_channel,
+            "reasoning_started": self.reasoning_started,
+            "message_started": self.message_started,
+            "buffer_size": len(self.buffer),
+            "full_text_size": len(self.full_text),
+        }
+
+
+def filter_harmony_tokens(text: str) -> str:
+    """
+    Strip Harmony special tokens from streaming delta for user display.
+
+    Removes: <|channel|>name, <|message|>, <|call|>, <|end|>, <|start|>, <|constrain|>
+    Used during streaming to show clean text while accumulating raw for final parse.
+
+    Args:
+        text: Raw streaming delta that may contain Harmony tokens
+
+    Returns:
+        Cleaned text with tokens stripped
+    """
+    return _HARMONY_TOKEN_RE.sub("", text)
+
+
 __all__ = [
     "HARMONY_AVAILABLE",
+    "HarmonyStreamingParser",
     "apply_harmony_parsing",
     "build_harmony_output_entries",
     "create_harmony_conversation",
     "extract_harmony_content",
+    "filter_harmony_tokens",
     "is_harmony_model",
     "parse_harmony_output",
     "parse_harmony_tool_calls",
