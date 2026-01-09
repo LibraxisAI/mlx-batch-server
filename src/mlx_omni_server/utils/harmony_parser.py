@@ -465,8 +465,10 @@ def render_harmony_prompt(conversation: Conversation) -> str:
 
 
 # Regex for streaming token filter
+# Only <|channel|> should consume following word (channel name)
+# Other markers (<|message|>, <|call|>, etc.) should NOT eat content
 _HARMONY_TOKEN_RE = re.compile(
-    r"<\|(?:channel|message|call|end|start|constrain)\|>(?:\w+)?"
+    r"<\|channel\|>(?:\w+)?|<\|(?:message|call|end|start|constrain)\|>"
 )
 
 # Regex patterns for streaming channel detection
@@ -496,6 +498,9 @@ class HarmonyStreamingParser:
         self.full_text: str = ""  # Full accumulated text for final parsing
         self.reasoning_started: bool = False
         self.message_started: bool = False
+        self._awaiting_channel_name: bool = (
+            False  # True when we saw <|channel|> without name
+        )
 
     def process_delta(self, delta: str) -> tuple[str | None, str]:
         """
@@ -524,11 +529,26 @@ class HarmonyStreamingParser:
                 self.buffer = text[last_open:]
                 text = text[:last_open]
 
-        # Detect channel switches
+        # Handle awaiting channel name from previous chunk
+        # When <|channel|> came without name, next chunk has the name
+        if self._awaiting_channel_name and text:
+            # Extract first word as channel name
+            first_word_match = re.match(r"(\w+)", text)
+            if first_word_match:
+                self.current_channel = first_word_match.group(1).lower()
+                # Strip the channel name from text
+                text = text[first_word_match.end() :]
+            self._awaiting_channel_name = False
+
+        # Detect channel switches - <|channel|>name pattern
         channel_match = _CHANNEL_START_RE.search(text)
         if channel_match:
             new_channel = channel_match.group(1).lower()
             self.current_channel = new_channel
+            self._awaiting_channel_name = False
+        elif "<|channel|>" in text:
+            # <|channel|> present but no name captured - name will come in next chunk
+            self._awaiting_channel_name = True
 
         # Strip all Harmony tokens for clean output
         clean_text = _HARMONY_TOKEN_RE.sub("", text).strip()
