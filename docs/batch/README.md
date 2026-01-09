@@ -1,6 +1,6 @@
 # Batch Processing Module
 
-MLX Batch Server includes a batch processing module for efficient handling of
+MLX Omni Server includes a batch processing module for efficient handling of
 concurrent requests. This directory contains documentation for the batch
 inference subsystem.
 
@@ -16,7 +16,7 @@ improving throughput for concurrent workloads.
 
 ```bash
 # Start server with default batch settings
-mlx-batch-server
+mlx-omni-server
 
 # Check batch stats
 curl http://localhost:10240/v1/batch/stats | jq
@@ -46,4 +46,4 @@ Request 3 ─┘         │                          │
 Refer to `HowToUse.md` for detailed configuration and testing instructions.
 
 ---
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Created by M&K (c)2026 VetCoders
