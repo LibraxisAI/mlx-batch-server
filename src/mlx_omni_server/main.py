@@ -52,13 +52,28 @@ def create_app():
 
     This is called lazily to avoid slow imports when just showing --help.
     """
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
     from .middleware.logging import RequestResponseLoggingMiddleware
     from .routers import api_router
 
-    application = FastAPI(title="MLX Omni Server")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Application lifespan manager for startup/shutdown hooks."""
+        # Startup
+        yield
+        # Shutdown - cleanup batch coordinators
+        try:
+            from .batch import shutdown_all_coordinators
+
+            await shutdown_all_coordinators()
+        except ImportError:
+            pass  # Batch module may not be available
+
+    application = FastAPI(title="MLX Omni Server", lifespan=lifespan)
 
     # Add request/response logging middleware
     application.add_middleware(RequestResponseLoggingMiddleware)

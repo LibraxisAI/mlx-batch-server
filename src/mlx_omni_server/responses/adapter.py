@@ -17,6 +17,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from ..batch import BatchStreamChunk, get_batch_coordinator
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..chat.openai.openai_adapter import OpenAIAdapter
 from ..chat.openai.schema import ChatCompletionRequest, ChatMessage, Role, Tool
@@ -79,6 +80,54 @@ class ResponsesAdapter:
         """Get OpenAI adapter wrapping ChatGenerator."""
         generator = self._get_chat_generator(model_id)
         return OpenAIAdapter(generator)
+
+    def _should_use_batch(self) -> bool:
+        """Check if batch inference is enabled."""
+        settings = get_settings()
+        return settings.enable_batch_inference
+
+    async def _stream_batch_tokens(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncGenerator[BatchStreamChunk, None]:
+        """Stream tokens through batch coordinator.
+
+        Args:
+            model_id: Model to use
+            messages: Chat messages
+            max_tokens: Max tokens to generate
+            temperature: Sampling temperature
+
+        Yields:
+            BatchStreamChunk for each token
+        """
+        settings = get_settings()
+
+        # Get or create batch coordinator for this model
+        coordinator = get_batch_coordinator(
+            model_id=model_id,
+            completion_batch_size=settings.batch_completion_size,
+            prefill_batch_size=settings.batch_prefill_size,
+            prefill_step_size=settings.batch_prefill_step_size,
+            batch_window_ms=settings.batch_window_ms,
+            max_batch_size=settings.max_batch_size,
+        )
+
+        # Build sampler config from temperature
+        sampler_config = None
+        if temperature is not None:
+            sampler_config = {"temp": temperature}
+
+        # Stream through coordinator
+        async for chunk in coordinator.stream_request(
+            messages=messages,
+            max_tokens=max_tokens or 4096,
+            sampler_config=sampler_config,
+        ):
+            yield chunk
 
     async def generate(
         self,
@@ -413,7 +462,7 @@ class ResponsesAdapter:
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:6]}"
             message_item_id = f"msg_{uuid.uuid4().hex[:6]}"
 
-            # Resolve model alias to check Harmony format (e.g., "chat" -> "gpt-oss-120b")
+            # Resolve model alias to check Harmony format (chat -> gpt-oss-120b)
             settings = get_settings()
             resolved_model = settings.get_model_alias(model_id)
             is_harmony = is_harmony_model(resolved_model) or is_harmony_model(model_id)
@@ -459,17 +508,34 @@ class ResponsesAdapter:
             output_text_parts: list[str] = []
             message_item_emitted = False
 
+            # Decide streaming mode: batch vs single
+            use_batch = self._should_use_batch()
+
+            # Create unified token stream
+            async def token_stream() -> AsyncGenerator[str, None]:
+                """Unified token stream supporting both batch and single modes."""
+                if use_batch:
+                    # Batch mode: use coordinator
+                    async for batch_chunk in self._stream_batch_tokens(
+                        model_id=model_id,
+                        messages=messages,
+                        max_tokens=normalised.get("max_output_tokens")
+                        or normalised.get("max_tokens"),
+                        temperature=normalised.get("temperature"),
+                    ):
+                        if batch_chunk.text:
+                            yield batch_chunk.text
+                else:
+                    # Single mode: use OpenAI adapter
+                    for chunk in adapter.generate_stream(chat_request):
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            yield delta.content
+
             # Stream content deltas
-            for chunk in adapter.generate_stream(chat_request):
-                if not chunk.choices:
-                    continue
-
-                delta = chunk.choices[0].delta
-                if not delta or not delta.content:
-                    continue
-
-                raw_content = delta.content
-
+            async for raw_content in token_stream():
                 if is_harmony and harmony_parser:
                     # Use stateful parser for channel separation
                     event_type, clean_text = harmony_parser.process_delta(raw_content)
@@ -604,9 +670,8 @@ class ResponsesAdapter:
                 if parsed["reasoning"] and not reasoning_text:
                     reasoning_text = parsed["reasoning"]
                 if parsed["tool_calls"]:
-                    logger.info(
-                        f"Extracted {len(parsed['tool_calls'])} tool calls from Harmony stream"
-                    )
+                    tc_count = len(parsed["tool_calls"])
+                    logger.info(f"Extracted {tc_count} tool calls from Harmony")
 
             # Handle case where no message was emitted (all reasoning)
             if not message_item_emitted:
