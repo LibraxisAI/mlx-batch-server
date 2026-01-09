@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..chat.openai.openai_adapter import OpenAIAdapter
 from ..chat.openai.schema import ChatCompletionRequest, ChatMessage, Role, Tool
+from ..core.config import get_settings
 from ..tools import (
     execute_tool,
     format_tool_result,
@@ -193,7 +194,12 @@ class ResponsesAdapter:
             tool_calls = getattr(choice.message, "tool_calls", None) or []
 
         # Parse Harmony format if applicable (GPT-OSS models)
-        if is_harmony_model(model_id) and content_text:
+        # Resolve model alias to check Harmony (e.g., "chat" -> "gpt-oss-120b")
+        settings = get_settings()
+        resolved_model = settings.get_model_alias(model_id)
+        if (
+            is_harmony_model(resolved_model) or is_harmony_model(model_id)
+        ) and content_text:
             parsed = parse_harmony_output(content_text)
             content_text = parsed["final_text"]
             reasoning_text = parsed["reasoning"] or reasoning_text
@@ -407,7 +413,10 @@ class ResponsesAdapter:
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:6]}"
             message_item_id = f"msg_{uuid.uuid4().hex[:6]}"
 
-            is_harmony = is_harmony_model(model_id)
+            # Resolve model alias to check Harmony format (e.g., "chat" -> "gpt-oss-120b")
+            settings = get_settings()
+            resolved_model = settings.get_model_alias(model_id)
+            is_harmony = is_harmony_model(resolved_model) or is_harmony_model(model_id)
 
             # Response object template
             response_obj = {
