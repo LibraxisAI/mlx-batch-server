@@ -10,7 +10,7 @@
 #   make check      - Run all checks (lint + test)
 #   make clean      - Clean build artifacts
 
-.PHONY: install dev test lint format check clean help
+.PHONY: install dev run stop restart logs test lint format check clean help
 .DEFAULT_GOAL := help
 
 # === Configuration ===
@@ -43,13 +43,47 @@ install-hooks: ## Install pre-commit hooks
 	fi
 
 # === Development ===
-dev: ## Run development server (default port: 10240)
+dev: ## Run development server (foreground, default port: 10240)
 	$(PYTHON) -m mlx_omni_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)"
 
 dev-8100: ## Run on port 8100 (LibraxisAI integration)
 	$(PYTHON) -m mlx_omni_server.main --port 8100 --host 0.0.0.0 --log-level info --cors-allow-origins="$(CORS)"
 
-run: dev ## Alias for dev
+LOG_FILE ?= mlx-omni-server.log
+PID_FILE ?= .mlx-omni-server.pid
+
+run: ## Run server as background daemon (logs to $(LOG_FILE))
+	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+		echo "Server already running (PID: $$(cat $(PID_FILE)))"; \
+	else \
+		nohup $(PYTHON) -m mlx_omni_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)" > $(LOG_FILE) 2>&1 & \
+		echo $$! > $(PID_FILE); \
+		sleep 1; \
+		if kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+			echo "Server started (PID: $$(cat $(PID_FILE)), log: $(LOG_FILE))"; \
+		else \
+			echo "Failed to start server - check $(LOG_FILE)"; \
+			rm -f $(PID_FILE); \
+		fi \
+	fi
+
+stop: ## Stop background server
+	@if [ -f $(PID_FILE) ]; then \
+		PID=$$(cat $(PID_FILE)); \
+		if kill -0 $$PID 2>/dev/null; then \
+			kill $$PID && echo "Server stopped (PID: $$PID)"; \
+		else \
+			echo "Server not running (stale PID file)"; \
+		fi; \
+		rm -f $(PID_FILE); \
+	else \
+		echo "No PID file found"; \
+	fi
+
+restart: stop run ## Restart background server
+
+logs: ## Tail server logs
+	@if [ -f $(LOG_FILE) ]; then tail -f $(LOG_FILE); else echo "No log file found"; fi
 
 # === Testing ===
 test: ## Run all tests
@@ -112,16 +146,16 @@ load: ## Load a model (MODEL=<model-id>)
 	@echo "Loading model: $(MODEL)"
 	@curl -s -X POST $(SERVER_URL)/v1/models/load \
 		-H "Content-Type: application/json" \
-		-d '{"model": "$(MODEL)"}' | python -m json.tool 2>/dev/null || \
+		-d '{"model": "$(MODEL)"}' | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
 
 unload: ## Unload current model
 	@echo "Unloading model..."
-	@curl -s -X POST $(SERVER_URL)/v1/models/unload | python -m json.tool 2>/dev/null || \
+	@curl -s -X POST $(SERVER_URL)/v1/models/unload | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
 
 ps: ## List loaded models
-	@curl -s $(SERVER_URL)/v1/models | python -m json.tool 2>/dev/null || \
+	@curl -s $(SERVER_URL)/v1/models | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running"
 
 status: ## Server status
@@ -129,10 +163,10 @@ status: ## Server status
 	@curl -s $(SERVER_URL)/health 2>/dev/null && echo "Server: UP" || echo "Server: DOWN"
 	@echo ""
 	@echo "Loaded models:"
-	@curl -s $(SERVER_URL)/v1/models 2>/dev/null | python -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(f'  - {m[\"id\"]}' for m in d.get('data',[])))" 2>/dev/null || echo "  (none)"
+	@curl -s $(SERVER_URL)/v1/models 2>/dev/null | $(PYTHON) -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(f'  - {m[\"id\"]}' for m in d.get('data',[])))" 2>/dev/null || echo "  (none)"
 
 batch-stats: ## Show batch coordinator stats
-	@curl -s $(SERVER_URL)/v1/batch/stats | python -m json.tool 2>/dev/null || \
+	@curl -s $(SERVER_URL)/v1/batch/stats | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
 
 # === Build & Release ===
