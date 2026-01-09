@@ -131,6 +131,10 @@ status: ## Server status
 	@echo "Loaded models:"
 	@curl -s $(SERVER_URL)/v1/models 2>/dev/null | python -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(f'  - {m[\"id\"]}' for m in d.get('data',[])))" 2>/dev/null || echo "  (none)"
 
+batch-stats: ## Show batch coordinator stats
+	@curl -s $(SERVER_URL)/v1/batch/stats | python -m json.tool 2>/dev/null || \
+		echo "Server not running or endpoint not available"
+
 # === Build & Release ===
 build: ## Build package
 	uv build
