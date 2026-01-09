@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLX Omni Server API Tester</title>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --surface-hover: #1a1a24;
+            --border: #2a2a3a;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --text: #e4e4e7;
+            --text-dim: #71717a;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 1rem;
+        }
+
+        .header {
+            text-align: center;
+            padding: 1.5rem 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 1.5rem;
+        }
+
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header p {
+            color: var(--text-dim);
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+
+        .global-config {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+            padding: 1rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-bottom: 1rem;
+        }
+
+        .global-config label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .global-config input[type="password"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.875rem;
+        }
+
+        .mode-toggle {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .mode-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            cursor: pointer;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            font-size: 0.875rem;
+            text-transform: none;
+        }
+
+        .mode-toggle input:checked + span { color: var(--accent); }
+        .mode-toggle input { display: none; }
+
+        .toolbar {
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 0.625rem 1rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-secondary {
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--surface-hover);
+            border-color: var(--accent);
+        }
+
+        .btn-primary {
+            background: var(--gradient);
+            color: white;
+            font-weight: 700;
+            padding: 0.75rem 2rem;
+            font-size: 1rem;
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .lanes-container {
+            display: flex;
+            gap: 1rem;
+            overflow-x: auto;
+            padding-bottom: 1rem;
+        }
+
+        .lane {
+            flex: 0 0 360px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .lane-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        .lane-title {
+            font-weight: 600;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .lane-actions { display: flex; gap: 0.25rem; }
+
+        .lane-actions button {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+
+        .lane-actions button:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+        }
+
+        .lane-config {
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .field label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .field input, .field select, .field textarea {
+            padding: 0.5rem 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.875rem;
+            font-family: inherit;
+        }
+
+        .field input:focus, .field select:focus, .field textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .field textarea {
+            min-height: 60px;
+            resize: vertical;
+        }
+
+        .field-row { display: flex; gap: 0.5rem; }
+        .field-row .field { flex: 1; }
+
+        .prompts-section {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .prompts-section h4 {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.75rem;
+        }
+
+        .prompt-item { margin-bottom: 0.75rem; }
+
+        .prompt-item label {
+            font-size: 0.75rem;
+            color: var(--accent);
+            margin-bottom: 0.25rem;
+            display: block;
+        }
+
+        .prompt-item textarea {
+            width: 100%;
+            padding: 0.5rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.8125rem;
+            font-family: inherit;
+            min-height: 50px;
+            resize: vertical;
+        }
+
+        .output-section {
+            flex: 1;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .output-section h4 {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .output-item {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .output-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            background: rgba(255,255,255,0.02);
+            border-bottom: 1px solid var(--border);
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+
+        .output-item-header:hover { background: rgba(255,255,255,0.04); }
+
+        .output-step { color: var(--accent); font-weight: 600; }
+
+        .output-status { display: flex; align-items: center; gap: 0.5rem; }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text-dim);
+        }
+
+        .status-dot.running {
+            background: var(--warning);
+            animation: pulse 1s infinite;
+        }
+
+        .status-dot.success { background: var(--success); }
+        .status-dot.error { background: var(--error); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .output-item-body {
+            padding: 0.75rem;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .output-item-body.collapsed {
+            max-height: 40px;
+            overflow: hidden;
+        }
+
+        .stream-preview {
+            font-family: 'SF Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            padding: 0.25rem 0.5rem;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 200px;
+        }
+
+        .lane-stats {
+            padding: 0.75rem 1rem;
+            background: rgba(99, 102, 241, 0.05);
+            border-top: 1px solid var(--border);
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+            font-size: 0.75rem;
+        }
+
+        .stat { text-align: center; }
+
+        .stat-value {
+            font-weight: 700;
+            color: var(--accent);
+            font-size: 1rem;
+            font-family: 'SF Mono', monospace;
+        }
+
+        .stat-label {
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.625rem;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 1.5rem;
+            color: var(--text-dim);
+            font-size: 0.75rem;
+            border-top: 1px solid var(--border);
+            margin-top: 2rem;
+        }
+
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+        .endpoint-presets {
+            display: flex;
+            gap: 0.25rem;
+            margin-top: 0.25rem;
+        }
+
+        .endpoint-preset {
+            font-size: 0.625rem;
+            padding: 0.125rem 0.375rem;
+            background: var(--surface-hover);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-dim);
+            cursor: pointer;
+        }
+
+        .endpoint-preset:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MLX Omni Server API Tester</h1>
+        <p>Multi-lane comparison tool for API endpoints</p>
+    </div>
+
+    <div class="global-config">
+        <div class="field" style="flex: 1;">
+            <label>API Key (optional)</label>
+            <input type="password" id="globalApiKey" placeholder="not-needed for local">
+        </div>
+        <div class="field">
+            <label>Mode</label>
+            <div class="mode-toggle">
+                <label>
+                    <input type="radio" name="streamMode" value="true" checked>
+                    <span>Stream</span>
+                </label>
+                <label>
+                    <input type="radio" name="streamMode" value="false">
+                    <span>Sync</span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-secondary" onclick="addLane()">+ Add Lane</button>
+        <button class="btn btn-secondary" onclick="clearAllOutputs()">Clear Outputs</button>
+        <button class="btn btn-secondary" onclick="exportResults()">Export JSON</button>
+        <button class="btn btn-secondary" onclick="copyResultsToClipboard()">Copy</button>
+        <div style="flex: 1;"></div>
+        <button class="btn btn-primary" id="runBtn" onclick="runAllLanes()">
+            RUN KURWA!
+        </button>
+    </div>
+
+    <div class="lanes-container" id="lanesContainer">
+        <!-- Lanes will be added here -->
+    </div>
+
+    <div class="footer">
+        Created by M&K (c)2026 VetCoders | MLX Omni Server
+    </div>
+
+    <script>
+        let laneCounter = 0;
+        const lanes = new Map();
+
+        const ENDPOINTS = {
+            'local': 'http://localhost:10240/v1/responses',
+            'local-8100': 'http://localhost:8100/v1/responses',
+            'chat': 'http://localhost:10240/v1/chat/completions'
+        };
+
+        // Example prompts for testing
+        const EXAMPLE_PROMPTS = [
+            "What is 2+2? Answer briefly.",
+            "Name a random color.",
+            "Tell me a one-line joke.",
+            "What day comes after Monday?"
+        ];
+
+        function collectResults() {
+            const results = {
+                timestamp: new Date().toISOString(),
+                globalConfig: {
+                    streamMode: document.querySelector('input[name="streamMode"]:checked').value
+                },
+                lanes: []
+            };
+
+            lanes.forEach((_, laneId) => {
+                const laneData = {
+                    id: laneId,
+                    config: {
+                        endpoint: document.getElementById(`${laneId}-endpoint`).value,
+                        model: document.getElementById(`${laneId}-model`).value,
+                        chainLength: document.getElementById(`${laneId}-chain`).value,
+                        systemPrompt: document.getElementById(`${laneId}-system`).value
+                    },
+                    prompts: [],
+                    responses: [],
+                    stats: {
+                        ttft: document.getElementById(`${laneId}-ttft`)?.textContent || '-',
+                        tps: document.getElementById(`${laneId}-tps`)?.textContent || '-',
+                        total: document.getElementById(`${laneId}-total`)?.textContent || '-'
+                    }
+                };
+
+                const chainLength = parseInt(laneData.config.chainLength) || 1;
+                for (let i = 1; i <= chainLength; i++) {
+                    const promptEl = document.getElementById(`${laneId}-prompt-${i}`);
+                    if (promptEl) laneData.prompts.push(promptEl.value);
+
+                    const outputEl = document.getElementById(`${laneId}-output-${i}`);
+                    if (outputEl) laneData.responses.push(outputEl.textContent);
+                }
+
+                results.lanes.push(laneData);
+            });
+
+            return results;
+        }
+
+        function exportResults() {
+            const results = collectResults();
+            const blob = new Blob([JSON.stringify(results, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `api-test-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function copyResultsToClipboard() {
+            const results = collectResults();
+
+            let text = `API Test Results - ${results.timestamp}\n`;
+            text += `Stream Mode: ${results.globalConfig.streamMode}\n\n`;
+
+            results.lanes.forEach((lane, idx) => {
+                text += `=== Lane ${idx + 1}: ${lane.config.model} ===\n`;
+                text += `Endpoint: ${lane.config.endpoint}\n`;
+                text += `Stats: TTFT=${lane.stats.ttft} | tok/s=${lane.stats.tps} | Total=${lane.stats.total}\n\n`;
+
+                lane.prompts.forEach((prompt, i) => {
+                    text += `[Prompt ${i+1}]: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n`;
+                    text += `[Response ${i+1}]: ${(lane.responses[i] || '').slice(0, 200)}${(lane.responses[i] || '').length > 200 ? '...' : ''}\n\n`;
+                });
+                text += '\n';
+            });
+
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Results copied to clipboard!');
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            addLane();
+        });
+
+        function addLane() {
+            laneCounter++;
+            const laneId = `lane-${laneCounter}`;
+
+            const laneEl = document.createElement('div');
+            laneEl.className = 'lane';
+            laneEl.id = laneId;
+            laneEl.innerHTML = `
+                <div class="lane-header">
+                    <div class="lane-title">
+                        <span>Lane ${laneCounter}</span>
+                    </div>
+                    <div class="lane-actions">
+                        <button onclick="duplicateLane('${laneId}')" title="Duplicate">copy</button>
+                        <button onclick="removeLane('${laneId}')" title="Remove">x</button>
+                    </div>
+                </div>
+
+                <div class="lane-config">
+                    <div class="field">
+                        <label>Endpoint</label>
+                        <input type="text" id="${laneId}-endpoint" value="${ENDPOINTS['local']}" placeholder="http://...">
+                        <div class="endpoint-presets">
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'local')">local</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'local-8100')">:8100</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'chat')">chat</span>
+                        </div>
+                    </div>
+                    <div class="field-row">
+                        <div class="field">
+                            <label>Model</label>
+                            <input type="text" id="${laneId}-model" value="mlx-community/Qwen3-0.6B-4bit" placeholder="model-id">
+                        </div>
+                        <div class="field" style="flex: 0 0 80px;">
+                            <label>Chain</label>
+                            <input type="number" id="${laneId}-chain" value="1" min="1" max="10" onchange="updatePrompts('${laneId}')">
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>System Prompt (optional)</label>
+                        <textarea id="${laneId}-system" placeholder="You are a helpful assistant..."></textarea>
+                    </div>
+                </div>
+
+                <div class="prompts-section" id="${laneId}-prompts">
+                    <h4>Prompts</h4>
+                    <div class="prompt-item">
+                        <label>Step 1</label>
+                        <textarea id="${laneId}-prompt-1" placeholder="Enter your prompt...">${EXAMPLE_PROMPTS[0]}</textarea>
+                    </div>
+                </div>
+
+                <div class="output-section" id="${laneId}-outputs">
+                    <h4>Responses</h4>
+                </div>
+
+                <div class="lane-stats" id="${laneId}-stats" style="display: none;">
+                    <div class="stat">
+                        <div class="stat-value" id="${laneId}-ttft">-</div>
+                        <div class="stat-label">TTFT</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value" id="${laneId}-tps">-</div>
+                        <div class="stat-label">tok/s</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value" id="${laneId}-total">-</div>
+                        <div class="stat-label">Total</div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('lanesContainer').appendChild(laneEl);
+            lanes.set(laneId, { element: laneEl });
+        }
+
+        function removeLane(laneId) {
+            if (lanes.size <= 1) return;
+            const el = document.getElementById(laneId);
+            if (el) el.remove();
+            lanes.delete(laneId);
+        }
+
+        function duplicateLane(laneId) {
+            const sourceEndpoint = document.getElementById(`${laneId}-endpoint`).value;
+            const sourceModel = document.getElementById(`${laneId}-model`).value;
+            const sourceChain = document.getElementById(`${laneId}-chain`).value;
+            const sourceSystem = document.getElementById(`${laneId}-system`).value;
+
+            addLane();
+            const newLaneId = `lane-${laneCounter}`;
+
+            document.getElementById(`${newLaneId}-endpoint`).value = sourceEndpoint;
+            document.getElementById(`${newLaneId}-model`).value = sourceModel;
+            document.getElementById(`${newLaneId}-chain`).value = sourceChain;
+            document.getElementById(`${newLaneId}-system`).value = sourceSystem;
+
+            updatePrompts(newLaneId);
+            for (let i = 1; i <= parseInt(sourceChain); i++) {
+                const sourcePrompt = document.getElementById(`${laneId}-prompt-${i}`);
+                const targetPrompt = document.getElementById(`${newLaneId}-prompt-${i}`);
+                if (sourcePrompt && targetPrompt) {
+                    targetPrompt.value = sourcePrompt.value;
+                }
+            }
+        }
+
+        function setEndpoint(laneId, preset) {
+            document.getElementById(`${laneId}-endpoint`).value = ENDPOINTS[preset];
+        }
+
+        function updatePrompts(laneId) {
+            const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
+            const promptsContainer = document.getElementById(`${laneId}-prompts`);
+
+            const existingPrompts = [];
+            for (let i = 1; i <= 10; i++) {
+                const el = document.getElementById(`${laneId}-prompt-${i}`);
+                if (el) existingPrompts[i] = el.value;
+            }
+
+            promptsContainer.innerHTML = '<h4>Prompts</h4>';
+
+            for (let i = 1; i <= chainCount; i++) {
+                const defaultPrompt = EXAMPLE_PROMPTS[i - 1] || `Continue the conversation (step ${i})...`;
+                const div = document.createElement('div');
+                div.className = 'prompt-item';
+                div.innerHTML = `
+                    <label>Step ${i}</label>
+                    <textarea id="${laneId}-prompt-${i}" placeholder="${defaultPrompt}">${existingPrompts[i] || defaultPrompt}</textarea>
+                `;
+                promptsContainer.appendChild(div);
+            }
+        }
+
+        function clearAllOutputs() {
+            lanes.forEach((_, laneId) => {
+                const outputSection = document.getElementById(`${laneId}-outputs`);
+                outputSection.innerHTML = '<h4>Responses</h4>';
+                document.getElementById(`${laneId}-stats`).style.display = 'none';
+            });
+        }
+
+        async function runAllLanes() {
+            const btn = document.getElementById('runBtn');
+            btn.disabled = true;
+            btn.textContent = 'RUNNING...';
+
+            const promises = [];
+            lanes.forEach((_, laneId) => {
+                promises.push(runLane(laneId));
+            });
+
+            await Promise.all(promises);
+
+            btn.disabled = false;
+            btn.textContent = 'RUN KURWA!';
+        }
+
+        async function runLane(laneId) {
+            const endpoint = document.getElementById(`${laneId}-endpoint`).value;
+            const model = document.getElementById(`${laneId}-model`).value;
+            const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
+            const systemPrompt = document.getElementById(`${laneId}-system`).value;
+            const apiKey = document.getElementById('globalApiKey').value;
+            const isStream = document.querySelector('input[name="streamMode"]:checked').value === 'true';
+
+            const outputSection = document.getElementById(`${laneId}-outputs`);
+            const statsSection = document.getElementById(`${laneId}-stats`);
+
+            outputSection.innerHTML = '<h4>Responses</h4>';
+            statsSection.style.display = 'grid';
+
+            let previousResponseId = null;
+            let totalTokens = 0;
+            let totalTime = 0;
+            let firstTTFT = null;
+
+            for (let step = 1; step <= chainCount; step++) {
+                const prompt = document.getElementById(`${laneId}-prompt-${step}`).value;
+                if (!prompt.trim()) continue;
+
+                const outputItem = document.createElement('div');
+                outputItem.className = 'output-item';
+                outputItem.innerHTML = `
+                    <div class="output-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+                        <span class="output-step">Step ${step}</span>
+                        <div class="output-status">
+                            <span class="stream-preview" id="${laneId}-preview-${step}"></span>
+                            <span class="status-dot running" id="${laneId}-dot-${step}"></span>
+                        </div>
+                    </div>
+                    <div class="output-item-body" id="${laneId}-output-${step}"></div>
+                `;
+                outputSection.appendChild(outputItem);
+
+                try {
+                    const result = await executeRequest({
+                        endpoint,
+                        model,
+                        prompt,
+                        systemPrompt,
+                        apiKey,
+                        isStream,
+                        previousResponseId,
+                        laneId,
+                        step
+                    });
+
+                    previousResponseId = result.responseId;
+                    totalTokens += result.tokens;
+                    totalTime += result.time;
+                    if (step === 1) firstTTFT = result.ttft;
+
+                    document.getElementById(`${laneId}-ttft`).textContent = `${firstTTFT}ms`;
+                    document.getElementById(`${laneId}-tps`).textContent =
+                        totalTime > 0 ? (totalTokens / (totalTime / 1000)).toFixed(1) : '-';
+                    document.getElementById(`${laneId}-total`).textContent = `${(totalTime / 1000).toFixed(2)}s`;
+
+                    document.getElementById(`${laneId}-dot-${step}`).className = 'status-dot success';
+
+                } catch (error) {
+                    document.getElementById(`${laneId}-output-${step}`).textContent = `Error: ${error.message}`;
+                    document.getElementById(`${laneId}-dot-${step}`).className = 'status-dot error';
+                    break;
+                }
+            }
+        }
+
+        async function executeRequest({ endpoint, model, prompt, systemPrompt, apiKey, isStream, previousResponseId, laneId, step }) {
+            const outputEl = document.getElementById(`${laneId}-output-${step}`);
+            const previewEl = document.getElementById(`${laneId}-preview-${step}`);
+
+            const isResponsesAPI = endpoint.includes('/v1/responses');
+
+            let body;
+            if (isResponsesAPI) {
+                const input = [];
+                if (systemPrompt) {
+                    input.push({ role: 'system', content: systemPrompt });
+                }
+                input.push({
+                    role: 'user',
+                    content: [{ type: 'input_text', text: prompt }]
+                });
+
+                body = { model, input, stream: isStream };
+                if (previousResponseId) {
+                    body.previous_response_id = previousResponseId;
+                }
+            } else {
+                const messages = [];
+                if (systemPrompt) {
+                    messages.push({ role: 'system', content: systemPrompt });
+                }
+                messages.push({ role: 'user', content: prompt });
+
+                body = { model, messages, stream: isStream };
+            }
+
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+            if (isStream) {
+                headers['Accept'] = 'text/event-stream';
+            }
+
+            const startTime = performance.now();
+            let ttft = null;
+            let tokens = 0;
+            let fullText = '';
+            let responseId = null;
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            if (isStream) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+
+                        const data = line.slice(6);
+                        if (data === '[DONE]') continue;
+
+                        try {
+                            const parsed = JSON.parse(data);
+
+                            if (parsed.id) responseId = parsed.id;
+
+                            let delta = '';
+                            if (parsed.type === 'response.output_text.delta') {
+                                delta = parsed.delta || '';
+                            } else if (parsed.delta?.text) {
+                                delta = parsed.delta.text;
+                            } else if (parsed.choices?.[0]?.delta?.content) {
+                                delta = parsed.choices[0].delta.content;
+                            }
+
+                            if (delta) {
+                                if (ttft === null) {
+                                    ttft = Math.round(performance.now() - startTime);
+                                }
+                                tokens++;
+                                fullText += delta;
+                                outputEl.textContent = fullText;
+                                previewEl.textContent = fullText.slice(-30);
+                            }
+                        } catch (e) {
+                            // Skip non-JSON
+                        }
+                    }
+                }
+            } else {
+                const data = await response.json();
+                responseId = data.id || null;
+                ttft = Math.round(performance.now() - startTime);
+
+                if (data.output) {
+                    for (const item of data.output) {
+                        if (item.type === 'message' && item.content) {
+                            for (const c of item.content) {
+                                if (c.type === 'output_text') {
+                                    fullText += c.text;
+                                }
+                            }
+                        }
+                    }
+                } else if (data.choices?.[0]?.message?.content) {
+                    fullText = data.choices[0].message.content;
+                }
+
+                tokens = fullText.split(/\s+/).length;
+                outputEl.textContent = fullText || JSON.stringify(data, null, 2);
+            }
+
+            const totalTime = performance.now() - startTime;
+            previewEl.textContent = responseId ? responseId.slice(0, 16) + '...' : '';
+
+            return {
+                responseId,
+                tokens,
+                time: totalTime,
+                ttft: ttft || Math.round(totalTime),
+                text: fullText
+            };
+        }
+    </script>
+</body>
+</html>
