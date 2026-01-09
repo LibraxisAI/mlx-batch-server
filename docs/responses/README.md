@@ -1,6 +1,6 @@
 # Responses API
 
-MLX Batch Server implements OpenAI's `/v1/responses` API endpoint with full
+MLX Omni Server implements OpenAI's `/v1/responses` API endpoint with full
 SSE streaming support. This directory contains documentation for the
 Responses API subsystem.
 
@@ -106,4 +106,4 @@ curl http://localhost:10240/v1/responses \
 Refer to `HowToUse.md` for more examples and `harmony.md` for GPT-OSS model support.
 
 ---
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Created by M&K (c)2026 VetCoders

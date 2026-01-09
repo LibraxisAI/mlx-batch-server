@@ -1,6 +1,6 @@
 # Harmony Format Support
 
-MLX Batch Server includes a streaming parser for OpenAI's GPT-OSS models that
+MLX Omni Server includes a streaming parser for OpenAI's GPT-OSS models that
 use the Harmony response format.
 
 ## What is Harmony?
@@ -100,4 +100,4 @@ curl http://localhost:10240/v1/chat/completions \
 ```
 
 ---
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Created by M&K (c)2026 VetCoders
