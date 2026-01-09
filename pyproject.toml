@@ -155,6 +155,10 @@ ignore = [
 "src/mlx_omni_server/tts/tts_service.py" = ["PTH123"]
 "src/mlx_omni_server/images/images_service.py" = ["PTH108", "PTH123"]
 "src/mlx_omni_server/images/schema.py" = ["ARG002"]
+# Entry point - lazy imports for fast --help, compat import must be first
+"src/mlx_omni_server/main.py" = ["PLC0415", "I001"]
+# Compat module - monkeypatch jieba to avoid pkg_resources deprecation
+"src/mlx_omni_server/utils/compat.py" = ["PLR0915", "PLR0402", "PTH120", "B904"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -164,7 +168,7 @@ docstring-code-format = true
 # === Bandit security configuration ===
 [tool.bandit]
 exclude_dirs = ["tests", "examples", ".venv"]
-skips = ["B101", "B104", "B311"]  # assert, 0.0.0.0 bind (server), random (not crypto)
+skips = ["B101", "B104", "B311", "B605", "B607"]  # assert, 0.0.0.0, random, os.system (jieba compat)
 
 # === Mypy configuration ===
 [tool.mypy]
