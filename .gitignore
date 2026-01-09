@@ -174,3 +174,7 @@ GEMINI.md
 .claude
 .ai-agents/
 .loctree/
+
+# Server runtime
+.mlx-omni-server.pid
+mlx-omni-server.log

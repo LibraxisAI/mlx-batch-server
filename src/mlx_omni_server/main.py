@@ -4,6 +4,10 @@ MLX Omni Server - Entry point.
 Provides OpenAI-compatible APIs using Apple's MLX framework.
 """
 
+# Patch deprecated pkg_resources usage in jieba (via f5-tts-mlx)
+# MUST be first import - before any module that transitively imports jieba
+from mlx_omni_server.utils import compat as _compat  # noqa: F401
+
 import argparse
 import os
 
