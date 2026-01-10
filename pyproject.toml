@@ -1,6 +1,6 @@
 [project]
 name = "mlx-omni-server"
-version = "0.5.2"
+version = "0.5.3-dev"
 description = "MLX Omni Server is a server that provides OpenAI-compatible APIs using Apple's MLX framework."
 authors = [{ name = "madroid", email = "madroidmaq@gmail.com" }]
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ dependencies = [
     # core
     "fastapi>=0.116.1,<0.117",
     "pydantic>=2.9.2,<3",
+    "pydantic-settings>=2.0",
     "uvicorn>=0.34.0,<0.35",
     "rich>=13.9.4",
     # chat
@@ -44,6 +45,7 @@ dependencies = [
     "mflux>=0.13.0,<0.14",
     # embeddings
     "mlx-embeddings>=0.0.3",
+    "openai-harmony>=0.0.8",
 ]
 
 [project.urls]
@@ -56,12 +58,17 @@ mlx-omni-server = "mlx_omni_server.main:start"
 dev = [
     "pytest>=8.3.3,<9",
     "httpx>=0.27.2,<0.28",
+    "gradio>=5.0.0",  # playground API tester
     "pre-commit>=4.0.1,<5",
     "black>=24.10.0,<25",
     "isort>=5.13.2,<6",
     "weave>=0.51.46,<0.60",
     "openai>=1.97.0",
     "anthropic>=0.57.1",
+    # linting & formatting (LibraxisAI)
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "bandit[toml]>=1.7.0",
     # for en_core_web_sm models
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
@@ -87,3 +94,127 @@ log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+# === Ruff configuration (LibraxisAI) ===
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate (commented code)
+    "PL",     # pylint
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument (FastAPI Depends)
+    "PLR0913", # too many arguments
+    "PLR2004", # magic value comparison
+    "ARG001", # unused function argument (common in FastAPI)
+    "PLW0603", # global statement (singleton pattern)
+    "TC003",  # type-checking block (runtime needed)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH110", "PTH123"]
+"examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
+"examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
+# Lazy imports are intentional in these modules for performance
+"src/mlx_omni_server/chat/mlx/chat_generator.py" = ["PLC0415"]
+"src/mlx_omni_server/chat/mlx/tools/llama3.py" = ["PLC0415"]
+"src/mlx_omni_server/chat/mlx/tools/chat_template.py" = ["E402", "PLC0415", "PLR0912", "RUF003"]
+"src/mlx_omni_server/chat/openai/openai_adapter.py" = ["PLC0415", "PLR0912"]
+# Complex parsing/conversion functions - refactoring would reduce readability
+"src/mlx_omni_server/chat/mlx/tools/glm45_tools_parser.py" = ["PLR0911"]
+"src/mlx_omni_server/chat/mlx/tools/qwen3_moe_tools_parser.py" = ["PLR0911"]
+"src/mlx_omni_server/chat/anthropic/anthropic_messages_adapter.py" = ["PLR0912"]
+"src/mlx_omni_server/responses/normalizer.py" = ["PLR0911", "PLR0912"]
+"src/mlx_omni_server/responses/context_builder.py" = ["PLR0912"]  # Chain walking logic
+"src/mlx_omni_server/embeddings/embeddings_service.py" = ["PLR0911", "UP038"]
+# Union type annotations preserved for Pydantic compatibility in schemas
+"src/mlx_omni_server/chat/anthropic/anthropic_schema.py" = ["UP007"]
+"src/mlx_omni_server/chat/openai/schema.py" = ["UP007"]
+# Legacy pathlib usage in upstream modules - preserved for compatibility
+"src/mlx_omni_server/chat/openai/models/models_service.py" = ["PTH123"]
+"src/mlx_omni_server/stt/whisper_model.py" = ["PTH106", "PTH108", "PTH110", "PTH118", "PTH123", "SIM108"]
+"src/mlx_omni_server/tts/tts_service.py" = ["PTH123"]
+"src/mlx_omni_server/images/images_service.py" = ["PTH108", "PTH123"]
+"src/mlx_omni_server/images/schema.py" = ["ARG002"]
+# Entry point - lazy imports for fast --help, compat import must be first
+"src/mlx_omni_server/main.py" = ["PLC0415", "I001"]
+# Compat module - monkeypatch jieba to avoid pkg_resources deprecation
+"src/mlx_omni_server/utils/compat.py" = ["PLR0915", "PLR0402", "PTH120", "B904"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# === Bandit security configuration ===
+[tool.bandit]
+exclude_dirs = ["tests", "examples", ".venv"]
+skips = ["B101", "B104", "B311", "B605", "B607"]  # assert, 0.0.0.0, random, os.system (jieba compat)
+
+# === Mypy configuration ===
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false  # Too strict for dynamic FastAPI/Pydantic code
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["tests/", "examples/", "build/"]
+# Relax checks for Pydantic models with defaults
+disable_error_code = ["call-arg", "assignment", "operator", "misc", "return"]
+
+[[tool.mypy.overrides]]
+module = "mlx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "mflux.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.responses.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.routing.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.chat.anthropic.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.chat.mlx.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.chat.openai.models.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.utils.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_omni_server.tts.*"
+ignore_errors = true
+
+# Created by M&K (c)2026 The LibraxisAI Team

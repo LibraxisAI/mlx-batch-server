@@ -1,107 +1,145 @@
+"""
+MLX Omni Server - Entry point.
+
+Provides OpenAI-compatible APIs using Apple's MLX framework.
+"""
+
+# Patch deprecated pkg_resources usage in jieba (via f5-tts-mlx)
+# MUST be first import - before any module that transitively imports jieba
+from mlx_omni_server.utils import compat as _compat  # noqa: F401
+
 import argparse
 import os
 
-import uvicorn
-from fastapi import FastAPI
 
-from .middleware.logging import RequestResponseLoggingMiddleware
-from .routers import api_router
-from .utils.logger import logger, set_logger_level
-
-app = FastAPI(title="MLX Omni Server")
-
-# Add request/response logging middleware with custom levels
-app.add_middleware(
-    RequestResponseLoggingMiddleware,
-    # exclude_paths=["/health"]
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-
-app.include_router(api_router)
-
-
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser for the server."""
-    parser = argparse.ArgumentParser(description="MLX Omni Server")
+    parser = argparse.ArgumentParser(
+        description="MLX Omni Server - OpenAI-compatible APIs on Apple Silicon"
+    )
     parser.add_argument(
         "--host",
         type=str,
         default="0.0.0.0",
-        help="Host to bind the server to, defaults to 0.0.0.0",
+        help="Host to bind the server to (default: 0.0.0.0)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=10240,
-        help="Port to bind the server to, defaults to 10240",
+        help="Port to bind the server to (default: 10240)",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=1,
-        help="Number of workers to use, defaults to 1",
+        help="Number of workers to use (default: 1)",
     )
     parser.add_argument(
         "--log-level",
         type=str,
         default="info",
         choices=["debug", "info", "warning", "error", "critical"],
-        help="Set the logging level, defaults to info",
+        help="Set the logging level (default: info)",
     )
-
     parser.add_argument(
         "--cors-allow-origins",
         type=str,
         default="",
-        help='Apply origins to CORSMiddleware. This is useful for accessing the local server directly from the browser (use --cors-allow-origins="*"). Defaults to disabled',
+        help='CORS origins, comma-separated (e.g., "*" or "http://localhost:3000")',
     )
     return parser
 
 
-def configure_cors_middleware(cors_allow_origins: str | None):
-    """Configure CORS middleware with the provided origins, if any."""
-    # Remove existing CORS middleware
-    app.user_middleware = [m for m in app.user_middleware if m.cls != CORSMiddleware]
-    app.middleware_stack = None  # Reset middleware stack to force rebuild
+def create_app():
+    """Create and configure the FastAPI application.
 
-    if cors_allow_origins is None:
-        origins = []
-    else:
-        # Add CORS middleware with provided origins or empty list
-        origins = (
-            [origin.strip() for origin in cors_allow_origins.split(",")]
-            if cors_allow_origins
-            else []
+    This is called lazily to avoid slow imports when just showing --help.
+    """
+    from contextlib import asynccontextmanager
+
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from .middleware.logging import RequestResponseLoggingMiddleware
+    from .routers import api_router
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Application lifespan manager for startup/shutdown hooks."""
+        # Startup
+        yield
+        # Shutdown - cleanup batch coordinators
+        try:
+            from .batch import shutdown_all_coordinators
+
+            await shutdown_all_coordinators()
+        except ImportError:
+            pass  # Batch module may not be available
+
+    application = FastAPI(title="MLX Omni Server", lifespan=lifespan)
+
+    # Add request/response logging middleware
+    application.add_middleware(RequestResponseLoggingMiddleware)
+
+    # Include all API routes
+    application.include_router(api_router)
+
+    # Configure CORS from environment
+    cors_origins = os.environ.get("MLX_OMNI_CORS", "")
+    if cors_origins:
+        origins = [origin.strip() for origin in cors_origins.split(",")]
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    return application
 
 
-configure_cors_middleware(os.environ.get("MLX_OMNI_CORS", None))
+# Lazy app instance for uvicorn
+# This is only created when uvicorn imports the module, not during CLI --help
+_app_instance = None
+
+
+def _get_app():
+    """Get or create the FastAPI app instance (for uvicorn)."""
+    global _app_instance
+    if _app_instance is None:
+        _app_instance = create_app()
+    return _app_instance
+
+
+# Module-level __getattr__ for lazy loading
+# When uvicorn accesses main.app, this creates the app lazily
+def __getattr__(name):
+    if name == "app":
+        return _get_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def start():
     """Start the MLX Omni Server."""
-
+    # Parse args FIRST - before any heavy imports
+    # This makes --help instant
     parser = build_parser()
     args = parser.parse_args()
 
-    # Set log level through environment variable
+    # Set environment variables for app configuration
     os.environ["MLX_OMNI_LOG_LEVEL"] = args.log_level
-    # Set CORS through environment variable
     os.environ["MLX_OMNI_CORS"] = args.cors_allow_origins
 
-    set_logger_level(logger, args.log_level)
-    configure_cors_middleware(args.cors_allow_origins)
+    # NOW import uvicorn and start (lazy import)
+    import uvicorn
 
-    # Start server with uvicorn
+    from .utils.logger import logger, set_logger_level
+
+    set_logger_level(logger, args.log_level)
+
+    # Start server - uvicorn will import the app via __getattr__
     uvicorn.run(
         "mlx_omni_server.main:app",
         host=args.host,

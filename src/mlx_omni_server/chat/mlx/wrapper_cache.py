@@ -9,7 +9,6 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 from ...utils.logger import logger
 from .chat_generator import ChatGenerator
@@ -24,8 +23,8 @@ class WrapperCacheKey:
     """
 
     model_id: str
-    adapter_path: Optional[str] = None
-    draft_model_id: Optional[str] = None
+    adapter_path: str | None = None
+    draft_model_id: str | None = None
 
 
 class MLXWrapperCache:
@@ -51,7 +50,7 @@ class MLXWrapperCache:
             cleanup_interval: Interval in seconds for background cleanup (default: 5 seconds)
         """
         self._cache: OrderedDict[WrapperCacheKey, ChatGenerator] = OrderedDict()
-        self._access_times: Dict[WrapperCacheKey, float] = {}
+        self._access_times: dict[WrapperCacheKey, float] = {}
         self._lock = threading.Lock()
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
@@ -139,8 +138,8 @@ class MLXWrapperCache:
     def get_wrapper(
         self,
         model_id: str,
-        adapter_path: Optional[str] = None,
-        draft_model_id: Optional[str] = None,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> ChatGenerator:
         """Get or create ChatGenerator instance.
 
@@ -247,7 +246,52 @@ class MLXWrapperCache:
             self._access_times.clear()
             logger.info(f"Cleared ChatGenerator cache ({cache_size} entries)")
 
-    def get_cache_info(self) -> Dict[str, any]:
+    def unload_model(self, model_id: str) -> bool:
+        """Unload a specific model from the cache.
+
+        Args:
+            model_id: The model ID to unload
+
+        Returns:
+            True if model was found and unloaded, False if not in cache
+        """
+        with self._lock:
+            # Find all keys matching this model_id
+            keys_to_remove = [key for key in self._cache if key.model_id == model_id]
+
+            if not keys_to_remove:
+                logger.info(f"Model {model_id} not found in cache")
+                return False
+
+            for key in keys_to_remove:
+                self._cache.pop(key, None)
+                self._access_times.pop(key, None)
+                logger.info(f"Unloaded model from cache: {key}")
+
+            return True
+
+    def is_model_loaded(self, model_id: str) -> bool:
+        """Check if a model is currently loaded in cache.
+
+        Args:
+            model_id: The model ID to check
+
+        Returns:
+            True if model is in cache, False otherwise
+        """
+        with self._lock:
+            return any(key.model_id == model_id for key in self._cache)
+
+    def get_loaded_models(self) -> list[str]:
+        """Get list of currently loaded model IDs.
+
+        Returns:
+            List of model IDs currently in cache
+        """
+        with self._lock:
+            return list({key.model_id for key in self._cache})
+
+    def get_cache_info(self) -> dict[str, any]:
         """Get cache statistics.
 
         Returns:
@@ -279,7 +323,7 @@ class MLXWrapperCache:
                 "cache_size": len(self._cache),
                 "max_size": self._max_size,
                 "ttl_seconds": self._ttl_seconds,
-                "cached_keys": [str(key) for key in self._cache.keys()],
+                "cached_keys": [str(key) for key in self._cache],
                 "lru_order": [str(key) for key, _ in sorted_keys],  # Most recent first
                 "ttl_info": ttl_info,
             }

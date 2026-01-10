@@ -1,7 +1,15 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from .models_service import ModelsService
-from .schema import Model, ModelDeletion, ModelList
+from .schema import (
+    Model,
+    ModelDeletion,
+    ModelList,
+    ModelLoadRequest,
+    ModelLoadResponse,
+    ModelUnloadRequest,
+    ModelUnloadResponse,
+)
 
 router = APIRouter(tags=["models"])
 
@@ -28,7 +36,7 @@ def handle_model_error(e: Exception) -> None:
     """Handle model-related errors and raise appropriate HTTP exceptions"""
     if isinstance(e, ValueError):
         raise HTTPException(status_code=404, detail=str(e))
-    print(f"Error processing request: {str(e)}")
+    print(f"Error processing request: {e!s}")
     raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -60,3 +68,46 @@ async def delete_model(request: Request) -> ModelDeletion:
         return get_models_service().delete_model(model_id)
     except Exception as e:
         handle_model_error(e)
+
+
+@router.post("/models/load", response_model=ModelLoadResponse)
+@router.post("/v1/models/load", response_model=ModelLoadResponse)
+async def load_model(request: ModelLoadRequest) -> ModelLoadResponse:
+    """
+    Load a model into memory for inference.
+
+    This endpoint loads an MLX model into the cache, making it ready for
+    inference requests. If the model is already loaded, returns success
+    with 'already_loaded' status (idempotent).
+
+    The model will be automatically unloaded after the TTL expires (default: 5 min)
+    or when cache capacity is reached (LRU eviction).
+    """
+    try:
+        result = get_models_service().load_model(
+            model_id=request.model,
+            adapter_path=request.adapter_path,
+            draft_model_id=request.draft_model_id,
+        )
+        return ModelLoadResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/models/unload", response_model=ModelUnloadResponse)
+@router.post("/v1/models/unload", response_model=ModelUnloadResponse)
+async def unload_model(
+    request: ModelUnloadRequest | None = None,
+) -> ModelUnloadResponse:
+    """
+    Unload a model from memory to free VRAM.
+
+    If model ID is provided, unloads that specific model.
+    If no model ID is provided, unloads all models from cache.
+    """
+    try:
+        model_id = request.model if request else None
+        result = get_models_service().unload_model(model_id=model_id)
+        return ModelUnloadResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e

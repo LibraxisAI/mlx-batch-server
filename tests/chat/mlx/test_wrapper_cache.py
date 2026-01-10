@@ -80,9 +80,9 @@ class TestMLXWrapperCache:
 
         # Fill cache to capacity and test LRU order
         time.sleep(0.01)
-        wrapper2 = self.cache.get_wrapper("model2")
+        self.cache.get_wrapper("model2")
         time.sleep(0.01)
-        wrapper3 = self.cache.get_wrapper("model3")
+        self.cache.get_wrapper("model3")
 
         info = self.cache.get_cache_info()
         assert info["cache_size"] == 3
@@ -91,7 +91,7 @@ class TestMLXWrapperCache:
         assert "model3" in info["lru_order"][0]
 
         # Test LRU eviction - add fourth item should evict oldest (model1)
-        wrapper4 = self.cache.get_wrapper("model4")
+        self.cache.get_wrapper("model4")
         final_info = self.cache.get_cache_info()
         assert final_info["cache_size"] == 3
 
@@ -174,7 +174,7 @@ class TestMLXWrapperCacheThreadSafety:
             same_key_wrappers = [
                 wrapper for key_type, wrapper in self.results if key_type == "same"
             ]
-            assert len(set(id(wrapper) for wrapper in same_key_wrappers)) == 1
+            assert len({id(wrapper) for wrapper in same_key_wrappers}) == 1
             first_creation_count = self.creation_count
             assert first_creation_count == 1
 
@@ -196,7 +196,7 @@ class TestMLXWrapperCacheThreadSafety:
             different_key_wrappers = [
                 wrapper for key_type, wrapper in self.results if key_type == "different"
             ]
-            assert len(set(id(wrapper) for wrapper in different_key_wrappers)) == 3
+            assert len({id(wrapper) for wrapper in different_key_wrappers}) == 3
             assert self.creation_count == first_creation_count + 3
 
 
@@ -321,3 +321,100 @@ class TestMLXWrapperCacheEdgeCases:
         info = large_cache.get_cache_info()
         assert info["max_size"] == 1000
         assert info["cache_size"] == 0
+
+
+class TestMLXWrapperCacheModelManagement:
+    """Test model management methods: unload_model, is_model_loaded, get_loaded_models."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.cache = MLXWrapperCache(max_size=5)
+
+    @patch("mlx_omni_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_unload_model_success(self, mock_create):
+        """Test unloading a specific model from cache."""
+        mock_create.side_effect = [
+            MockChatGenerator("model1"),
+            MockChatGenerator("model2"),
+        ]
+
+        # Load two models
+        self.cache.get_wrapper("model1")
+        self.cache.get_wrapper("model2")
+        assert self.cache.get_cache_info()["cache_size"] == 2
+
+        # Unload model1
+        result = self.cache.unload_model("model1")
+        assert result is True
+        assert self.cache.get_cache_info()["cache_size"] == 1
+        assert not self.cache.is_model_loaded("model1")
+        assert self.cache.is_model_loaded("model2")
+
+    @patch("mlx_omni_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_unload_model_not_found(self, mock_create):
+        """Test unloading a model that isn't in cache."""
+        mock_create.return_value = MockChatGenerator("model1")
+
+        self.cache.get_wrapper("model1")
+
+        # Try to unload non-existent model
+        result = self.cache.unload_model("nonexistent")
+        assert result is False
+        assert self.cache.get_cache_info()["cache_size"] == 1
+
+    @patch("mlx_omni_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_unload_model_with_adapter(self, mock_create):
+        """Test unloading model also removes adapter variants."""
+        mock_create.side_effect = [
+            MockChatGenerator("model1"),
+            MockChatGenerator("model1_adapter"),
+        ]
+
+        # Load same model with and without adapter
+        self.cache.get_wrapper("model1")
+        self.cache.get_wrapper("model1", adapter_path="/adapter")
+        assert self.cache.get_cache_info()["cache_size"] == 2
+
+        # Unload model1 - should remove both entries
+        result = self.cache.unload_model("model1")
+        assert result is True
+        assert self.cache.get_cache_info()["cache_size"] == 0
+
+    @patch("mlx_omni_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_is_model_loaded(self, mock_create):
+        """Test checking if a model is loaded."""
+        mock_create.return_value = MockChatGenerator("model1")
+
+        assert self.cache.is_model_loaded("model1") is False
+
+        self.cache.get_wrapper("model1")
+        assert self.cache.is_model_loaded("model1") is True
+
+        self.cache.clear_cache()
+        assert self.cache.is_model_loaded("model1") is False
+
+    @patch("mlx_omni_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_get_loaded_models(self, mock_create):
+        """Test getting list of loaded model IDs."""
+        mock_create.side_effect = [
+            MockChatGenerator("model1"),
+            MockChatGenerator("model2"),
+            MockChatGenerator("model1_adapter"),
+        ]
+
+        assert self.cache.get_loaded_models() == []
+
+        self.cache.get_wrapper("model1")
+        self.cache.get_wrapper("model2")
+        self.cache.get_wrapper("model1", adapter_path="/adapter")
+
+        loaded = self.cache.get_loaded_models()
+        # Should return unique model IDs (model1 appears twice with different adapters)
+        assert set(loaded) == {"model1", "model2"}
+
+    @patch("mlx_omni_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_unload_empty_cache(self, mock_create):
+        """Test unloading from empty cache."""
+        result = self.cache.unload_model("any_model")
+        assert result is False
+        assert self.cache.get_cache_info()["cache_size"] == 0

@@ -1,9 +1,8 @@
 """MLX Model types and management."""
 
 from pathlib import Path
-from typing import Optional, Union
 
-import mlx.nn as nn
+from mlx import nn
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.utils import load, load_config
 
@@ -28,16 +27,59 @@ except ImportError:
         elif isinstance(result, Path):
             return result
         else:
-            raise TypeError(f"Unexpected return type from get_model_path: {type(result)}")
+            raise TypeError(
+                f"Unexpected return type from get_model_path: {type(result)}"
+            )
+
 
 from ...utils.logger import logger
 from .tools.chat_template import ChatTemplate
 
 
+def _fix_tokenizer_eos(tokenizer: TokenizerWrapper) -> None:
+    """Fix tokenizer eos_token_ids to include the actual eos_token.
+
+    Some models have mismatched config.json eos_token_id and tokenizer eos_token.
+    For example, Nemotron has config.json with eos_token_id=2, but the actual
+    eos_token '<|im_end|>' has ID 11. This causes mlx_lm to not stop generation
+    on the correct token.
+
+    This function ensures eos_token_ids contains the ID of the actual eos_token.
+    """
+    if not hasattr(tokenizer, "_tokenizer") or not hasattr(tokenizer, "_eos_token_ids"):
+        return
+
+    underlying = tokenizer._tokenizer
+    eos_token = getattr(underlying, "eos_token", None)
+
+    if not eos_token:
+        return
+
+    # Get the actual token ID from vocabulary
+    vocab = underlying.get_vocab()
+    actual_eos_id = vocab.get(eos_token)
+
+    if actual_eos_id is not None and actual_eos_id not in tokenizer._eos_token_ids:
+        tokenizer._eos_token_ids.add(actual_eos_id)
+        logger.info(
+            f"Fixed eos_token_ids: added {eos_token!r} (ID {actual_eos_id}) "
+            f"-> eos_token_ids now: {tokenizer._eos_token_ids}"
+        )
+
+
+def _is_local_path(model_id: str) -> bool:
+    """Check if model_id is a local filesystem path."""
+    return (
+        model_id.startswith("/")
+        or model_id.startswith("~")
+        or model_id.startswith("./")
+    )
+
+
 def load_mlx_model(
     model_id: str,
-    adapter_path: Optional[str] = None,
-    draft_model_id: Optional[str] = None,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
 ) -> "MLXModel":
     """Factory function to load MLX models.
 
@@ -58,6 +100,10 @@ def load_mlx_model(
 
     model_id = model_id.strip()
 
+    # Expand home directory if needed
+    if model_id.startswith("~"):
+        model_id = str(Path(model_id).expanduser())
+
     try:
         # Load the main model
         model, tokenizer = load(
@@ -65,10 +111,15 @@ def load_mlx_model(
             tokenizer_config={"trust_remote_code": True},
             adapter_path=adapter_path,
         )
+        # Fix potential eos_token_ids mismatch (e.g., config.json vs tokenizer)
+        _fix_tokenizer_eos(tokenizer)
         logger.info(f"Loaded model: {model_id}")
 
-        # Load configuration and create chat tokenizer
-        model_path = get_model_path(model_id)
+        # Load configuration - use path directly for local models
+        if _is_local_path(model_id):
+            model_path = Path(model_id)
+        else:
+            model_path = get_model_path(model_id)
         config = load_config(model_path)
         chat_template = ChatTemplate(config["model_type"], tokenizer)
 
@@ -81,6 +132,8 @@ def load_mlx_model(
                     draft_model_id,
                     tokenizer_config={"trust_remote_code": True},
                 )
+                # Fix potential eos_token_ids mismatch for draft model
+                _fix_tokenizer_eos(draft_tokenizer)
 
                 # Check if vocabulary sizes match
                 if draft_tokenizer.vocab_size != tokenizer.vocab_size:
@@ -121,13 +174,13 @@ class MLXModel:
     def __init__(
         self,
         model_id: str,
-        adapter_path: Optional[str],
-        draft_model_id: Optional[str],
+        adapter_path: str | None,
+        draft_model_id: str | None,
         model: nn.Module,
         tokenizer: TokenizerWrapper,
         chat_template: ChatTemplate,
-        draft_model: Optional[nn.Module] = None,
-        draft_tokenizer: Optional[TokenizerWrapper] = None,
+        draft_model: nn.Module | None = None,
+        draft_tokenizer: TokenizerWrapper | None = None,
     ):
         """Initialize MLX model container.
 
@@ -159,8 +212,8 @@ class MLXModel:
     def load(
         cls,
         model_id: str,
-        adapter_path: Optional[str] = None,
-        draft_model_id: Optional[str] = None,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> "MLXModel":
         return load_mlx_model(model_id, adapter_path, draft_model_id)
 

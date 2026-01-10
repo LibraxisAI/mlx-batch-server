@@ -1,7 +1,5 @@
 import importlib
 import json
-import logging
-from typing import Dict, List, Optional, Tuple, Type
 
 from huggingface_hub import CachedRepoInfo, scan_cache_dir
 
@@ -32,7 +30,7 @@ class ModelCacheScanner:
         """Force refresh the cache info"""
         self._cache_info = scan_cache_dir()
 
-    def _get_model_classes(self, config: dict) -> Optional[Tuple[Type, Type]]:
+    def _get_model_classes(self, config: dict) -> tuple[type, type] | None:
         """
         Try to retrieve the model and model args classes based on the configuration.
         https://github.com/ml-explore/mlx-examples/blob/1e0766018494c46bc6078769278b8e2a360503dc/llms/mlx_lm/utils.py#L81
@@ -57,13 +55,13 @@ class ModelCacheScanner:
             logger.debug(f"Model type {model_type} not supported by mlx-lm")
             return None
         except Exception as e:
-            logger.warning(f"Error checking model compatibility: {str(e)}")
+            logger.warning(f"Error checking model compatibility: {e!s}")
             return None
 
-    def is_model_supported(self, config_data: Dict) -> bool:
+    def is_model_supported(self, config_data: dict) -> bool:
         return self._get_model_classes(config_data) is not None
 
-    def find_models_in_cache(self) -> List[Tuple[CachedRepoInfo, Dict]]:
+    def find_models_in_cache(self) -> list[tuple[CachedRepoInfo, dict]]:
         """
         Scan local cache for available models that are compatible with mlx-lm.
 
@@ -87,18 +85,18 @@ class ModelCacheScanner:
                 continue
 
             try:
-                with open(config_file.file_path, "r") as f:
+                with open(config_file.file_path) as f:
                     config_data = json.load(f)
                 if self.is_model_supported(config_data):
                     supported_models.append((repo_info, config_data))
             except Exception as e:
                 logger.error(
-                    f"Error reading config.json for {repo_info.repo_id}: {str(e)}"
+                    f"Error reading config.json for {repo_info.repo_id}: {e!s}"
                 )
 
         return supported_models
 
-    def get_model_info(self, model_id: str) -> Optional[Tuple[CachedRepoInfo, Dict]]:
+    def get_model_info(self, model_id: str) -> tuple[CachedRepoInfo, dict] | None:
         for repo_info in self.cache_info.repos:
             if repo_info.repo_id == model_id and repo_info.repo_type == "model":
                 first_revision = next(iter(repo_info.revisions), None)
@@ -113,7 +111,7 @@ class ModelCacheScanner:
                     continue
 
                 try:
-                    with open(config_file.file_path, "r") as f:
+                    with open(config_file.file_path) as f:
                         config_data = json.load(f)
                     if self.is_model_supported(config_data):
                         return (repo_info, config_data)
@@ -123,7 +121,7 @@ class ModelCacheScanner:
                         )
                 except Exception as e:
                     logger.error(
-                        f"Error reading config.json for {repo_info.repo_id}: {str(e)}"
+                        f"Error reading config.json for {repo_info.repo_id}: {e!s}"
                     )
 
         return None
@@ -145,7 +143,7 @@ class ModelCacheScanner:
                     self._refresh_cache_info()
                     return True
                 except Exception as e:
-                    logger.error(f"Error deleting model '{model_id}': {str(e)}")
+                    logger.error(f"Error deleting model '{model_id}': {e!s}")
                     raise
 
         return False
@@ -156,12 +154,12 @@ class ModelsService:
         self.scanner = ModelCacheScanner()
         self.available_models = self._scan_models()
 
-    def _scan_models(self) -> List[Tuple[CachedRepoInfo, Dict]]:
+    def _scan_models(self) -> list[tuple[CachedRepoInfo, dict]]:
         """Scan local cache for available CausalLM models"""
         try:
             return self.scanner.find_models_in_cache()
         except Exception as e:
-            print(f"Error scanning cache: {str(e)}")
+            print(f"Error scanning cache: {e!s}")
             return []
 
     @staticmethod
@@ -184,9 +182,7 @@ class ModelsService:
             models.append(model_instance)
         return ModelList(data=models)
 
-    def get_model(
-        self, model_id: str, include_details: bool = False
-    ) -> Optional[Model]:
+    def get_model(self, model_id: str, include_details: bool = False) -> Model | None:
         """Get information about a specific model"""
         model_info = self.scanner.get_model_info(model_id)
         if model_info:
@@ -208,3 +204,80 @@ class ModelsService:
 
         self.available_models = self._scan_models()
         return ModelDeletion(id=model_id, deleted=True)
+
+    def load_model(
+        self,
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> dict:
+        """Load a model into memory (MLX cache).
+
+        Args:
+            model_id: Model ID to load (HuggingFace ID or local path)
+            adapter_path: Optional path to LoRA adapter
+            draft_model_id: Optional draft model for speculative decoding
+
+        Returns:
+            Dict with load status and cache info
+        """
+        # Lazy import to avoid circular dependencies and startup overhead
+        from ...mlx.wrapper_cache import wrapper_cache
+
+        # Check if already loaded
+        already_loaded = wrapper_cache.is_model_loaded(model_id)
+
+        # Load model (get_wrapper handles caching)
+        wrapper_cache.get_wrapper(
+            model_id=model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+
+        return {
+            "id": model_id,
+            "status": "already_loaded" if already_loaded else "loaded",
+            "message": (
+                f"Model {model_id} was already loaded"
+                if already_loaded
+                else f"Model {model_id} loaded successfully"
+            ),
+            "cache_info": wrapper_cache.get_cache_info(),
+        }
+
+    def unload_model(self, model_id: str | None = None) -> dict:
+        """Unload a model from memory.
+
+        Args:
+            model_id: Model ID to unload. If None, unloads all models.
+
+        Returns:
+            Dict with unload status and cache info
+        """
+        # Lazy import to avoid circular dependencies and startup overhead
+        from ...mlx.wrapper_cache import wrapper_cache
+
+        unloaded_models = []
+
+        if model_id:
+            # Unload specific model
+            if wrapper_cache.unload_model(model_id):
+                unloaded_models.append(model_id)
+                status = "unloaded"
+                message = f"Model {model_id} unloaded successfully"
+            else:
+                status = "not_found"
+                message = f"Model {model_id} was not loaded"
+        else:
+            # Unload all models
+            unloaded_models = wrapper_cache.get_loaded_models()
+            wrapper_cache.clear_cache()
+            status = "cleared"
+            message = f"Cleared {len(unloaded_models)} model(s) from cache"
+
+        return {
+            "status": status,
+            "message": message,
+            "unloaded_models": unloaded_models,
+            "cache_info": wrapper_cache.get_cache_info(),
+        }
