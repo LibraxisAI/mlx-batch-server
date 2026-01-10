@@ -1,0 +1,4 @@
+[submodule "mlx-batch-server"]
+	path = mlx-batch-server
+	url = https://github.com/VetCoders/mlx-batch-server.git
+	branch = develop
