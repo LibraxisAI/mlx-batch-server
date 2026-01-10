@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -24,7 +24,7 @@ class RequestResponseLoggingMiddleware(BaseHTTPMiddleware):
         self,
         app,
         *,
-        exclude_paths: Optional[list[str]] = None,
+        exclude_paths: list[str] | None = None,
     ):
         """Initialize the middleware with custom log levels.
 

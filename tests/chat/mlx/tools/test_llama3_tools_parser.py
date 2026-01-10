@@ -1,6 +1,6 @@
 import unittest
 
-from mlx_omni_server.chat.mlx.tools.llama3 import Llama3ToolParser
+from mlx_batch_server.chat.mlx.tools.llama3 import Llama3ToolParser
 
 
 class TestLlama3ToolParser(unittest.TestCase):

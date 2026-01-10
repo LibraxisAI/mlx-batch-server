@@ -327,7 +327,7 @@ For development without running a server:
 ```python
 from openai import OpenAI
 from fastapi.testclient import TestClient
-from mlx_omni_server.main import app
+from mlx_batch_server.main import app
 
 # Use TestClient directly
 client = OpenAI(http_client=TestClient(app))

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -20,14 +20,14 @@ class TTSRequest(BaseModel):
         default="af_sky",
         description="Voice used, choose correct voice for selected model.",
     )
-    response_format: Optional[AudioFormat] = Field(default=AudioFormat.WAV)
-    speed: Optional[float] = Field(default=1.0)
+    response_format: AudioFormat | None = Field(default=AudioFormat.WAV)
+    speed: float | None = Field(default=1.0)
 
     # Allow any additional fields
     class Config:
         extra = "allow"  # This allows additional fields not defined in the model
 
-    def get_extra_params(self) -> Dict[str, Any]:
+    def get_extra_params(self) -> dict[str, Any]:
         """Get all extra parameters that aren't part of the standard OpenAI API."""
         standard_fields = {"model", "input", "voice", "response_format", "speed"}
         return {k: v for k, v in self.model_dump().items() if k not in standard_fields}

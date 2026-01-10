@@ -1,5 +1,5 @@
 from mlx_lm import load
-from mlx_omni_server.chat.mlx.tools.chat_template import ChatTemplate
+from mlx_batch_server.chat.mlx.tools.chat_template import ChatTemplate
 
 
 class TestChatTemplate:
@@ -212,12 +212,14 @@ class TestChatTemplate:
         messages = [{"role": "user", "content": "test"}]
 
         # This should not raise an error even with extra kwargs
-        prompt = chat_template.apply_chat_template(messages=messages, custom_param="test_value")
+        prompt = chat_template.apply_chat_template(
+            messages=messages, custom_param="test_value"
+        )
         assert isinstance(prompt, str)
 
     def test_tool_calls_json_conversion(self):
         """Test that tool_calls JSON arguments are converted to dicts for Jinja template."""
-        from mlx_omni_server.chat.mlx.tools.chat_template import ChatTemplate
+        from mlx_batch_server.chat.mlx.tools.chat_template import ChatTemplate
 
         # Test messages with OpenAI format tool_calls (JSON string arguments)
         messages = [
@@ -265,9 +267,9 @@ class TestChatTemplate:
         """Test that _convert_tool_calls function converts internal format to OpenAI format"""
         import json
 
-        from mlx_omni_server.chat.mlx.core_types import ToolCall as CoreToolCall
-        from mlx_omni_server.chat.openai.openai_adapter import _convert_tool_calls
-        from mlx_omni_server.chat.openai.schema import ToolCall as SchemaToolCall
+        from mlx_batch_server.chat.mlx.core_types import ToolCall as CoreToolCall
+        from mlx_batch_server.chat.openai.openai_adapter import _convert_tool_calls
+        from mlx_batch_server.chat.openai.schema import ToolCall as SchemaToolCall
 
         # Test with internal CoreToolCall format (dict arguments)
         core_tool_calls = [
@@ -300,7 +302,7 @@ class TestChatTemplate:
 
     def test_openai_adapter_none_input(self):
         """Test that _convert_tool_calls handles None input correctly"""
-        from mlx_omni_server.chat.openai.openai_adapter import _convert_tool_calls
+        from mlx_batch_server.chat.openai.openai_adapter import _convert_tool_calls
 
         # Test with None input
         result = _convert_tool_calls(None)

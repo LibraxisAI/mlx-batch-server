@@ -1,7 +1,7 @@
 import json
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,15 +11,15 @@ class ToolType(str, Enum):
 
 
 class FunctionParameters(BaseModel):
-    type: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = None
-    required: Optional[List[str]] = None
+    type: str | None = None
+    properties: dict[str, Any] | None = None
+    required: list[str] | None = None
 
 
 class Function(BaseModel):
     name: str = Field(..., max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
-    description: Optional[str] = None
-    parameters: Optional[FunctionParameters] = None
+    description: str | None = None
+    parameters: FunctionParameters | None = None
 
 
 class Tool(BaseModel):
@@ -35,7 +35,7 @@ class ToolChoice(str, Enum):
 
 class SpecificToolChoice(BaseModel):
     type: ToolType = ToolType.FUNCTION
-    function: Dict[str, str]
+    function: dict[str, str]
 
 
 class FunctionCall(BaseModel):
@@ -48,14 +48,14 @@ class FunctionCall(BaseModel):
 class ToolCall(BaseModel):
     """Tool call from model output."""
 
-    index: Optional[int] = None  # Required for streaming responses
+    index: int | None = None  # Required for streaming responses
     id: str
     type: ToolType = ToolType.FUNCTION
     function: FunctionCall
 
     @classmethod
     def from_llama_output(
-        cls, name: str, parameters: Dict[str, Any], call_id: str, index: int = 0
+        cls, name: str, parameters: dict[str, Any], call_id: str, index: int = 0
     ) -> "ToolCall":
         """Create a ToolCall instance from Llama model output format."""
         return cls(
@@ -81,11 +81,11 @@ class Role(str, Enum):
 
 class ChatMessage(BaseModel):
     role: Role
-    content: Optional[Union[str, List[Dict[str, str]]]] = None
-    reasoning: Optional[str] = None
-    name: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
-    tool_call_id: Optional[str] = None
+    content: str | list[dict[str, str]] | None = None
+    reasoning: str | None = None
+    name: str | None = None
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
     class Config:
         json_encoders = {bytes: lambda v: v.decode()}
@@ -107,22 +107,22 @@ class ChatCompletionUsage(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-    prompt_tokens_details: Optional[PromptTokensDetails] = None
+    prompt_tokens_details: PromptTokensDetails | None = None
 
 
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChatMessage
     finish_reason: str
-    logprobs: Optional[Dict[str, Any]] = None
-    tool_calls: Optional[List[ToolCall]] = None
+    logprobs: dict[str, Any] | None = None
+    tool_calls: list[ToolCall] | None = None
 
 
 class ChatCompletionChunkChoice(BaseModel):
     index: int
     delta: ChatMessage
-    finish_reason: Optional[str] = None
-    logprobs: Optional[Any] = None
+    finish_reason: str | None = None
+    logprobs: Any | None = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -130,9 +130,9 @@ class ChatCompletionChunk(BaseModel):
     object: str = "chat.completion.chunk"
     created: int
     model: str
-    choices: List[ChatCompletionChunkChoice]
-    system_fingerprint: Optional[str] = None
-    usage: Optional[ChatCompletionUsage] = None
+    choices: list[ChatCompletionChunkChoice]
+    system_fingerprint: str | None = None
+    usage: ChatCompletionUsage | None = None
 
 
 class ChatCompletionResponse(BaseModel):
@@ -140,9 +140,9 @@ class ChatCompletionResponse(BaseModel):
     object: str = "chat.completion"
     created: int
     model: str
-    choices: List[ChatCompletionChoice]
+    choices: list[ChatCompletionChoice]
     usage: ChatCompletionUsage
-    system_fingerprint: Optional[str] = None
+    system_fingerprint: str | None = None
 
 
 class StreamOptions(BaseModel):
@@ -150,7 +150,7 @@ class StreamOptions(BaseModel):
 
 
 class JsonSchemaFormat(BaseModel):
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None, description="A description of what the response format is for"
     )
     name: str = Field(
@@ -158,10 +158,10 @@ class JsonSchemaFormat(BaseModel):
         description="The name of the response format",
         pattern="^[a-zA-Z0-9_-]{1,64}$",
     )
-    schema_def: Optional[Dict[str, Any]] = Field(
+    schema_def: dict[str, Any] | None = Field(
         None, description="The schema for the response format", alias="schema"
     )
-    strict: Optional[bool] = Field(
+    strict: bool | None = Field(
         False, description="Whether to enable strict schema adherence"
     )
 
@@ -178,7 +178,7 @@ class JsonSchemaFormat(BaseModel):
 
 class ResponseFormat(BaseModel):
     type: str = Field(..., description="The type of response format")
-    json_schema: Optional[JsonSchemaFormat] = Field(
+    json_schema: JsonSchemaFormat | None = Field(
         None, description="The JSON schema configuration when type is 'json_schema'"
     )
 
@@ -205,28 +205,28 @@ class ResponseFormat(BaseModel):
 class ChatCompletionRequest(BaseModel):
     # Standard OpenAI API fields
     model: str = Field(..., description="ID of the model to use")
-    messages: List[ChatMessage]
-    temperature: Optional[float] = Field(1.0, ge=0, le=2)
-    top_p: Optional[float] = Field(1.0, ge=0, le=1)
-    max_tokens: Optional[int] = None
-    max_completion_tokens: Optional[int] = None
-    stream: Optional[bool] = False
-    stream_options: Optional[StreamOptions] = None
-    seed: Optional[int] = None
-    stop: Optional[Union[str, List[str]]] = None
-    presence_penalty: Optional[float] = Field(0, ge=-2.0, le=2.0)
-    frequency_penalty: Optional[float] = Field(0, ge=-2.0, le=2.0)
-    logit_bias: Optional[Dict[str, float]] = None
-    logprobs: Optional[bool] = False
-    top_logprobs: Optional[int] = Field(
+    messages: list[ChatMessage]
+    temperature: float | None = Field(1.0, ge=0, le=2)
+    top_p: float | None = Field(1.0, ge=0, le=1)
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    stream: bool | None = False
+    stream_options: StreamOptions | None = None
+    seed: int | None = None
+    stop: str | list[str] | None = None
+    presence_penalty: float | None = Field(0, ge=-2.0, le=2.0)
+    frequency_penalty: float | None = Field(0, ge=-2.0, le=2.0)
+    logit_bias: dict[str, float] | None = None
+    logprobs: bool | None = False
+    top_logprobs: int | None = Field(
         None,
         ge=0,
         le=20,
     )
-    n: Optional[int] = Field(1, ge=1, le=10)
-    tools: Optional[List[Tool]] = None
-    tool_choice: Optional[ToolChoiceType] = None
-    response_format: Optional[ResponseFormat] = None
+    n: int | None = Field(1, ge=1, le=10)
+    tools: list[Tool] | None = None
+    tool_choice: ToolChoiceType | None = None
+    response_format: ResponseFormat | None = None
 
     # Allow any additional fields
     class Config:
@@ -244,9 +244,9 @@ class ChatCompletionRequest(BaseModel):
             raise ValueError("Top_p must be between 0 and 1")
         return v
 
-    def get_extra_params(self) -> Dict[str, Any]:
+    def get_extra_params(self) -> dict[str, Any]:
         """Get all extra parameters that aren't part of the standard OpenAI API."""
-        standard_fields: Set[str] = {
+        standard_fields: set[str] = {
             "model",
             "messages",
             "temperature",

@@ -506,7 +506,7 @@ curl "http://localhost:8100/anthropic/v1/models?limit=10&after_id=model_id" \
 ```python
 import anthropic
 from fastapi.testclient import TestClient
-from mlx_omni_server.main import app
+from mlx_batch_server.main import app
 
 # Use TestClient for development
 test_client = anthropic.Anthropic(

@@ -1,12 +1,11 @@
 import json
-from typing import Generator, Optional
+from collections.abc import Generator
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-
-from mlx_omni_server.chat.mlx.chat_generator import ChatGenerator
-from mlx_omni_server.chat.openai.openai_adapter import OpenAIAdapter
-from mlx_omni_server.chat.openai.schema import (
+from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
+from mlx_batch_server.chat.openai.openai_adapter import OpenAIAdapter
+from mlx_batch_server.chat.openai.schema import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
@@ -47,8 +46,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
 def _create_text_model(
     model_id: str,
-    adapter_path: Optional[str] = None,
-    draft_model: Optional[str] = None,
+    adapter_path: str | None = None,
+    draft_model: str | None = None,
 ) -> OpenAIAdapter:
     """Create a text model based on the model parameters.
 

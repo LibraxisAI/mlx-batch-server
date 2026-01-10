@@ -1,8 +1,7 @@
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-from mlx_omni_server.chat.openai.models import ModelCacheScanner
+from mlx_batch_server.chat.openai.models import ModelCacheScanner
 
 from .schema import AnthropicModelInfo, AnthropicModelList
 
@@ -14,8 +13,8 @@ class AnthropicModelsService:
     def list_models(
         self,
         limit: int = 20,
-        after_id: Optional[str] = None,
-        before_id: Optional[str] = None,
+        after_id: str | None = None,
+        before_id: str | None = None,
     ) -> AnthropicModelList:
         """List all available models in Anthropic format."""
         try:
@@ -23,7 +22,7 @@ class AnthropicModelsService:
             all_models_info = self.scanner.find_models_in_cache()
             all_models_info.sort(key=lambda x: x[0].last_modified, reverse=True)
         except Exception as e:
-            logging.error(f"Error scanning cache for models: {str(e)}")
+            logging.error(f"Error scanning cache for models: {e!s}")
             all_models_info = []
 
         all_models = [
@@ -31,7 +30,7 @@ class AnthropicModelsService:
                 id=repo_info.repo_id,
                 display_name=repo_info.repo_id,
                 created_at=datetime.fromtimestamp(
-                    repo_info.last_modified, tz=timezone.utc
+                    repo_info.last_modified, tz=UTC
                 ).strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
             for repo_info, _ in all_models_info

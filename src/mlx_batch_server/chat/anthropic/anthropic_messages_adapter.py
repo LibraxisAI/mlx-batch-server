@@ -5,9 +5,10 @@ and the internal MLX generation interface.
 """
 
 import uuid
-from typing import Any, Dict, Generator, List, Optional
+from collections.abc import Generator
+from typing import Any
 
-from mlx_omni_server.chat.anthropic.anthropic_schema import (
+from mlx_batch_server.chat.anthropic.anthropic_schema import (
     AnthropicTool,
     ContentBlock,
     InputMessage,
@@ -27,8 +28,8 @@ from mlx_omni_server.chat.anthropic.anthropic_schema import (
     ToolUseBlock,
     Usage,
 )
-from mlx_omni_server.chat.mlx.chat_generator import ChatGenerator
-from mlx_omni_server.utils.logger import logger
+from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
+from mlx_batch_server.utils.logger import logger
 
 
 class AnthropicMessagesAdapter:
@@ -44,8 +45,8 @@ class AnthropicMessagesAdapter:
         self._generate_wrapper = wrapper
 
     def _convert_system_to_messages(
-        self, system: Optional[SystemPrompt], messages: List[InputMessage]
-    ) -> List[Dict[str, Any]]:
+        self, system: SystemPrompt | None, messages: list[InputMessage]
+    ) -> list[dict[str, Any]]:
         """Convert system prompt and messages to MLX format.
 
         Args:
@@ -124,8 +125,8 @@ class AnthropicMessagesAdapter:
         return mlx_messages
 
     def _convert_tools_to_mlx(
-        self, tools: Optional[List[AnthropicTool]]
-    ) -> Optional[List[Dict[str, Any]]]:
+        self, tools: list[AnthropicTool] | None
+    ) -> list[dict[str, Any]] | None:
         """Convert Anthropic tools to MLX format.
 
         Args:
@@ -155,7 +156,7 @@ class AnthropicMessagesAdapter:
 
         return mlx_tools
 
-    def _prepare_generation_params(self, request: MessagesRequest) -> Dict[str, Any]:
+    def _prepare_generation_params(self, request: MessagesRequest) -> dict[str, Any]:
         """Prepare parameters for MLX generation.
 
         Args:
@@ -206,10 +207,10 @@ class AnthropicMessagesAdapter:
 
     def _create_content_blocks(
         self,
-        text_content: Optional[str],
-        reasoning_content: Optional[str],
-        tool_calls: Optional[List[Any]] = None,
-    ) -> List[ContentBlock]:
+        text_content: str | None,
+        reasoning_content: str | None,
+        tool_calls: list[Any] | None = None,
+    ) -> list[ContentBlock]:
         """Create content blocks from generation result.
 
         Args:
@@ -248,7 +249,7 @@ class AnthropicMessagesAdapter:
         return blocks
 
     def _map_finish_reason(
-        self, finish_reason: Optional[str], has_tool_calls: bool
+        self, finish_reason: str | None, has_tool_calls: bool
     ) -> StopReason:
         """Map internal finish reason to Anthropic format.
 
@@ -317,9 +318,9 @@ class AnthropicMessagesAdapter:
 
         except Exception as e:
             logger.error(
-                f"Failed to generate Anthropic completion: {str(e)}", exc_info=True
+                f"Failed to generate Anthropic completion: {e!s}", exc_info=True
             )
-            raise RuntimeError(f"Failed to generate completion: {str(e)}")
+            raise RuntimeError(f"Failed to generate completion: {e!s}")
 
     def generate_stream(
         self, request: MessagesRequest
@@ -465,6 +466,6 @@ class AnthropicMessagesAdapter:
 
         except Exception as e:
             logger.error(
-                f"Error during Anthropic stream generation: {str(e)}", exc_info=True
+                f"Error during Anthropic stream generation: {e!s}", exc_info=True
             )
             raise

@@ -1,5 +1,3 @@
-from typing import List, Optional
-
 from ....utils.logger import logger
 from ..core_types import ToolCall
 from .base_tools import BaseToolParser, extract_tools
@@ -15,7 +13,7 @@ class HuggingFaceToolParser(BaseToolParser):
         self.end_tool_calls = "</tool_call>"
         self.strict_mode = False
 
-    def parse_tools(self, text: str) -> Optional[List[ToolCall]]:
+    def parse_tools(self, text: str) -> list[ToolCall] | None:
         """Parse tool calls from model output.
 
         Args:

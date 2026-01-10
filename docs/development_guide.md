@@ -22,7 +22,7 @@ There are two ways to run the server during development:
 ### 1. Using uvicorn (Recommended for development)
 
 ```bash
-uvicorn mlx_omni_server.main:app --reload --host 0.0.0.0 --port 8100
+uvicorn mlx_batch_server.main:app --reload --host 0.0.0.0 --port 8100
 ```
 
 The `--reload` flag enables hot-reload, which automatically restarts the server when code changes are detected. This is particularly useful during development.

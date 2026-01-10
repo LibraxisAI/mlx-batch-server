@@ -1,7 +1,7 @@
 """Core data types for MLX generation wrapper."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Generic, TypeVar
 
 
 @dataclass
@@ -10,7 +10,7 @@ class ToolCall:
 
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
 
 
 @dataclass
@@ -33,8 +33,8 @@ class GenerationStats:
 @dataclass
 class ChatTemplateResult:
     content: str
-    thinking: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
+    thinking: str | None = None
+    tool_calls: list[ToolCall] | None = None
 
 
 # ========== Generic Content Types ==========
@@ -58,9 +58,9 @@ class GenerationResult(Generic[ContentT]):
     """
 
     content: ContentT  # Core: content type determined by generic
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
     stats: GenerationStats = field(default_factory=GenerationStats)
-    logprobs: Optional[Dict[str, Any]] = None
+    logprobs: dict[str, Any] | None = None
     from_draft: bool = False
 
 
@@ -69,8 +69,8 @@ class StreamContent(BaseContent):
     """Stream incremental content - semantically clear incremental data."""
 
     # Core incremental fields
-    text_delta: Optional[str] = None  # Normal text increment
-    reasoning_delta: Optional[str] = None  # Thinking process increment
+    text_delta: str | None = None  # Normal text increment
+    reasoning_delta: str | None = None  # Thinking process increment
     token: int = 0  # Current generated token
 
     # Stream-specific fields
@@ -91,12 +91,12 @@ class CompletionContent(BaseContent):
 
     # Core content fields
     text: str = ""  # Complete generated text
-    reasoning: Optional[str] = None  # Complete thinking process
-    tool_calls: Optional[List[ToolCall]] = None  # Complete tool calls
+    reasoning: str | None = None  # Complete thinking process
+    tool_calls: list[ToolCall] | None = None  # Complete tool calls
 
     # Token information - semantically clear separated design
-    text_tokens: List[int] = field(default_factory=list)  # Normal text token sequence
-    reasoning_tokens: Optional[List[int]] = None  # Thinking process token sequence
+    text_tokens: list[int] = field(default_factory=list)  # Normal text token sequence
+    reasoning_tokens: list[int] | None = None  # Thinking process token sequence
 
 
 # Type aliases to improve user experience

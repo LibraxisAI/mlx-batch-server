@@ -6,21 +6,20 @@ Contributed by LibraxisAI - https://libraxis.ai
 
 import pytest
 from fastapi.testclient import TestClient
-
-from mlx_omni_server.main import app
-from mlx_omni_server.responses.normalizer import (
+from mlx_batch_server.main import app
+from mlx_batch_server.responses.normalizer import (
     has_media_content,
     normalise_responses_payload,
     parts_to_plaintext,
     responses_to_chat_messages,
 )
-from mlx_omni_server.responses.schema import (
+from mlx_batch_server.responses.schema import (
     ResponseRequest,
     ResponseStatus,
     build_error_response,
     build_text_output,
 )
-from mlx_omni_server.utils.harmony_parser import (
+from mlx_batch_server.utils.harmony_parser import (
     is_harmony_model,
     parse_reasoning_channels,
 )

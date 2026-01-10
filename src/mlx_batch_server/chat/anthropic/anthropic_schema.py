@@ -5,7 +5,7 @@ following the official API specification.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -58,14 +58,14 @@ class ToolUseBlock(BaseModel):
     type: Literal["tool_use"] = "tool_use"
     id: str
     name: str
-    input: Dict[str, Any]
+    input: dict[str, Any]
 
 
 class ImageBlock(BaseModel):
     """Image content block (placeholder for future implementation)."""
 
     type: Literal["image"] = "image"
-    source: Dict[str, Any]
+    source: dict[str, Any]
 
 
 class ToolResultBlock(BaseModel):
@@ -73,8 +73,8 @@ class ToolResultBlock(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
-    content: Union[str, List[Union[TextBlock, ImageBlock]]]
-    is_error: Optional[bool] = False
+    content: str | list[TextBlock | ImageBlock]
+    is_error: bool | None = False
 
 
 # Content block union type
@@ -88,15 +88,15 @@ class ToolInputSchema(BaseModel):
     """JSON schema for tool input."""
 
     type: str = "object"
-    properties: Optional[Dict[str, Any]] = None
-    required: Optional[List[str]] = None
+    properties: dict[str, Any] | None = None
+    required: list[str] | None = None
 
 
 class AnthropicTool(BaseModel):
     """Tool definition for Anthropic API."""
 
     name: str = Field(..., max_length=200, pattern=r"^[a-zA-Z0-9_-]+$")
-    description: Optional[str] = None
+    description: str | None = None
     input_schema: ToolInputSchema
 
 
@@ -104,14 +104,14 @@ class ToolChoiceAuto(BaseModel):
     """Automatic tool choice."""
 
     type: Literal["auto"] = "auto"
-    disable_parallel_tool_use: Optional[bool] = False
+    disable_parallel_tool_use: bool | None = False
 
 
 class ToolChoiceAny(BaseModel):
     """Use any available tool."""
 
     type: Literal["any"] = "any"
-    disable_parallel_tool_use: Optional[bool] = False
+    disable_parallel_tool_use: bool | None = False
 
 
 class ToolChoiceNone(BaseModel):
@@ -125,7 +125,7 @@ class ToolChoiceTool(BaseModel):
 
     type: Literal["tool"] = "tool"
     name: str
-    disable_parallel_tool_use: Optional[bool] = False
+    disable_parallel_tool_use: bool | None = False
 
 
 ToolChoice = Union[ToolChoiceAuto, ToolChoiceAny, ToolChoiceNone, ToolChoiceTool]
@@ -160,7 +160,7 @@ class RequestImageBlock(BaseModel):
     """Image block in request (base64 format)."""
 
     type: Literal["image"] = "image"
-    source: Dict[str, Any]  # Simplified for now
+    source: dict[str, Any]  # Simplified for now
 
 
 class RequestToolUseBlock(BaseModel):
@@ -169,7 +169,7 @@ class RequestToolUseBlock(BaseModel):
     type: Literal["tool_use"] = "tool_use"
     id: str
     name: str
-    input: Dict[str, Any]
+    input: dict[str, Any]
 
 
 class RequestToolResultBlock(BaseModel):
@@ -177,8 +177,8 @@ class RequestToolResultBlock(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
-    content: Union[str, List[Union[RequestTextBlock, RequestImageBlock]]]
-    is_error: Optional[bool] = False
+    content: str | list[RequestTextBlock | RequestImageBlock]
+    is_error: bool | None = False
 
 
 RequestContentBlock = Union[
@@ -190,7 +190,7 @@ class InputMessage(BaseModel):
     """Input message for Messages API."""
 
     role: MessageRole
-    content: Union[str, List[RequestContentBlock]]
+    content: str | list[RequestContentBlock]
 
 
 # System Prompt
@@ -201,14 +201,14 @@ class SystemTextBlock(BaseModel):
     text: str
 
 
-SystemPrompt = Union[str, List[SystemTextBlock]]
+SystemPrompt = Union[str, list[SystemTextBlock]]
 
 
 # Metadata
 class Metadata(BaseModel):
     """Request metadata."""
 
-    user_id: Optional[str] = Field(None, max_length=256)
+    user_id: str | None = Field(None, max_length=256)
 
 
 # Usage Statistics
@@ -217,8 +217,8 @@ class Usage(BaseModel):
 
     input_tokens: int
     output_tokens: int
-    cache_creation_input_tokens: Optional[int] = None
-    cache_read_input_tokens: Optional[int] = None
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
 
 
 # Main Request Model
@@ -227,21 +227,21 @@ class MessagesRequest(BaseModel):
 
     # Required fields
     model: str = Field(..., max_length=256, min_length=1)
-    messages: List[InputMessage]
+    messages: list[InputMessage]
     max_tokens: int = Field(..., ge=1)
 
     # Optional fields
-    system: Optional[SystemPrompt] = None
-    temperature: Optional[float] = Field(None, ge=0, le=1)
-    top_p: Optional[float] = Field(None, ge=0, le=1)
-    top_k: Optional[int] = Field(None, ge=0)
-    stop_sequences: Optional[List[str]] = None
-    stream: Optional[bool] = False
-    tools: Optional[List[AnthropicTool]] = None
-    tool_choice: Optional[ToolChoice] = None
-    thinking: Optional[ThinkingConfig] = None
-    metadata: Optional[Metadata] = None
-    service_tier: Optional[ServiceTier] = None
+    system: SystemPrompt | None = None
+    temperature: float | None = Field(None, ge=0, le=1)
+    top_p: float | None = Field(None, ge=0, le=1)
+    top_k: int | None = Field(None, ge=0)
+    stop_sequences: list[str] | None = None
+    stream: bool | None = False
+    tools: list[AnthropicTool] | None = None
+    tool_choice: ToolChoice | None = None
+    thinking: ThinkingConfig | None = None
+    metadata: Metadata | None = None
+    service_tier: ServiceTier | None = None
 
     # Allow extra fields for compatibility
     class Config:
@@ -267,12 +267,12 @@ class MessagesResponse(BaseModel):
     id: str
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"
-    content: List[ContentBlock]
+    content: list[ContentBlock]
     model: str
-    stop_reason: Optional[StopReason] = None
-    stop_sequence: Optional[str] = None
+    stop_reason: StopReason | None = None
+    stop_sequence: str | None = None
     usage: Usage
-    container: Optional[Dict[str, Any]] = None
+    container: dict[str, Any] | None = None
 
 
 # Streaming Models
@@ -289,14 +289,14 @@ class StreamEventType(str, Enum):
 class StreamDelta(BaseModel):
     """Delta object for streaming."""
 
-    type: Optional[str] = None
-    text: Optional[str] = None
-    thinking: Optional[str] = None
-    partial_json: Optional[str] = None
-    signature: Optional[str] = None
-    stop_reason: Optional[StopReason] = None
-    stop_sequence: Optional[str] = None
-    usage: Optional[Usage] = None
+    type: str | None = None
+    text: str | None = None
+    thinking: str | None = None
+    partial_json: str | None = None
+    signature: str | None = None
+    stop_reason: StopReason | None = None
+    stop_sequence: str | None = None
+    usage: Usage | None = None
 
 
 class MessageStreamEvent(BaseModel):
@@ -305,11 +305,11 @@ class MessageStreamEvent(BaseModel):
     type: StreamEventType
 
     # Event-specific data
-    message: Optional[MessagesResponse] = None
-    delta: Optional[StreamDelta] = None
-    content_block: Optional[ContentBlock] = None
-    index: Optional[int] = None
-    usage: Optional[Usage] = None
+    message: MessagesResponse | None = None
+    delta: StreamDelta | None = None
+    content_block: ContentBlock | None = None
+    index: int | None = None
+    usage: Usage | None = None
 
 
 # Error Models (for compatibility)

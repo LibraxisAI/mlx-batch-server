@@ -2,9 +2,8 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
+from mlx_batch_server.main import app
 from openai import OpenAI
-
-from mlx_omni_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,7 +53,7 @@ class TestReasoningResponse:
                 and choices.message.reasoning is not None
             ), "No reasoning in message"
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_deepseek_none_reasoning_response(self, openai_client):
@@ -78,9 +77,9 @@ class TestReasoningResponse:
             assert choices.message is not None, "No message in response"
             # With new logic: enable_thinking_parse=False does no processing,
             # so model may still generate thinking content - we just verify response structure
-            assert (
-                choices.message.content is not None
-            ), "Message content should not be None"
+            assert choices.message.content is not None, (
+                "Message content should not be None"
+            )
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise

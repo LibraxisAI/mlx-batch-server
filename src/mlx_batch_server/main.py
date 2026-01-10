@@ -6,10 +6,10 @@ Provides OpenAI-compatible APIs using Apple's MLX framework.
 
 # Patch deprecated pkg_resources usage in jieba (via f5-tts-mlx)
 # MUST be first import - before any module that transitively imports jieba
-from mlx_omni_server.utils import compat as _compat  # noqa: F401
-
 import argparse
 import os
+
+from mlx_batch_server.utils import compat as _compat  # noqa: F401
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -141,7 +141,7 @@ def start():
 
     # Start server - uvicorn will import the app via __getattr__
     uvicorn.run(
-        "mlx_omni_server.main:app",
+        "mlx_batch_server.main:app",
         host=args.host,
         port=args.port,
         log_level=args.log_level,

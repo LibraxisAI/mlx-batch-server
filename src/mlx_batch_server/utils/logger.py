@@ -1,7 +1,6 @@
 import logging
 import os
 from datetime import datetime
-from typing import Optional
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -13,7 +12,7 @@ if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
 
-def get_logger(name: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """Get project logger with optimized Rich configuration
 
     Args:
@@ -61,8 +60,8 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
         handlers=[rich_handler],
     )
 
-    # Get the named logger or use 'mlx_omni' as default
-    logger_name = name if name else "mlx_omni"
+    # Get the named logger or use 'mlx_batch' as default
+    logger_name = name if name else "mlx_batch"
     log = logging.getLogger(logger_name)
 
     return log

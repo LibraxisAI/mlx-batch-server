@@ -1,6 +1,6 @@
 import unittest
 
-from mlx_omni_server.chat.mlx.tools.mistral import MistralToolsParser
+from mlx_batch_server.chat.mlx.tools.mistral import MistralToolsParser
 
 
 class TestMistralToolParser(unittest.TestCase):

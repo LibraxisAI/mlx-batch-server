@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,22 +29,22 @@ class ResponseFormat(str, Enum):
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., max_length=4000)
-    model: Optional[str] = Field(
+    model: str | None = Field(
         default="dhairyashil/FLUX.1-schnell-mflux-4bit",
         description="The model to use for image generation",
     )
-    n: Optional[int] = Field(default=1, ge=1, le=10)
-    quality: Optional[ImageQuality] = Field(default=ImageQuality.STANDARD)
-    response_format: Optional[ResponseFormat] = Field(default=ResponseFormat.B64_JSON)
-    size: Optional[ImageSize] = Field(default=ImageSize.S1024x1024)
-    style: Optional[ImageStyle] = Field(default=ImageStyle.VIVID)
-    user: Optional[str] = None
+    n: int | None = Field(default=1, ge=1, le=10)
+    quality: ImageQuality | None = Field(default=ImageQuality.STANDARD)
+    response_format: ResponseFormat | None = Field(default=ResponseFormat.B64_JSON)
+    size: ImageSize | None = Field(default=ImageSize.S1024x1024)
+    style: ImageStyle | None = Field(default=ImageStyle.VIVID)
+    user: str | None = None
 
     # Allow any additional fields
     class Config:
         extra = "allow"  # This allows additional fields not defined in the model
 
-    def get_extra_params(self) -> Dict[str, Any]:
+    def get_extra_params(self) -> dict[str, Any]:
         """Get all extra parameters that aren't part of the standard OpenAI API."""
         standard_fields = {
             "prompt",
@@ -69,11 +69,11 @@ class ImageGenerationRequest(BaseModel):
 
 
 class ImageObject(BaseModel):
-    url: Optional[str] = None
-    b64_json: Optional[str] = None
-    revised_prompt: Optional[str] = None
+    url: str | None = None
+    b64_json: str | None = None
+    revised_prompt: str | None = None
 
 
 class ImageGenerationResponse(BaseModel):
     created: int
-    data: List[ImageObject]
+    data: list[ImageObject]

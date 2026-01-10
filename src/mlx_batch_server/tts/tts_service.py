@@ -37,7 +37,6 @@ class TTSModelAdapter(BaseModel):
 
 
 class F5Model(TTSModelAdapter):
-
     @override
     def generate_audio(self, request: TTSRequest, output_path: str | Path) -> bool:
         self.path_or_hf_repo = request.model
@@ -99,4 +98,4 @@ class TTSService:
             self.sample_audio_path.unlink(missing_ok=True)
             return audio_content
         except Exception as e:
-            raise Exception(f"Error reading audio file: {str(e)}")
+            raise Exception(f"Error reading audio file: {e!s}")

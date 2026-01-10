@@ -52,7 +52,7 @@ dependencies = [
 Repository = "https://github.com/madroidmaq/mlx-batch-server"
 
 [project.scripts]
-mlx-batch-server = "mlx_omni_server.main:start"
+mlx-batch-server = "mlx_batch_server.main:start"
 
 [dependency-groups]
 dev = [
@@ -74,13 +74,13 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/mlx_omni_server"]
+include = ["src/mlx_batch_server"]
 
 [tool.hatch.build.targets.wheel]
-include = ["src/mlx_omni_server"]
+include = ["src/mlx_batch_server"]
 
 [tool.hatch.build.targets.wheel.sources]
-"src/mlx_omni_server" = "mlx_omni_server"
+"src/mlx_batch_server" = "mlx_batch_server"
 
 [build-system]
 requires = ["hatchling"]
@@ -136,30 +136,30 @@ ignore = [
 "examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
 "examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
 # Lazy imports are intentional in these modules for performance
-"src/mlx_omni_server/chat/mlx/chat_generator.py" = ["PLC0415"]
-"src/mlx_omni_server/chat/mlx/tools/llama3.py" = ["PLC0415"]
-"src/mlx_omni_server/chat/mlx/tools/chat_template.py" = ["E402", "PLC0415", "PLR0912", "RUF003"]
-"src/mlx_omni_server/chat/openai/openai_adapter.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/chat/mlx/chat_generator.py" = ["PLC0415"]
+"src/mlx_batch_server/chat/mlx/tools/llama3.py" = ["PLC0415"]
+"src/mlx_batch_server/chat/mlx/tools/chat_template.py" = ["E402", "PLC0415", "PLR0912", "RUF003"]
+"src/mlx_batch_server/chat/openai/openai_adapter.py" = ["PLC0415", "PLR0912"]
 # Complex parsing/conversion functions - refactoring would reduce readability
-"src/mlx_omni_server/chat/mlx/tools/glm45_tools_parser.py" = ["PLR0911"]
-"src/mlx_omni_server/chat/mlx/tools/qwen3_moe_tools_parser.py" = ["PLR0911"]
-"src/mlx_omni_server/chat/anthropic/anthropic_messages_adapter.py" = ["PLR0912"]
-"src/mlx_omni_server/responses/normalizer.py" = ["PLR0911", "PLR0912"]
-"src/mlx_omni_server/responses/context_builder.py" = ["PLR0912"]  # Chain walking logic
-"src/mlx_omni_server/embeddings/embeddings_service.py" = ["PLR0911", "UP038"]
+"src/mlx_batch_server/chat/mlx/tools/glm45_tools_parser.py" = ["PLR0911"]
+"src/mlx_batch_server/chat/mlx/tools/qwen3_moe_tools_parser.py" = ["PLR0911"]
+"src/mlx_batch_server/chat/anthropic/anthropic_messages_adapter.py" = ["PLR0912"]
+"src/mlx_batch_server/responses/normalizer.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/responses/context_builder.py" = ["PLR0912"]  # Chain walking logic
+"src/mlx_batch_server/embeddings/embeddings_service.py" = ["PLR0911", "UP038"]
 # Union type annotations preserved for Pydantic compatibility in schemas
-"src/mlx_omni_server/chat/anthropic/anthropic_schema.py" = ["UP007"]
-"src/mlx_omni_server/chat/openai/schema.py" = ["UP007"]
+"src/mlx_batch_server/chat/anthropic/anthropic_schema.py" = ["UP007"]
+"src/mlx_batch_server/chat/openai/schema.py" = ["UP007"]
 # Legacy pathlib usage in upstream modules - preserved for compatibility
-"src/mlx_omni_server/chat/openai/models/models_service.py" = ["PTH123"]
-"src/mlx_omni_server/stt/whisper_model.py" = ["PTH106", "PTH108", "PTH110", "PTH118", "PTH123", "SIM108"]
-"src/mlx_omni_server/tts/tts_service.py" = ["PTH123"]
-"src/mlx_omni_server/images/images_service.py" = ["PTH108", "PTH123"]
-"src/mlx_omni_server/images/schema.py" = ["ARG002"]
+"src/mlx_batch_server/chat/openai/models/models_service.py" = ["PTH123"]
+"src/mlx_batch_server/stt/whisper_model.py" = ["PTH106", "PTH108", "PTH110", "PTH118", "PTH123", "SIM108"]
+"src/mlx_batch_server/tts/tts_service.py" = ["PTH123"]
+"src/mlx_batch_server/images/images_service.py" = ["PTH108", "PTH123"]
+"src/mlx_batch_server/images/schema.py" = ["ARG002"]
 # Entry point - lazy imports for fast --help, compat import must be first
-"src/mlx_omni_server/main.py" = ["PLC0415", "I001"]
+"src/mlx_batch_server/main.py" = ["PLC0415", "I001"]
 # Compat module - monkeypatch jieba to avoid pkg_resources deprecation
-"src/mlx_omni_server/utils/compat.py" = ["PLR0915", "PLR0402", "PTH120", "B904"]
+"src/mlx_batch_server/utils/compat.py" = ["PLR0915", "PLR0402", "PTH120", "B904"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -190,31 +190,31 @@ module = "mflux.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.responses.*"
+module = "mlx_batch_server.responses.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.routing.*"
+module = "mlx_batch_server.routing.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.chat.anthropic.*"
+module = "mlx_batch_server.chat.anthropic.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.chat.mlx.*"
+module = "mlx_batch_server.chat.mlx.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.chat.openai.models.*"
+module = "mlx_batch_server.chat.openai.models.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.utils.*"
+module = "mlx_batch_server.utils.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "mlx_omni_server.tts.*"
+module = "mlx_batch_server.tts.*"
 ignore_errors = true
 
 # Created by M&K (c)2026 The LibraxisAI Team

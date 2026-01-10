@@ -1,4 +1,4 @@
-from typing import Any, Dict, Type, Union
+from typing import Any
 
 import mlx.core as mx
 from mlx_lm.tokenizer_utils import TokenizerWrapper
@@ -16,7 +16,7 @@ class OutlinesLogitsProcessor:
     def __init__(
         self,
         tokenizer: TokenizerWrapper,
-        schema: Union[Dict[str, Any], Type[BaseModel], str],
+        schema: dict[str, Any] | type[BaseModel] | str,
         enable_thinking: bool = False,
     ):
         """Initialize the OutlinesLogitsProcessor.
@@ -32,9 +32,7 @@ class OutlinesLogitsProcessor:
         if enable_thinking:
             # Complex but precise thinking pattern to avoid premature matching
             # This pattern carefully excludes matching </think> until it's complete
-            thinking_pattern: str = (
-                r"<think>([^<]|<[^\/]|<\/[^t]|<\/t[^h]|<\/th[^i]|<\/thi[^n]|<\/thin[^k]|<\/think[^>])*<\/think>\n"
-            )
+            thinking_pattern: str = r"<think>([^<]|<[^\/]|<\/[^t]|<\/t[^h]|<\/th[^i]|<\/thi[^n]|<\/thin[^k]|<\/think[^>])*<\/think>\n"
             # Build JSON regex from schema
             schema_str = JsonSchema(schema).schema
             json_regex = build_regex_from_schema(schema_str)

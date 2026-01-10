@@ -1,7 +1,7 @@
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ....utils.logger import logger
 from ..core_types import ToolCall
@@ -34,9 +34,9 @@ class GLM45ToolParser(BaseToolParser):
         self.start_tool_calls = "<tool_call>"
         self.end_tool_calls = "</tool_call>"
         self.strict_mode = False
-        self._tools_schema: Dict[str, Dict[str, Any]] = {}
+        self._tools_schema: dict[str, dict[str, Any]] = {}
 
-    def set_tools_schema(self, tools: Optional[List[Dict[str, Any]]] = None) -> None:
+    def set_tools_schema(self, tools: list[dict[str, Any]] | None = None) -> None:
         """Set tools schema for type conversion.
 
         Args:
@@ -125,7 +125,7 @@ class GLM45ToolParser(BaseToolParser):
         # Default: return as string
         return value
 
-    def parse_tools(self, text: str) -> Optional[List[ToolCall]]:
+    def parse_tools(self, text: str) -> list[ToolCall] | None:
         """Parse tool calls from GLM-4.5 model output.
 
         Args:
@@ -149,7 +149,7 @@ class GLM45ToolParser(BaseToolParser):
                 logger.debug("parse_tools: text doesn't match strict format")
                 return None
 
-            tool_calls: List[ToolCall] = []
+            tool_calls: list[ToolCall] = []
 
             # Check if text contains tool_call markers
             if "<tool_call>" in text:
@@ -217,7 +217,7 @@ class GLM45ToolParser(BaseToolParser):
         matches = re.findall(tool_call_pattern, text, re.DOTALL)
         return len(matches) == 1 and matches[0].strip() == stripped_text
 
-    def _extract_function_name(self, content: str) -> Optional[str]:
+    def _extract_function_name(self, content: str) -> str | None:
         """Extract function name from the beginning of tool_call content.
 
         In GLM-4.5 format, the function name appears directly after <tool_call>
@@ -256,7 +256,7 @@ class GLM45ToolParser(BaseToolParser):
 
         return None
 
-    def _extract_parameters(self, content: str, function_name: str) -> Dict[str, Any]:
+    def _extract_parameters(self, content: str, function_name: str) -> dict[str, Any]:
         """Extract parameters from arg_key/arg_value pairs.
 
         Args:
@@ -266,13 +266,11 @@ class GLM45ToolParser(BaseToolParser):
         Returns:
             Dictionary of parameter name-value pairs with appropriate types
         """
-        parameters: Dict[str, Any] = {}
+        parameters: dict[str, Any] = {}
 
         # Pattern to match <arg_key>name</arg_key> followed by <arg_value>value</arg_value>
         # Using non-greedy matching with DOTALL for multiline values
-        pair_pattern = (
-            r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>"
-        )
+        pair_pattern = r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>"
         pair_matches = re.finditer(pair_pattern, content, re.DOTALL)
 
         for match in pair_matches:

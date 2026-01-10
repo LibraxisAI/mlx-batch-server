@@ -1,7 +1,6 @@
 import os
 import tempfile
 from pathlib import Path
-from typing import Union
 
 from mlx_whisper import transcribe
 from mlx_whisper.writers import WriteSRT, WriteVTT
@@ -15,7 +14,6 @@ from .schema import (
 
 
 class WhisperModel:
-
     async def _save_upload_file(self, file) -> str:
         suffix = Path(file.filename).suffix
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -57,7 +55,7 @@ class WhisperModel:
 
             writer(result, temp_file)
 
-            with open(temp_file, "r", encoding="utf-8") as f:
+            with open(temp_file, encoding="utf-8") as f:
                 return f.read()
 
         finally:
@@ -68,7 +66,7 @@ class WhisperModel:
 
     def _format_response(
         self, result: dict, request: STTRequestForm
-    ) -> Union[dict, str, TranscriptionResponse]:
+    ) -> dict | str | TranscriptionResponse:
         if request.response_format == ResponseFormat.TEXT:
             return result["text"]
 
@@ -123,7 +121,7 @@ class STTService:
     async def transcribe(
         self,
         request: STTRequestForm,
-    ) -> Union[dict, str, TranscriptionResponse]:
+    ) -> dict | str | TranscriptionResponse:
         try:
             audio_path = await self.model._save_upload_file(request.file)
             result = self.model.generate(audio_path=audio_path, request=request)

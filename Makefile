@@ -44,10 +44,10 @@ install-hooks: ## Install pre-commit hooks
 
 # === Development ===
 dev: ## Run development server (foreground, default port: 8100)
-	$(PYTHON) -m mlx_omni_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)"
+	$(PYTHON) -m mlx_batch_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)"
 
 dev-8100: ## Run on port 8100 (LibraxisAI integration)
-	$(PYTHON) -m mlx_omni_server.main --port 8100 --host 0.0.0.0 --log-level info --cors-allow-origins="$(CORS)"
+	$(PYTHON) -m mlx_batch_server.main --port 8100 --host 0.0.0.0 --log-level info --cors-allow-origins="$(CORS)"
 
 LOG_FILE ?= mlx-batch-server.log
 PID_FILE ?= .mlx-batch-server.pid
@@ -56,7 +56,7 @@ run: ## Run server as background daemon (logs to $(LOG_FILE))
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Server already running (PID: $$(cat $(PID_FILE)))"; \
 	else \
-		nohup $(PYTHON) -m mlx_omni_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)" > $(LOG_FILE) 2>&1 & \
+		nohup $(PYTHON) -m mlx_batch_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)" > $(LOG_FILE) 2>&1 & \
 		echo $$! > $(PID_FILE); \
 		sleep 1; \
 		if kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
@@ -108,7 +108,7 @@ test-fast: ## Run fast tests only (skip slow)
 	uv run pytest tests/ -v -m "not slow"
 
 test-cov: ## Run tests with coverage
-	uv run pytest tests/ -v --cov=src/mlx_omni_server --cov-report=term-missing
+	uv run pytest tests/ -v --cov=src/mlx_batch_server --cov-report=term-missing
 
 test-responses: ## Run responses API tests
 	uv run pytest tests/test_responses.py tests/test_circuit_breaker.py -v

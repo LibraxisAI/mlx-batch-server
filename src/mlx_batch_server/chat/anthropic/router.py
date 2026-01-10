@@ -1,10 +1,9 @@
 import json
-from typing import Generator, Optional
+from collections.abc import Generator
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-
-from mlx_omni_server.chat.anthropic.anthropic_messages_adapter import (
+from mlx_batch_server.chat.anthropic.anthropic_messages_adapter import (
     AnthropicMessagesAdapter,
 )
 
@@ -26,6 +25,7 @@ def get_models_service() -> AnthropicModelsService:
         _models_service = AnthropicModelsService()
     return _models_service
 
+
 # Legacy caching variables removed - now using shared wrapper_cache
 # This eliminates duplicate caching logic and enables sharing between endpoints
 
@@ -33,12 +33,12 @@ def get_models_service() -> AnthropicModelsService:
 @router.get("/models", response_model=AnthropicModelList)
 @router.get("/v1/models", response_model=AnthropicModelList)
 async def list_anthropic_models(
-    before_id: Optional[str] = Query(
+    before_id: str | None = Query(
         default=None,
         title="Before Id",
         description="ID of the object to use as a cursor for pagination. When provided, returns the page of results immediately before this object.",
     ),
-    after_id: Optional[str] = Query(
+    after_id: str | None = Query(
         default=None,
         title="After Id",
         description="ID of the object to use as a cursor for pagination. When provided, returns the page of results immediately after this object.",
@@ -90,8 +90,8 @@ async def create_message(request: MessagesRequest):
 
 def _create_anthropic_model(
     model_id: str,
-    adapter_path: Optional[str] = None,
-    draft_model: Optional[str] = None,
+    adapter_path: str | None = None,
+    draft_model: str | None = None,
 ) -> AnthropicMessagesAdapter:
     """Create an Anthropic Messages adapter based on the model parameters.
 

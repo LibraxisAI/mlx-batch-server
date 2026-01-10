@@ -1,5 +1,3 @@
-from typing import List, Optional
-
 from pydantic import BaseModel, Field
 
 
@@ -21,12 +19,12 @@ class AnthropicModelInfo(BaseModel):
 class AnthropicModelList(BaseModel):
     """Response format for list of models, Anthropic style."""
 
-    data: List[AnthropicModelInfo] = Field(..., description="List of model objects")
-    first_id: Optional[str] = Field(
+    data: list[AnthropicModelInfo] = Field(..., description="List of model objects")
+    first_id: str | None = Field(
         None,
         description="First ID in the `data` list. Can be used as the `before_id` for the previous page.",
     )
-    last_id: Optional[str] = Field(
+    last_id: str | None = Field(
         None,
         description="Last ID in the `data` list. Can be used as the `after_id` for the next page.",
     )

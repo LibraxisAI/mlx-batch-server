@@ -1,6 +1,5 @@
 import json
 import uuid
-from typing import List, Optional
 
 from ....utils.logger import logger
 from ..core_types import ToolCall
@@ -15,7 +14,7 @@ class MistralToolsParser(BaseToolParser):
         self.start_tool_calls = "[TOOL_CALLS]"
         self.end_tool_calls = ""
 
-    def parse_tools(self, text: str) -> Optional[List[ToolCall]]:
+    def parse_tools(self, text: str) -> list[ToolCall] | None:
         """Parse tool calls from model output.
 
         The model outputs function calls in the format:

@@ -1,7 +1,8 @@
 """Chat Generator - Core abstraction layer over mlx-lm for chat completions."""
 
 import time
-from typing import Any, Callable, Dict, Generator, List, Optional, Union
+from collections.abc import Callable, Generator
+from typing import Any
 
 from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
@@ -46,8 +47,8 @@ class ChatGenerator:
     def create(
         cls,
         model_id: str,
-        adapter_path: Optional[str] = None,
-        draft_model_id: Optional[str] = None,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> "ChatGenerator":
         """Factory method to create ChatGenerator with simplified interface.
 
@@ -90,8 +91,8 @@ class ChatGenerator:
     def get_or_create(
         cls,
         model_id: str,
-        adapter_path: Optional[str] = None,
-        draft_model_id: Optional[str] = None,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> "ChatGenerator":
         """Get or create cached ChatGenerator instance.
 
@@ -158,10 +159,10 @@ class ChatGenerator:
 
     def _prepare_prompt(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        template_kwargs: Optional[Dict[str, Any]] = None,
-        json_schema: Optional[Any] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        template_kwargs: dict[str, Any] | None = None,
+        json_schema: Any | None = None,
     ) -> str:
         """Prepare prompt using chat tokenizer.
 
@@ -201,10 +202,10 @@ class ChatGenerator:
 
     def _create_mlx_kwargs(
         self,
-        sampler: Union[Dict[str, Any], Callable, None] = None,
+        sampler: dict[str, Any] | Callable | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Convert parameters to mlx-lm compatible kwargs.
 
         Args:
@@ -281,14 +282,14 @@ class ChatGenerator:
 
     def generate(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         # Core generation parameters
         max_tokens: int = DEFAULT_MAX_TOKENS,
-        sampler: Union[Dict[str, Any], Callable, None] = None,
-        top_logprobs: Optional[int] = None,
+        sampler: dict[str, Any] | Callable | None = None,
+        top_logprobs: int | None = None,
         # Template parameters
-        template_kwargs: Optional[Dict[str, Any]] = None,
+        template_kwargs: dict[str, Any] | None = None,
         # Control parameters
         enable_prompt_cache: bool = False,
         # Additional MLX generation parameters via **kwargs
@@ -376,14 +377,14 @@ class ChatGenerator:
 
     def generate_stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         # Core generation parameters
         max_tokens: int = DEFAULT_MAX_TOKENS,
-        sampler: Union[Dict[str, Any], Callable, None] = None,
-        top_logprobs: Optional[int] = None,
+        sampler: dict[str, Any] | Callable | None = None,
+        top_logprobs: int | None = None,
         # Template parameters
-        template_kwargs: Optional[Dict[str, Any]] = None,
+        template_kwargs: dict[str, Any] | None = None,
         # Control parameters
         enable_prompt_cache: bool = False,
         # Additional MLX generation parameters via **kwargs
@@ -412,7 +413,6 @@ class ChatGenerator:
         first_token_time = None
 
         try:
-
             # Extract json_schema from kwargs for coordination with chat_template
             json_schema = kwargs.get("json_schema")
 

@@ -4,13 +4,12 @@ import random
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 from mflux.callbacks.callback_registry import CallbackRegistry
 from mflux.callbacks.instances.memory_saver import MemorySaver
 from mflux.models.common.config.model_config import ModelConfig
-from mflux.utils.exceptions import StopImageGenerationException
 from mflux.models.flux.variants.txt2img.flux import Flux1
+from mflux.utils.exceptions import StopImageGenerationException
 from PIL import Image
 
 from ..utils.logger import logger
@@ -74,7 +73,7 @@ class MFluxImageGenerator:
 
         return self._flux
 
-    def _parse_size(self, size_str: str) -> Tuple[int, int]:
+    def _parse_size(self, size_str: str) -> tuple[int, int]:
         """Parse size string to width and height"""
         try:
             width, height = map(int, size_str.split("x"))
@@ -127,9 +126,9 @@ class MFluxImageGenerator:
             image.save(path=output_path, export_json_metadata=False)
             return image
         except StopImageGenerationException as e:
-            raise Exception(f"Image generation interrupted: {str(e)}")
+            raise Exception(f"Image generation interrupted: {e!s}")
         except Exception as e:
-            raise Exception(f"Error generating image: {str(e)}")
+            raise Exception(f"Error generating image: {e!s}")
         finally:
             if memory_saver:
                 print(memory_saver.memory_stats())
@@ -138,11 +137,11 @@ class MFluxImageGenerator:
 class ImagesService:
     def __init__(self):
         # Use system temporary directory
-        self.output_dir = Path(tempfile.gettempdir()) / "mlx_omni_server" / "images"
+        self.output_dir = Path(tempfile.gettempdir()) / "mlx_batch_server" / "images"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Cache loaded generator instances
-        self._generator_cache: Dict[str, MFluxImageGenerator] = {}
+        self._generator_cache: dict[str, MFluxImageGenerator] = {}
 
     def _get_generator(self, model_name: str) -> MFluxImageGenerator:
         """Get or create image generator instance"""
@@ -166,12 +165,12 @@ class ImagesService:
         try:
             os.unlink(image_path)
         except Exception as e:
-            print(f"Error cleaning up image {image_path}: {str(e)}")
+            print(f"Error cleaning up image {image_path}: {e!s}")
 
     def generate_images(
         self,
         request: ImageGenerationRequest,
-    ) -> List[ImageObject]:
+    ) -> list[ImageObject]:
         """Generate images based on the request"""
         generated_images = []
         generator = self._get_generator(model_name=request.model)
@@ -199,7 +198,7 @@ class ImagesService:
                 generated_images.append(image_object)
 
             except Exception as e:
-                raise Exception(f"Error generating image: {str(e)}")
+                raise Exception(f"Error generating image: {e!s}")
             finally:
                 # Clean up temporary file if using base64 format
                 if request.response_format == ResponseFormat.B64_JSON:

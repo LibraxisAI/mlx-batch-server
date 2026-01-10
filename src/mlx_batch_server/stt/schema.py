@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import List, Optional
 
 from fastapi import File, Form, UploadFile
 from pydantic import BaseModel
@@ -30,7 +29,7 @@ class Segment(BaseModel):
     start: float
     end: float
     text: str
-    tokens: List[int]
+    tokens: list[int]
     temperature: float
     avg_logprob: float
     compression_ratio: float
@@ -42,8 +41,8 @@ class TranscriptionResponse(BaseModel):
     language: str
     duration: float
     text: str
-    words: Optional[List[TranscriptionWord]] = None
-    segments: Optional[List[Segment]] = None
+    words: list[TranscriptionWord] | None = None
+    segments: list[Segment] | None = None
 
 
 class SimpleTranscriptionResponse(BaseModel):
@@ -55,19 +54,19 @@ class STTRequestForm:
         self,
         file: UploadFile = File(..., description="The audio file to transcribe"),
         model: str = Form(..., description="ID of the model to use"),
-        language: Optional[str] = Form(
+        language: str | None = Form(
             None, description="The language of the input audio in ISO-639-1 format"
         ),
-        prompt: Optional[str] = Form(
+        prompt: str | None = Form(
             None, description="An optional text to guide the model's style"
         ),
-        response_format: Optional[ResponseFormat] = Form(
+        response_format: ResponseFormat | None = Form(
             ResponseFormat.JSON, description="The format of the transcription output"
         ),
-        temperature: Optional[float] = Form(
+        temperature: float | None = Form(
             0.0, description="The sampling temperature, between 0 and 1"
         ),
-        timestamp_granularities: Optional[List[str]] = Form(
+        timestamp_granularities: list[str] | None = Form(
             default=["segment"],
             alias="timestamp_granularities[]",  # 添加别名以匹配表单字段名
             description="The timestamp granularities to populate (word or segment)",

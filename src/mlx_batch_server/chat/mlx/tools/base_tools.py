@@ -2,14 +2,13 @@ import json
 import re
 import uuid
 from abc import ABC, abstractmethod
-from typing import List, Optional
 
-from mlx_omni_server.utils.logger import logger
+from mlx_batch_server.utils.logger import logger
 
 from ..core_types import ToolCall
 
 
-def extract_tools(text: str) -> Optional[List[ToolCall]]:
+def extract_tools(text: str) -> list[ToolCall] | None:
     """Extract tool calls from text and return CoreToolCall objects directly.
 
     Args:
@@ -62,5 +61,5 @@ class BaseToolParser(ABC):
     end_tool_calls: str
 
     @abstractmethod
-    def parse_tools(self, text: str) -> Optional[List[ToolCall]]:
+    def parse_tools(self, text: str) -> list[ToolCall] | None:
         pass

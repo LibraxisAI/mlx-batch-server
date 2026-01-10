@@ -351,7 +351,7 @@ def create_app():
         for i, default_prompt in enumerate(CANONICAL_CHAIN):
             prompt_boxes.append(
                 gr.Textbox(
-                    label=f"Step {i+1}",
+                    label=f"Step {i + 1}",
                     value=default_prompt,
                     lines=2,
                     visible=(i < 4),
@@ -379,7 +379,7 @@ def create_app():
         # We'll create MAX_LANES components but show/hide based on num_lanes
         for i in range(MAX_LANES):
             with gr.Group(visible=(i < 2)) as lane_group:
-                gr.Markdown(f"#### Lane {i+1}")
+                gr.Markdown(f"#### Lane {i + 1}")
                 with gr.Row():
                     endpoint = gr.Dropdown(
                         label="Endpoint",
@@ -515,7 +515,7 @@ def create_app():
                     # Join all responses with step markers
                     output_text = ""
                     for j, resp in enumerate(r["responses"]):
-                        output_text += f"═══ Step {j+1} ═══\n{resp}\n\n"
+                        output_text += f"═══ Step {j + 1} ═══\n{resp}\n\n"
 
                     final_outputs.append(output_text.strip())
 
@@ -526,7 +526,7 @@ def create_app():
                         if r["total_time"] > 0
                         else 0
                     )
-                    total = f"{r['total_time']/1000:.2f}s" if r["total_time"] else "-"
+                    total = f"{r['total_time'] / 1000:.2f}s" if r["total_time"] else "-"
                     stats_text = f"TTFT: {ttft} | tok/s: {tps:.1f} | Total: {total}"
                     if r.get("error"):
                         stats_text += f" | ❌ {r['error']}"
@@ -628,10 +628,10 @@ def run_cli_benchmark(
         status = "✓" if not r.get("error") else "✗"
         ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
         tps = r["total_tokens"] / (r["total_time"] / 1000) if r["total_time"] > 0 else 0
-        lane_time = f"{r['total_time']/1000:.2f}s" if r["total_time"] else "-"
+        lane_time = f"{r['total_time'] / 1000:.2f}s" if r["total_time"] else "-"
 
         print(
-            f"Worker {i+1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}"
+            f"Worker {i + 1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}"
         )
 
         if r.get("error"):
@@ -645,8 +645,8 @@ def run_cli_benchmark(
     print("═" * 64)
     print(f"Total wall time: {total_time:.2f}s")
     print(f"Total tokens:    {total_tokens}")
-    print(f"Avg TTFT:        {total_ttft/max(workers-errors, 1):.0f}ms")
-    print(f"Aggregate tok/s: {total_tokens/total_time:.1f}")
+    print(f"Avg TTFT:        {total_ttft / max(workers - errors, 1):.0f}ms")
+    print(f"Aggregate tok/s: {total_tokens / total_time:.1f}")
     print(f"Errors:          {errors}/{workers}")
     print()
 
