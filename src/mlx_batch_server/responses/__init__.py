@@ -1,5 +1,5 @@
 """
-OpenAI Responses API implementation for MLX Omni Server.
+OpenAI Responses API implementation for MLX Batch Server.
 
 Provides /v1/responses endpoint compatible with OpenAI's Responses API,
 with intelligent routing to local models and external providers.

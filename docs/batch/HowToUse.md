@@ -6,24 +6,24 @@ Batch processing is enabled by default. Configure via environment variables:
 
 ```bash
 # Enable/disable batch inference
-export MLX_OMNI_ENABLE_BATCH=true
+export MLX_BATCH_ENABLE_BATCH=true
 
 # Time window (ms) to collect requests before processing
-export MLX_OMNI_BATCH_WINDOW_MS=50
+export MLX_BATCH_BATCH_WINDOW_MS=50
 
 # Maximum requests per batch
-export MLX_OMNI_MAX_BATCH_SIZE=10
+export MLX_BATCH_MAX_BATCH_SIZE=10
 
 # mlx-lm BatchGenerator settings
-export MLX_OMNI_BATCH_COMPLETION_SIZE=32
-export MLX_OMNI_BATCH_PREFILL_SIZE=8
-export MLX_OMNI_BATCH_PREFILL_STEP_SIZE=2048
+export MLX_BATCH_BATCH_COMPLETION_SIZE=32
+export MLX_BATCH_BATCH_PREFILL_SIZE=8
+export MLX_BATCH_BATCH_PREFILL_STEP_SIZE=2048
 ```
 
 ## Health Check
 
 ```bash
-curl http://localhost:10240/v1/batch/stats | jq
+curl http://localhost:8100/v1/batch/stats | jq
 ```
 
 Response:
@@ -44,7 +44,7 @@ Response:
 
 ```bash
 # Single streaming request (will use batch infrastructure)
-curl -sS -N http://localhost:10240/v1/responses \
+curl -sS -N http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/Qwen3-0.6B-4bit",
@@ -58,7 +58,7 @@ curl -sS -N http://localhost:10240/v1/responses \
 ```bash
 # Launch 5 concurrent requests
 for i in {1..5}; do
-  curl -sS -N http://localhost:10240/v1/responses \
+  curl -sS -N http://localhost:8100/v1/responses \
     -H "Content-Type: application/json" \
     -d "{
       \"model\": \"mlx-community/Qwen3-0.6B-4bit\",
@@ -79,7 +79,7 @@ async def send_request(client: httpx.AsyncClient, prompt: str):
     """Send streaming request and collect response."""
     async with client.stream(
         "POST",
-        "http://localhost:10240/v1/responses",
+        "http://localhost:8100/v1/responses",
         json={
             "model": "mlx-community/Qwen3-0.6B-4bit",
             "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
@@ -143,19 +143,19 @@ Check that:
 Try adjusting:
 ```bash
 # Larger completion batch for more parallelism
-export MLX_OMNI_BATCH_COMPLETION_SIZE=64
+export MLX_BATCH_BATCH_COMPLETION_SIZE=64
 
 # Smaller batch window for faster response
-export MLX_OMNI_BATCH_WINDOW_MS=25
+export MLX_BATCH_BATCH_WINDOW_MS=25
 ```
 
 ### Memory issues
 
 Reduce batch sizes:
 ```bash
-export MLX_OMNI_BATCH_COMPLETION_SIZE=16
-export MLX_OMNI_BATCH_PREFILL_SIZE=4
-export MLX_OMNI_MAX_BATCH_SIZE=5
+export MLX_BATCH_BATCH_COMPLETION_SIZE=16
+export MLX_BATCH_BATCH_PREFILL_SIZE=4
+export MLX_BATCH_MAX_BATCH_SIZE=5
 ```
 
 ## Monitoring
@@ -164,7 +164,7 @@ Watch batch coordinator activity:
 
 ```bash
 # In one terminal - watch stats
-watch -n 1 'curl -s http://localhost:10240/v1/batch/stats | jq'
+watch -n 1 'curl -s http://localhost:8100/v1/batch/stats | jq'
 
 # In another - send concurrent requests
 ./test_concurrent.py

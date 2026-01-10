@@ -336,7 +336,7 @@ class ResponsesAdapter:
                 else 0,
                 total_tokens=completion.usage.total_tokens if completion.usage else 0,
             ),
-            _provider="mlx-omni-server",
+            _provider="mlx-batch-server",
         )
 
     async def _generate_vision(

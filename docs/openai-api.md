@@ -10,13 +10,13 @@
 
 ---
 
-MLX Omni Server provides full OpenAI API compatibility, enabling seamless integration with existing OpenAI SDK clients while leveraging local MLX inference on Apple Silicon.
+MLX Batch Server provides full OpenAI API compatibility, enabling seamless integration with existing OpenAI SDK clients while leveraging local MLX inference on Apple Silicon.
 
 ## 🚀 Installation & Setup
 
 ```bash
-pip install mlx-omni-server
-mlx-omni-server  # Start the server
+pip install mlx-batch-server
+mlx-batch-server  # Start the server
 ```
 
 ## ⚡ Basic Usage
@@ -26,7 +26,7 @@ from openai import OpenAI
 
 # Connect to local server
 client = OpenAI(
-    base_url="http://localhost:10240/v1",
+    base_url="http://localhost:8100/v1",
     api_key="not-needed"
 )
 
@@ -137,7 +137,7 @@ speech_file_path = "output.wav"
 response = client.audio.speech.create(
     model="lucasnewman/f5-tts-mlx",
     voice="alloy",
-    input="Hello from MLX Omni Server!"
+    input="Hello from MLX Batch Server!"
 )
 response.stream_to_file(speech_file_path)
 ```
@@ -174,7 +174,7 @@ print(f"Generated image: {image_url}")
 # Single text embedding
 response = client.embeddings.create(
     model="mlx-community/all-MiniLM-L6-v2-4bit",
-    input="MLX Omni Server provides local AI inference"
+    input="MLX Batch Server provides local AI inference"
 )
 print(f"Embedding dimension: {len(response.data[0].embedding)}")
 
@@ -268,7 +268,7 @@ for request in requests:
 ### Chat Completions
 
 ```bash
-curl http://localhost:10240/v1/chat/completions \
+curl http://localhost:8100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/gemma-3-1b-it-4bit-DWQ",
@@ -281,7 +281,7 @@ curl http://localhost:10240/v1/chat/completions \
 ### Streaming Chat
 
 ```bash
-curl http://localhost:10240/v1/chat/completions \
+curl http://localhost:8100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/gemma-3-1b-it-4bit-DWQ",
@@ -295,7 +295,7 @@ curl http://localhost:10240/v1/chat/completions \
 ### Text-to-Speech
 
 ```bash
-curl -X POST "http://localhost:10240/v1/audio/speech" \
+curl -X POST "http://localhost:8100/v1/audio/speech" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "lucasnewman/f5-tts-mlx",
@@ -308,7 +308,7 @@ curl -X POST "http://localhost:10240/v1/audio/speech" \
 ### Image Generation
 
 ```bash
-curl http://localhost:10240/v1/images/generations \
+curl http://localhost:8100/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{
     "model": "argmaxinc/mlx-FLUX.1-schnell",
@@ -387,14 +387,14 @@ mlx-community/gemma-2b-it-4bit-DWQ
 
 ```bash
 # Start server with debug logging
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
 ```
 
 ## 📚 API Reference
 
 For complete API specifications, see:
 - [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
-- [MLX Omni Server Source Code](https://github.com/madroidmaq/mlx-omni-server)
+- [MLX Batch Server Source Code](https://github.com/madroidmaq/mlx-batch-server)
 
 ## 🤝 Contributing
 

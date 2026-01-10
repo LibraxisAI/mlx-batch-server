@@ -2549,7 +2549,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mlx-omni-server"
+name = "mlx-batch-server"
 version = "0.5.3.dev0"
 source = { editable = "." }
 dependencies = [

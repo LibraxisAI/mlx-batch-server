@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="pl">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +21,11 @@
             --gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
@@ -101,7 +106,7 @@
             text-transform: none;
         }
 
-        .mode-toggle input:checked + span {
+        .mode-toggle input:checked+span {
             color: var(--accent);
         }
 
@@ -237,7 +242,9 @@
             letter-spacing: 0.05em;
         }
 
-        .field input, .field select, .field textarea {
+        .field input,
+        .field select,
+        .field textarea {
             padding: 0.5rem 0.75rem;
             background: var(--bg);
             border: 1px solid var(--border);
@@ -247,7 +254,9 @@
             font-family: inherit;
         }
 
-        .field input:focus, .field select:focus, .field textarea:focus {
+        .field input:focus,
+        .field select:focus,
+        .field textarea:focus {
             outline: none;
             border-color: var(--accent);
         }
@@ -337,14 +346,14 @@
             justify-content: space-between;
             align-items: center;
             padding: 0.5rem 0.75rem;
-            background: rgba(255,255,255,0.02);
+            background: rgba(255, 255, 255, 0.02);
             border-bottom: 1px solid var(--border);
             font-size: 0.75rem;
             cursor: pointer;
         }
 
         .output-item-header:hover {
-            background: rgba(255,255,255,0.04);
+            background: rgba(255, 255, 255, 0.04);
         }
 
         .output-step {
@@ -370,12 +379,24 @@
             animation: pulse 1s infinite;
         }
 
-        .status-dot.success { background: var(--success); }
-        .status-dot.error { background: var(--error); }
+        .status-dot.success {
+            background: var(--success);
+        }
+
+        .status-dot.error {
+            background: var(--error);
+        }
 
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.4;
+            }
         }
 
         .output-item-body {
@@ -448,10 +469,23 @@
         }
 
         /* Scrollbar */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: var(--bg); }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-dim);
+        }
 
         /* Endpoint presets */
         .endpoint-presets {
@@ -476,6 +510,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="header">
         <h1>LibraxisAI API Tester</h1>
@@ -485,7 +520,8 @@
     <div class="global-config">
         <div class="field" style="flex: 1;">
             <label>API Key</label>
-            <input type="password" id="globalApiKey" value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9">
+            <input type="password" id="globalApiKey"
+                value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9">
         </div>
         <div class="field">
             <label>Mode</label>
@@ -518,8 +554,10 @@
     <div class="toolbar">
         <button class="btn btn-secondary" onclick="addLane()">+ Add Lane</button>
         <button class="btn btn-secondary" onclick="clearAllOutputs()">Clear Outputs</button>
-        <div style="display: flex; align-items: center; gap: 0.25rem; background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; border: 1px solid var(--border);">
-            <select id="presetSelect" style="background: var(--bg); border: none; color: var(--text); padding: 0.4rem; border-radius: 4px; min-width: 120px;">
+        <div
+            style="display: flex; align-items: center; gap: 0.25rem; background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; border: 1px solid var(--border);">
+            <select id="presetSelect"
+                style="background: var(--bg); border: none; color: var(--text); padding: 0.4rem; border-radius: 4px; min-width: 120px;">
                 <option value="">-- Presets --</option>
             </select>
             <button class="btn btn-secondary" onclick="loadPreset()" style="padding: 0.4rem 0.6rem;">Load</button>
@@ -529,7 +567,8 @@
         <button class="btn btn-secondary" onclick="exportResults()">Export JSON</button>
         <button class="btn btn-secondary" onclick="copyResultsToClipboard()">Copy</button>
         <button class="btn btn-secondary" onclick="exportAllLogs()" title="Export all saved test logs">
-            Logs <span id="logCount" style="background: var(--accent); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">0</span>
+            Logs <span id="logCount"
+                style="background: var(--accent); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">0</span>
         </button>
         <div style="flex: 1;"></div>
         <button class="btn btn-primary" id="runBtn" onclick="runAllLanes()">
@@ -552,7 +591,7 @@
 
         // Endpoint presets
         const ENDPOINTS = {
-            'mlx-omni': 'http://localhost:10240/v1/responses',
+            'mlx-batch': 'http://localhost:8100/v1/responses',
             'api-router': 'http://localhost:8088/v1/responses',
             'remote': 'https://api.libraxis.cloud/v1/responses'
         };
@@ -650,7 +689,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `api-test-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+            a.download = `api-test-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
             a.click();
             URL.revokeObjectURL(url);
         }
@@ -668,8 +707,8 @@
                 text += `Stats: TTFT=${lane.stats.ttft} | tok/s=${lane.stats.tps} | Total=${lane.stats.total}\n\n`;
 
                 lane.prompts.forEach((prompt, i) => {
-                    text += `[Prompt ${i+1}]: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n`;
-                    text += `[Response ${i+1}]: ${(lane.responses[i] || '').slice(0, 200)}${(lane.responses[i] || '').length > 200 ? '...' : ''}\n\n`;
+                    text += `[Prompt ${i + 1}]: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n`;
+                    text += `[Response ${i + 1}]: ${(lane.responses[i] || '').slice(0, 200)}${(lane.responses[i] || '').length > 200 ? '...' : ''}\n\n`;
                 });
                 text += '\n';
             });
@@ -709,7 +748,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `api-test-logs-${new Date().toISOString().slice(0,10)}.json`;
+            a.download = `api-test-logs-${new Date().toISOString().slice(0, 10)}.json`;
             a.click();
             URL.revokeObjectURL(url);
 
@@ -904,7 +943,7 @@
                         <label>Endpoint</label>
                         <input type="text" id="${laneId}-endpoint" value="${ENDPOINTS['remote']}" placeholder="http://...">
                         <div class="endpoint-presets">
-                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-omni')">mlx-omni</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-batch')">mlx-batch</span>
                             <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'api-router')">api-router</span>
                             <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'remote')">remote</span>
                         </div>
@@ -1304,4 +1343,5 @@
         }
     </script>
 </body>
+
 </html>

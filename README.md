@@ -1,17 +1,17 @@
 <div align="center">
 
-# MLX Omni Server
+# MLX Batch Server
 
 *Local AI inference server optimized for Apple Silicon*
 
-[![PyPI version](https://img.shields.io/pypi/v/mlx-omni-server.svg)](https://pypi.python.org/pypi/mlx-omni-server)
+[![PyPI version](https://img.shields.io/pypi/v/mlx-batch-server.svg)](https://pypi.python.org/pypi/mlx-batch-server)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madroidmaq/mlx-omni-server)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madroidmaq/mlx-batch-server)
 
-![MLX Omni Server Banner](docs/banner.png)
+![MLX Batch Server Banner](docs/banner.png)
 
-**MLX Omni Server** provides dual API compatibility with both **OpenAI** and **Anthropic APIs**, enabling seamless local inference on Apple Silicon using the MLX framework.
+**MLX Batch Server** provides dual API compatibility with both **OpenAI** and **Anthropic APIs**, enabling seamless local inference on Apple Silicon using the MLX framework.
 
 [Installation](#-installation) • [Quick Start](#-quick-start) • [Documentation](#-documentation) • [Contributing](#-contributing)
 
@@ -55,14 +55,14 @@ This fork by [LibraxisAI](https://github.com/LibraxisAI) adds production-grade f
 ## Installation
 
 ```bash
-pip install mlx-omni-server
+pip install mlx-batch-server
 ```
 
 Or from source (LibraxisAI fork):
 
 ```bash
-git clone https://github.com/LibraxisAI/mlx-omni-server.git
-cd mlx-omni-server
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
+cd mlx-batch-server
 uv sync
 ```
 
@@ -70,7 +70,7 @@ uv sync
 
 1. **Start the server:**
    ```bash
-   mlx-omni-server
+   mlx-batch-server
    ```
 
 2. **Choose your preferred API:**
@@ -82,7 +82,7 @@ uv sync
    import httpx
 
    response = httpx.post(
-       "http://localhost:10240/v1/responses",
+       "http://localhost:8100/v1/responses",
        json={
            "model": "mlx-community/Qwen3-0.6B-4bit",
            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello!"}]}],
@@ -104,7 +104,7 @@ uv sync
    from openai import OpenAI
 
    client = OpenAI(
-       base_url="http://localhost:10240/v1",
+       base_url="http://localhost:8100/v1",
        api_key="not-needed"
    )
 
@@ -123,7 +123,7 @@ uv sync
    import anthropic
 
    client = anthropic.Anthropic(
-       base_url="http://localhost:10240/anthropic",
+       base_url="http://localhost:8100/anthropic",
        api_key="not-needed"
    )
 
@@ -164,26 +164,26 @@ uv sync
 ## Configuration
 
 ```bash
-# Default (port 10240)
-mlx-omni-server
+# Default (port 8100)
+mlx-batch-server
 
 # Custom options
-mlx-omni-server --port 8000
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+mlx-batch-server --port 8000
+MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
 
 # View all options
-mlx-omni-server --help
+mlx-batch-server --help
 ```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MLX_OMNI_LOG_LEVEL` | Logging level | `info` |
-| `MLX_OMNI_CORS` | CORS origins (comma-separated) | - |
-| `MLX_OMNI_ENABLE_BATCH` | Enable batch inference | `true` |
-| `MLX_OMNI_BATCH_WINDOW_MS` | Batch collection window | `50` |
-| `MLX_OMNI_MAX_BATCH_SIZE` | Maximum batch size | `10` |
+| `MLX_BATCH_LOG_LEVEL` | Logging level | `info` |
+| `MLX_BATCH_CORS` | CORS origins (comma-separated) | - |
+| `MLX_BATCH_ENABLE_BATCH` | Enable batch inference | `true` |
+| `MLX_BATCH_BATCH_WINDOW_MS` | Batch collection window | `50` |
+| `MLX_BATCH_MAX_BATCH_SIZE` | Maximum batch size | `10` |
 
 ## Documentation
 
@@ -201,8 +201,8 @@ mlx-omni-server --help
 <summary><b>Development Setup</b></summary>
 
 ```bash
-git clone https://github.com/LibraxisAI/mlx-omni-server.git
-cd mlx-omni-server
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
+cd mlx-batch-server
 make setup  # Install deps + hooks
 
 # Start with hot-reload
@@ -255,7 +255,7 @@ python -c "import mlx; print(mlx.__version__)"
 huggingface-cli download mlx-community/gemma-3-1b-it-4bit-DWQ
 
 # Enable debug logging
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
 ```
 </details>
 
@@ -263,8 +263,8 @@ MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
 
 **Quick contributor setup:**
 ```bash
-git clone https://github.com/LibraxisAI/mlx-omni-server.git
-cd mlx-omni-server
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
+cd mlx-batch-server
 make setup && make test
 ```
 
@@ -276,7 +276,7 @@ make setup && make test
 
 Built with [MLX](https://github.com/ml-explore/mlx) by Apple | [FastAPI](https://fastapi.tiangolo.com/) | [MLX-LM](https://github.com/ml-explore/mlx-lm)
 
-Original project by [madroidmaq](https://github.com/madroidmaq/mlx-omni-server)
+Original project by [madroidmaq](https://github.com/madroidmaq/mlx-batch-server)
 
 LibraxisAI enhancements by M&K (c)2026 VetCoders
 

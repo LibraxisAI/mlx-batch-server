@@ -3,7 +3,7 @@
 ## Basic Streaming Request
 
 ```bash
-curl -sS -N http://localhost:10240/v1/responses \
+curl -sS -N http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/Qwen3-0.6B-4bit",
@@ -15,7 +15,7 @@ curl -sS -N http://localhost:10240/v1/responses \
 ## Non-Streaming Request
 
 ```bash
-curl http://localhost:10240/v1/responses \
+curl http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/Qwen3-0.6B-4bit",
@@ -46,7 +46,7 @@ Response:
 ## With System Prompt
 
 ```bash
-curl -sS -N http://localhost:10240/v1/responses \
+curl -sS -N http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/Qwen3-0.6B-4bit",
@@ -68,7 +68,7 @@ def stream_response(prompt: str, model: str = "mlx-community/Qwen3-0.6B-4bit"):
     """Stream a response from the API."""
     with httpx.stream(
         "POST",
-        "http://localhost:10240/v1/responses",
+        "http://localhost:8100/v1/responses",
         json={
             "model": model,
             "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
@@ -96,7 +96,7 @@ from openai import OpenAI
 
 # Note: Using chat completions endpoint, not responses
 client = OpenAI(
-    base_url="http://localhost:10240/v1",
+    base_url="http://localhost:8100/v1",
     api_key="not-needed"
 )
 
@@ -108,7 +108,7 @@ client = OpenAI(
 
 ```javascript
 async function streamResponse(prompt) {
-  const response = await fetch('http://localhost:10240/v1/responses', {
+  const response = await fetch('http://localhost:8100/v1/responses', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -165,7 +165,7 @@ def chat_turn(prompt: str, previous_id: str = None) -> tuple[str, str]:
         payload["previous_response_id"] = previous_id
 
     response = httpx.post(
-        "http://localhost:10240/v1/responses",
+        "http://localhost:8100/v1/responses",
         json=payload,
         timeout=60.0
     ).json()
@@ -194,7 +194,7 @@ import httpx
 
 try:
     response = httpx.post(
-        "http://localhost:10240/v1/responses",
+        "http://localhost:8100/v1/responses",
         json={
             "model": "nonexistent-model",
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]

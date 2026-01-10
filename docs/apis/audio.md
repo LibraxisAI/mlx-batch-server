@@ -9,7 +9,7 @@ OpenAI's [createSpeech](https://platform.openai.com/docs/api-reference/audio/cre
 ### Sample
 
 ```shell
-curl -X POST "http://localhost:10240/v1/audio/speech" \
+curl -X POST "http://localhost:8100/v1/audio/speech" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "lucasnewman/f5-tts-mlx",
@@ -31,7 +31,7 @@ OpenAI's [createTranscription](https://platform.openai.com/docs/api-reference/au
 <summary>Default json sample</summary>
 
 ```shell
-curl -X POST "http://localhost:10240/v1/audio/transcriptions" \
+curl -X POST "http://localhost:8100/v1/audio/transcriptions" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@mlx_example.wav" \
   -F "model=mlx-community/whisper-large-v3-turbo"
@@ -51,7 +51,7 @@ curl -X POST "http://localhost:10240/v1/audio/transcriptions" \
 <summary>Text sample</summary>
 
 ```shell
-curl -X POST "http://localhost:10240/audio/transcriptions" \
+curl -X POST "http://localhost:8100/audio/transcriptions" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@mlx_example.wav" \
   -F "model=mlx-community/whisper-large-v3-turbo" \
@@ -70,7 +70,7 @@ MLX Project is awesome!
 <summary>SRT sample</summary>
 
 ```shell
-curl -X POST "http://localhost:10240/audio/transcriptions" \
+curl -X POST "http://localhost:8100/audio/transcriptions" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@mlx_example.wav" \
   -F "model=mlx-community/whisper-large-v3-turbo" \
@@ -91,7 +91,7 @@ MLX Project is awesome!
 <summary>Verbose json sample</summary>
 
 ```shell
-curl -X POST "http://localhost:10240/audio/transcriptions" \
+curl -X POST "http://localhost:8100/audio/transcriptions" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@mlx_example.wav" \
   -F "model=mlx-community/whisper-large-v3-turbo" \
@@ -125,7 +125,7 @@ curl -X POST "http://localhost:10240/audio/transcriptions" \
 <summary>Verbose word json sample</summary>
 
 ```shell
-curl -X POST "http://localhost:10240/audio/transcriptions" \
+curl -X POST "http://localhost:8100/audio/transcriptions" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@mlx_example.wav" \
   -F "model=mlx-community/whisper-large-v3-turbo" \
@@ -182,7 +182,7 @@ curl -X POST "http://localhost:10240/audio/transcriptions" \
 <summary>VTT sample</summary>
 
 ```shell
-curl -X POST "http://localhost:10240/v1/audio/transcriptions" \
+curl -X POST "http://localhost:8100/v1/audio/transcriptions" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@mlx_example.wav" \
   -F "model=mlx-community/whisper-large-v3-turbo" \

@@ -10,13 +10,13 @@
 
 ---
 
-MLX Omni Server provides full Anthropic Claude API compatibility, enabling seamless integration with existing Anthropic SDK clients while leveraging local MLX inference on Apple Silicon.
+MLX Batch Server provides full Anthropic Claude API compatibility, enabling seamless integration with existing Anthropic SDK clients while leveraging local MLX inference on Apple Silicon.
 
 ## 🚀 Installation & Setup
 
 ```bash
-pip install mlx-omni-server
-mlx-omni-server  # Start the server
+pip install mlx-batch-server
+mlx-batch-server  # Start the server
 ```
 
 ## ⚡ Basic Usage
@@ -26,7 +26,7 @@ import anthropic
 
 # Connect to local server
 client = anthropic.Anthropic(
-    base_url="http://localhost:10240/anthropic",
+    base_url="http://localhost:8100/anthropic",
     api_key="not-needed"
 )
 
@@ -415,7 +415,7 @@ message = client.messages.create(
 ### Basic Message
 
 ```bash
-curl -X POST "http://localhost:10240/anthropic/v1/messages" \
+curl -X POST "http://localhost:8100/anthropic/v1/messages" \
   -H "Content-Type: application/json" \
   -H "x-api-key: not-needed" \
   -H "anthropic-version: 2023-06-01" \
@@ -434,7 +434,7 @@ curl -X POST "http://localhost:10240/anthropic/v1/messages" \
 ### Streaming Message
 
 ```bash
-curl -X POST "http://localhost:10240/anthropic/v1/messages" \
+curl -X POST "http://localhost:8100/anthropic/v1/messages" \
   -H "Content-Type: application/json" \
   -H "x-api-key: not-needed" \
   -H "anthropic-version: 2023-06-01" \
@@ -454,7 +454,7 @@ curl -X POST "http://localhost:10240/anthropic/v1/messages" \
 ### Message with Tools
 
 ```bash
-curl -X POST "http://localhost:10240/anthropic/v1/messages" \
+curl -X POST "http://localhost:8100/anthropic/v1/messages" \
   -H "Content-Type: application/json" \
   -H "x-api-key: not-needed" \
   -H "anthropic-version: 2023-06-01" \
@@ -486,7 +486,7 @@ curl -X POST "http://localhost:10240/anthropic/v1/messages" \
 ### List Models
 
 ```bash
-curl "http://localhost:10240/anthropic/v1/models" \
+curl "http://localhost:8100/anthropic/v1/models" \
   -H "x-api-key: not-needed" \
   -H "anthropic-version: 2023-06-01"
 ```
@@ -494,7 +494,7 @@ curl "http://localhost:10240/anthropic/v1/models" \
 ### List Models with Pagination
 
 ```bash
-curl "http://localhost:10240/anthropic/v1/models?limit=10&after_id=model_id" \
+curl "http://localhost:8100/anthropic/v1/models?limit=10&after_id=model_id" \
   -H "x-api-key: not-needed" \
   -H "anthropic-version: 2023-06-01"
 ```
@@ -580,7 +580,7 @@ except Exception as e:
 **Model Not Found**
 ```bash
 # Check available models
-curl "http://localhost:10240/anthropic/v1/models"
+curl "http://localhost:8100/anthropic/v1/models"
 
 # Pre-download models
 huggingface-cli download mlx-community/gemma-3-1b-it-4bit-DWQ
@@ -589,7 +589,7 @@ huggingface-cli download mlx-community/gemma-3-1b-it-4bit-DWQ
 **Streaming Issues**
 ```bash
 # Check server logs
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
 
 # Test with simple non-streaming request first
 ```
@@ -605,10 +605,10 @@ MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
 
 ```bash
 # Enable debug logging
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
 
 # Test with curl for detailed error messages
-curl -v "http://localhost:10240/anthropic/v1/messages" \
+curl -v "http://localhost:8100/anthropic/v1/messages" \
   -H "Content-Type: application/json" \
   -d '{"model": "test", "max_tokens": 100, "messages": [{"role": "user", "content": "test"}]}'
 ```
@@ -618,7 +618,7 @@ curl -v "http://localhost:10240/anthropic/v1/messages" \
 For complete Anthropic API specifications, see:
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - [Anthropic Models API](https://docs.anthropic.com/en/api/models)
-- [MLX Omni Server Source Code](https://github.com/madroidmaq/mlx-omni-server)
+- [MLX Batch Server Source Code](https://github.com/madroidmaq/mlx-batch-server)
 
 ## 🤝 Contributing
 

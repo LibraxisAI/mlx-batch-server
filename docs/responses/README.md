@@ -1,6 +1,6 @@
 # Responses API
 
-MLX Omni Server implements OpenAI's `/v1/responses` API endpoint with full
+MLX Batch Server implements OpenAI's `/v1/responses` API endpoint with full
 SSE streaming support. This directory contains documentation for the
 Responses API subsystem.
 
@@ -18,7 +18,7 @@ The Responses API is OpenAI's newer API format, designed for:
 
 ```bash
 # Basic request
-curl -X POST http://localhost:10240/v1/responses \
+curl -X POST http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/Qwen3-0.6B-4bit",
@@ -88,13 +88,13 @@ Use `previous_response_id` for multi-turn conversations:
 
 ```bash
 # First request
-RESP_ID=$(curl -s http://localhost:10240/v1/responses \
+RESP_ID=$(curl -s http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{"model":"chat","input":[{"role":"user","content":[{"type":"input_text","text":"My name is Alex"}]}]}' \
   | jq -r '.id')
 
 # Follow-up (uses conversation history)
-curl http://localhost:10240/v1/responses \
+curl http://localhost:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d "{
     \"model\": \"chat\",

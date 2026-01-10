@@ -1,4 +1,4 @@
-# MLX Omni Server - Development Makefile
+# MLX Batch Server - Development Makefile
 # Extended by LibraxisAI
 #
 # Usage:
@@ -15,15 +15,15 @@
 
 # === Configuration ===
 PYTHON := uv run python
-PORT ?= 10240
+PORT ?= 8100
 HOST ?= 0.0.0.0
 LOG_LEVEL ?= info
 CORS ?= http://localhost:*
 
 # === Installation ===
-install: ## Install as global CLI tool (mlx-omni-server command)
+install: ## Install as global CLI tool (mlx-batch-server command)
 	uv tool install . --force --prerelease=allow
-	@echo "✓ Installed: mlx-omni-server --help"
+	@echo "✓ Installed: mlx-batch-server --help"
 
 setup: ## Full dev setup (deps + hooks)
 	uv sync --all-groups
@@ -43,14 +43,14 @@ install-hooks: ## Install pre-commit hooks
 	fi
 
 # === Development ===
-dev: ## Run development server (foreground, default port: 10240)
+dev: ## Run development server (foreground, default port: 8100)
 	$(PYTHON) -m mlx_omni_server.main --port $(PORT) --host $(HOST) --log-level $(LOG_LEVEL) --cors-allow-origins="$(CORS)"
 
 dev-8100: ## Run on port 8100 (LibraxisAI integration)
 	$(PYTHON) -m mlx_omni_server.main --port 8100 --host 0.0.0.0 --log-level info --cors-allow-origins="$(CORS)"
 
-LOG_FILE ?= mlx-omni-server.log
-PID_FILE ?= .mlx-omni-server.pid
+LOG_FILE ?= mlx-batch-server.log
+PID_FILE ?= .mlx-batch-server.pid
 
 run: ## Run server as background daemon (logs to $(LOG_FILE))
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
@@ -174,7 +174,7 @@ ps: ## List loaded models
 		echo "Server not running"
 
 status: ## Server status
-	@echo "=== MLX Omni Server Status ==="
+	@echo "=== MLX Batch Server Status ==="
 	@curl -s $(SERVER_URL)/health 2>/dev/null && echo "Server: UP" || echo "Server: DOWN"
 	@echo ""
 	@echo "Loaded models:"
@@ -197,14 +197,14 @@ clean: ## Clean build artifacts
 
 # === Docker (optional) ===
 docker-build: ## Build Docker image
-	docker build -t mlx-omni-server:latest .
+	docker build -t mlx-batch-server:latest .
 
 docker-run: ## Run in Docker
-	docker run -p $(PORT):$(PORT) mlx-omni-server:latest
+	docker run -p $(PORT):$(PORT) mlx-batch-server:latest
 
 # === Help ===
 help: ## Show this help
-	@echo "MLX Omni Server - Development Commands"
+	@echo "MLX Batch Server - Development Commands"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""

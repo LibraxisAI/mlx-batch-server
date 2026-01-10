@@ -18,7 +18,7 @@ import httpx
 # === CONSTANTS ===
 
 ENDPOINTS = {
-    "mlx-omni": "http://localhost:10240/v1/responses",
+    "mlx-batch": "http://localhost:8100/v1/responses",
     "api-router": "http://localhost:8088/v1/responses",
     "remote": "https://api.libraxis.cloud/v1/responses",
 }
@@ -672,10 +672,10 @@ Examples:
   python api_tester.py
 
   # CLI benchmark with 10 parallel workers
-  python api_tester.py --cli -w 10 -e http://localhost:10240/v1/responses -m chat
+  python api_tester.py --cli -w 10 -e http://localhost:8100/v1/responses -m chat
 
   # Custom prompts
-  python api_tester.py --cli -w 5 -e http://localhost:10240/v1/responses \\
+  python api_tester.py --cli -w 5 -e http://localhost:8100/v1/responses \\
     -p "Hello" -p "How are you?" -p "Goodbye"
 """,
     )
@@ -684,7 +684,7 @@ Examples:
         "--cli", action="store_true", help="Run CLI benchmark instead of Gradio UI"
     )
     parser.add_argument(
-        "-e", "--endpoint", default=ENDPOINTS["mlx-omni"], help="API endpoint URL"
+        "-e", "--endpoint", default=ENDPOINTS["mlx-batch"], help="API endpoint URL"
     )
     parser.add_argument("-m", "--model", default="chat", help="Model name")
     parser.add_argument(

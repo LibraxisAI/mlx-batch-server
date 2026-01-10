@@ -1,5 +1,5 @@
 """
-Configuration management for MLX Omni Server.
+Configuration management for MLX Batch Server.
 
 Loads settings from environment variables with sensible defaults.
 Supports both local MLX inference and cloud provider fallback.

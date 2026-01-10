@@ -3,7 +3,7 @@ from openai import OpenAI
 # Configure client to use local server
 client = OpenAI(
     # base_url="http://localhost:11434/v1",  # Point to ollama server
-    base_url="http://localhost:10240/v1",  # Point to mlx omni server
+    base_url="http://localhost:8100/v1",  # Point to mlx batch server
     api_key="not-needed",  # API key is not required for local server
 )
 

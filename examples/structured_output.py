@@ -14,10 +14,10 @@ class MathReasoning(BaseModel):
 
 from openai import OpenAI
 
-# Use mlx-omni-server to provide local OpenAI service
+# Use mlx-batch-server to provide local OpenAI service
 client = OpenAI(
-    base_url="http://localhost:10240/v1",
-    api_key="mlx-omni-server",  # not-needed
+    base_url="http://localhost:8100/v1",
+    api_key="mlx-batch-server",  # not-needed
 )
 
 response = client.beta.chat.completions.parse(
