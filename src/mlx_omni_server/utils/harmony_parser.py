@@ -551,7 +551,9 @@ class HarmonyStreamingParser:
             self._awaiting_channel_name = True
 
         # Strip all Harmony tokens for clean output
-        clean_text = _HARMONY_TOKEN_RE.sub("", text).strip()
+        # IMPORTANT: Don't strip() - tokens include leading spaces like " The" " user"
+        # Stripping would cause "".join() to produce "Theuserasks" instead of "The user asks"
+        clean_text = _HARMONY_TOKEN_RE.sub("", text)
 
         # Determine event type based on current channel
         event_type: str | None = None

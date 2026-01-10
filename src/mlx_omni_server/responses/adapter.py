@@ -457,10 +457,10 @@ class ResponsesAdapter:
             # Get adapter
             adapter = self._get_openai_adapter(model_id)
 
-            # Generate IDs
-            response_id = f"resp_{uuid.uuid4().hex[:6]}"
-            reasoning_item_id = f"rs_{uuid.uuid4().hex[:6]}"
-            message_item_id = f"msg_{uuid.uuid4().hex[:6]}"
+            # Generate IDs (full 32-char UUID hex)
+            response_id = f"resp_{uuid.uuid4().hex}"
+            reasoning_item_id = f"rs_{uuid.uuid4().hex}"
+            message_item_id = f"msg_{uuid.uuid4().hex}"
 
             # Resolve model alias to check Harmony format (chat -> gpt-oss-120b)
             settings = get_settings()
