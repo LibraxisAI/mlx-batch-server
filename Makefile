@@ -10,7 +10,7 @@
 #   make check      - Run all checks (lint + test)
 #   make clean      - Clean build artifacts
 
-.PHONY: install dev run stop restart logs test lint format check clean help
+.PHONY: install dev run stop restart logs test lint format check clean help benchmark
 .DEFAULT_GOAL := help
 
 # === Configuration ===
@@ -84,6 +84,21 @@ restart: stop run ## Restart background server
 
 logs: ## Tail server logs
 	@if [ -f $(LOG_FILE) ]; then tail -f $(LOG_FILE); else echo "No log file found"; fi
+
+# === Playground / Benchmarking ===
+BENCH_PORT ?= 7860
+BENCH_WORKERS ?= 10
+BENCH_ENDPOINT ?= http://localhost:$(PORT)/v1/responses
+BENCH_MODEL ?= chat
+
+benchmark: ## Run API tester (Gradio UI on http://localhost:7860)
+	$(PYTHON) playground/api_tester.py --port $(BENCH_PORT)
+
+benchmark-cli: ## Run CLI benchmark (BENCH_WORKERS=10 BENCH_MODEL=chat)
+	$(PYTHON) playground/api_tester.py --cli -w $(BENCH_WORKERS) -e $(BENCH_ENDPOINT) -m $(BENCH_MODEL)
+
+benchmark-quick: ## Quick CLI benchmark (1 worker, 1 prompt)
+	$(PYTHON) playground/api_tester.py --cli -w 1 -c 1 -e $(BENCH_ENDPOINT) -m $(BENCH_MODEL)
 
 # === Testing ===
 test: ## Run all tests
