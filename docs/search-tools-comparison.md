@@ -128,10 +128,10 @@ loct '.cycles[]'              # List circular imports
 | **loct query who-imports** | ✅ Full list with import type |
 
 ```
-who-imports 'src/mlx_batch_server/responses/store.py':
-  src/mlx_batch_server/responses/__init__.py - imports via import
-  src/mlx_batch_server/responses/context_builder.py - imports via import
-  src/mlx_batch_server/responses/router.py - imports via import
+who-imports 'src/mlx_omni_server/responses/store.py':
+  src/mlx_omni_server/responses/__init__.py - imports via import
+  src/mlx_omni_server/responses/context_builder.py - imports via import
+  src/mlx_omni_server/responses/router.py - imports via import
 ```
 
 **Verdict**: UNIQUE to loct - graph traversal
@@ -146,7 +146,7 @@ who-imports 'src/mlx_batch_server/responses/store.py':
 | **loct impact** | ✅ Direct + transitive consumers with depth |
 
 ```
-Impact analysis for: src/mlx_batch_server/responses/schema.py
+Impact analysis for: src/mlx_omni_server/responses/schema.py
   Direct consumers (4 files)
   Transitive impact (13 files)
   [!] Removing would affect 17 files (max depth: 4)
@@ -168,7 +168,7 @@ Impact analysis for: src/mlx_batch_server/responses/schema.py
   "method": "POST",
   "path": "/v1/responses",
   "handler": "create_response",
-  "file": "src/mlx_batch_server/responses/router.py",
+  "file": "src/mlx_omni_server/responses/router.py",
   "line": 59
 }
 ```
@@ -264,4 +264,4 @@ loct routes --json | jq '.routes[] | select(.method=="POST")'
 
 ---
 
-*Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders*
+*Created by M&K (c)2026 VetCoders*

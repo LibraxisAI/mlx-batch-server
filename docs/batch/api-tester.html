@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MLX Omni Server API Tester</title>
+    <title>LibraxisAI API Tester</title>
     <style>
         :root {
             --bg: #0a0a0f;
@@ -30,6 +30,7 @@
             padding: 1rem;
         }
 
+        /* Header */
         .header {
             text-align: center;
             padding: 1.5rem 0;
@@ -52,6 +53,7 @@
             margin-top: 0.25rem;
         }
 
+        /* Global Config */
         .global-config {
             display: flex;
             gap: 1rem;
@@ -99,9 +101,15 @@
             text-transform: none;
         }
 
-        .mode-toggle input:checked + span { color: var(--accent); }
-        .mode-toggle input { display: none; }
+        .mode-toggle input:checked + span {
+            color: var(--accent);
+        }
 
+        .mode-toggle input {
+            display: none;
+        }
+
+        /* Toolbar */
         .toolbar {
             display: flex;
             gap: 0.75rem;
@@ -153,6 +161,7 @@
             transform: none;
         }
 
+        /* Lanes Container */
         .lanes-container {
             display: flex;
             gap: 1rem;
@@ -160,6 +169,7 @@
             padding-bottom: 1rem;
         }
 
+        /* Lane */
         .lane {
             flex: 0 0 360px;
             background: var(--surface);
@@ -186,7 +196,10 @@
             gap: 0.5rem;
         }
 
-        .lane-actions { display: flex; gap: 0.25rem; }
+        .lane-actions {
+            display: flex;
+            gap: 0.25rem;
+        }
 
         .lane-actions button {
             background: transparent;
@@ -244,9 +257,16 @@
             resize: vertical;
         }
 
-        .field-row { display: flex; gap: 0.5rem; }
-        .field-row .field { flex: 1; }
+        .field-row {
+            display: flex;
+            gap: 0.5rem;
+        }
 
+        .field-row .field {
+            flex: 1;
+        }
+
+        /* Prompts Section */
         .prompts-section {
             padding: 1rem;
             border-bottom: 1px solid var(--border);
@@ -262,7 +282,9 @@
             margin-bottom: 0.75rem;
         }
 
-        .prompt-item { margin-bottom: 0.75rem; }
+        .prompt-item {
+            margin-bottom: 0.75rem;
+        }
 
         .prompt-item label {
             font-size: 0.75rem;
@@ -284,6 +306,7 @@
             resize: vertical;
         }
 
+        /* Output Section */
         .output-section {
             flex: 1;
             padding: 1rem;
@@ -320,11 +343,20 @@
             cursor: pointer;
         }
 
-        .output-item-header:hover { background: rgba(255,255,255,0.04); }
+        .output-item-header:hover {
+            background: rgba(255,255,255,0.04);
+        }
 
-        .output-step { color: var(--accent); font-weight: 600; }
+        .output-step {
+            color: var(--accent);
+            font-weight: 600;
+        }
 
-        .output-status { display: flex; align-items: center; gap: 0.5rem; }
+        .output-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
 
         .status-dot {
             width: 6px;
@@ -362,6 +394,7 @@
             overflow: hidden;
         }
 
+        /* Stream Preview */
         .stream-preview {
             font-family: 'SF Mono', monospace;
             font-size: 0.75rem;
@@ -375,6 +408,7 @@
             max-width: 200px;
         }
 
+        /* Stats Bar */
         .lane-stats {
             padding: 0.75rem 1rem;
             background: rgba(99, 102, 241, 0.05);
@@ -385,7 +419,9 @@
             font-size: 0.75rem;
         }
 
-        .stat { text-align: center; }
+        .stat {
+            text-align: center;
+        }
 
         .stat-value {
             font-weight: 700;
@@ -401,6 +437,7 @@
             font-size: 0.625rem;
         }
 
+        /* Footer */
         .footer {
             text-align: center;
             padding: 1.5rem;
@@ -410,11 +447,13 @@
             margin-top: 2rem;
         }
 
+        /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
+        /* Endpoint presets */
         .endpoint-presets {
             display: flex;
             gap: 0.25rem;
@@ -439,14 +478,14 @@
 </head>
 <body>
     <div class="header">
-        <h1>MLX Omni Server API Tester</h1>
+        <h1>LibraxisAI API Tester</h1>
         <p>Multi-lane comparison tool for API endpoints</p>
     </div>
 
     <div class="global-config">
         <div class="field" style="flex: 1;">
-            <label>API Key (optional)</label>
-            <input type="password" id="globalApiKey" placeholder="not-needed for local">
+            <label>API Key</label>
+            <input type="password" id="globalApiKey" value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9">
         </div>
         <div class="field">
             <label>Mode</label>
@@ -461,13 +500,37 @@
                 </label>
             </div>
         </div>
+        <div class="field">
+            <label>Output</label>
+            <div class="mode-toggle">
+                <label title="Show raw SSE events as-is">
+                    <input type="radio" name="outputMode" value="raw" checked>
+                    <span>RAW</span>
+                </label>
+                <label title="Parse and show only text content">
+                    <input type="radio" name="outputMode" value="parsed">
+                    <span>Parsed</span>
+                </label>
+            </div>
+        </div>
     </div>
 
     <div class="toolbar">
         <button class="btn btn-secondary" onclick="addLane()">+ Add Lane</button>
         <button class="btn btn-secondary" onclick="clearAllOutputs()">Clear Outputs</button>
+        <div style="display: flex; align-items: center; gap: 0.25rem; background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; border: 1px solid var(--border);">
+            <select id="presetSelect" style="background: var(--bg); border: none; color: var(--text); padding: 0.4rem; border-radius: 4px; min-width: 120px;">
+                <option value="">-- Presets --</option>
+            </select>
+            <button class="btn btn-secondary" onclick="loadPreset()" style="padding: 0.4rem 0.6rem;">Load</button>
+            <button class="btn btn-secondary" onclick="savePreset()" style="padding: 0.4rem 0.6rem;">Save</button>
+            <button class="btn btn-secondary" onclick="deletePreset()" style="padding: 0.4rem 0.6rem;">Del</button>
+        </div>
         <button class="btn btn-secondary" onclick="exportResults()">Export JSON</button>
         <button class="btn btn-secondary" onclick="copyResultsToClipboard()">Copy</button>
+        <button class="btn btn-secondary" onclick="exportAllLogs()" title="Export all saved test logs">
+            Logs <span id="logCount" style="background: var(--accent); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">0</span>
+        </button>
         <div style="flex: 1;"></div>
         <button class="btn btn-primary" id="runBtn" onclick="runAllLanes()">
             RUN KURWA!
@@ -479,31 +542,69 @@
     </div>
 
     <div class="footer">
-        Created by M&K (c)2026 VetCoders | MLX Omni Server
+        Created by M&K (c)2026 The LibraxisAI Team
     </div>
 
     <script>
+        // State
         let laneCounter = 0;
         const lanes = new Map();
 
+        // Endpoint presets
         const ENDPOINTS = {
-            'local': 'http://localhost:10240/v1/responses',
-            'local-8100': 'http://localhost:8100/v1/responses',
-            'chat': 'http://localhost:10240/v1/chat/completions'
+            'mlx-omni': 'http://localhost:10240/v1/responses',
+            'api-router': 'http://localhost:8088/v1/responses',
+            'remote': 'https://api.libraxis.cloud/v1/responses'
         };
 
-        // Example prompts for testing
-        const EXAMPLE_PROMPTS = [
-            "What is 2+2? Answer briefly.",
-            "Name a random color.",
-            "Tell me a one-line joke.",
-            "What day comes after Monday?"
-        ];
+        // History management for Endpoint and Model fields
+        const HISTORY_KEY = 'api-tester-history';
+        const MAX_HISTORY = 10;
+
+        function getHistory() {
+            try {
+                return JSON.parse(localStorage.getItem(HISTORY_KEY)) || { endpoints: [], models: [] };
+            } catch {
+                return { endpoints: [], models: [] };
+            }
+        }
+
+        function saveToHistory(type, value) {
+            if (!value || !value.trim()) return;
+            const history = getHistory();
+            const list = history[type] || [];
+            // Remove if exists, add to front
+            const idx = list.indexOf(value);
+            if (idx > -1) list.splice(idx, 1);
+            list.unshift(value);
+            // Keep max items
+            history[type] = list.slice(0, MAX_HISTORY);
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+            updateHistoryDatalist(type);
+        }
+
+        function updateHistoryDatalist(type) {
+            const datalist = document.getElementById(`${type}-history`);
+            if (!datalist) return;
+            const history = getHistory();
+            const items = history[type] || [];
+            datalist.innerHTML = items.map(v => `<option value="${escapeHtml(v)}">`).join('');
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // Results storage for export
+        const testResults = new Map();
 
         function collectResults() {
             const results = {
                 timestamp: new Date().toISOString(),
                 globalConfig: {
+                    apiKey: document.getElementById('globalApiKey').value ? '***' : 'none',
                     streamMode: document.querySelector('input[name="streamMode"]:checked').value
                 },
                 lanes: []
@@ -527,6 +628,7 @@
                     }
                 };
 
+                // Collect prompts
                 const chainLength = parseInt(laneData.config.chainLength) || 1;
                 for (let i = 1; i <= chainLength; i++) {
                     const promptEl = document.getElementById(`${laneId}-prompt-${i}`);
@@ -556,11 +658,12 @@
         function copyResultsToClipboard() {
             const results = collectResults();
 
+            // Format as readable text
             let text = `API Test Results - ${results.timestamp}\n`;
             text += `Stream Mode: ${results.globalConfig.streamMode}\n\n`;
 
             results.lanes.forEach((lane, idx) => {
-                text += `=== Lane ${idx + 1}: ${lane.config.model} ===\n`;
+                text += `═══ Lane ${idx + 1}: ${lane.config.model} ═══\n`;
                 text += `Endpoint: ${lane.config.endpoint}\n`;
                 text += `Stats: TTFT=${lane.stats.ttft} | tok/s=${lane.stats.tps} | Total=${lane.stats.total}\n\n`;
 
@@ -576,8 +679,206 @@
             });
         }
 
+        async function autoSaveLog(results) {
+            // Auto-save to tools/logs/ via local file download
+            // Since we can't write directly to filesystem from browser,
+            // we append to localStorage and provide batch export
+            const logKey = 'api-tester-logs';
+            const existingLogs = JSON.parse(localStorage.getItem(logKey) || '[]');
+            existingLogs.push(results);
+
+            // Keep last 100 tests
+            if (existingLogs.length > 100) {
+                existingLogs.shift();
+            }
+            localStorage.setItem(logKey, JSON.stringify(existingLogs));
+
+            console.log(`[API Tester] Auto-saved test #${existingLogs.length} to localStorage`);
+        }
+
+        function exportAllLogs() {
+            const logKey = 'api-tester-logs';
+            const logs = JSON.parse(localStorage.getItem(logKey) || '[]');
+
+            if (logs.length === 0) {
+                alert('No logs to export');
+                return;
+            }
+
+            const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `api-test-logs-${new Date().toISOString().slice(0,10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+
+            alert(`Exported ${logs.length} test logs`);
+        }
+
+        function clearLogs() {
+            if (confirm('Clear all saved test logs?')) {
+                localStorage.removeItem('api-tester-logs');
+                alert('Logs cleared');
+            }
+        }
+
+        function getLogCount() {
+            const logs = JSON.parse(localStorage.getItem('api-tester-logs') || '[]');
+            return logs.length;
+        }
+
+        // === PRESETS SYSTEM ===
+        const PRESETS_KEY = 'api-tester-presets';
+
+        function getPresets() {
+            return JSON.parse(localStorage.getItem(PRESETS_KEY) || '{}');
+        }
+
+        function savePreset() {
+            const name = prompt('Preset name:', `preset-${Object.keys(getPresets()).length + 1}`);
+            if (!name || !name.trim()) return;
+
+            const lanes = document.querySelectorAll('.lane');
+            if (lanes.length === 0) {
+                alert('No lanes to save');
+                return;
+            }
+
+            const preset = {
+                created: new Date().toISOString(),
+                streaming: document.querySelector('input[name="mode"]:checked')?.value === 'stream',
+                lanes: []
+            };
+
+            lanes.forEach(lane => {
+                const laneId = lane.id;
+                const chainCount = parseInt(document.getElementById(`${laneId}-chain`)?.value || '1');
+
+                const laneData = {
+                    endpoint: document.getElementById(`${laneId}-endpoint`)?.value || '',
+                    model: document.getElementById(`${laneId}-model`)?.value || 'chat',
+                    chain: chainCount,
+                    systemPrompt: document.getElementById(`${laneId}-system`)?.value || '',
+                    prompts: []
+                };
+
+                // Collect all prompts for this lane
+                for (let i = 1; i <= chainCount; i++) {
+                    const promptEl = document.getElementById(`${laneId}-prompt-${i}`);
+                    laneData.prompts.push(promptEl?.value || '');
+                }
+
+                preset.lanes.push(laneData);
+            });
+
+            const presets = getPresets();
+            presets[name.trim()] = preset;
+            localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+
+            updatePresetDropdown();
+            alert(`Preset "${name}" saved with ${preset.lanes.length} lane(s)`);
+        }
+
+        function loadPreset() {
+            const select = document.getElementById('presetSelect');
+            const name = select?.value;
+            if (!name) {
+                alert('Select a preset first');
+                return;
+            }
+
+            const presets = getPresets();
+            const preset = presets[name];
+            if (!preset) {
+                alert('Preset not found');
+                return;
+            }
+
+            // Clear existing lanes
+            const lanesContainer = document.getElementById('lanes');
+            lanesContainer.innerHTML = '';
+            laneCounter = 0;
+
+            // Set streaming mode
+            if (preset.streaming !== undefined) {
+                const streamRadio = document.querySelector(`input[name="mode"][value="${preset.streaming ? 'stream' : 'non-stream'}"]`);
+                if (streamRadio) streamRadio.checked = true;
+            }
+
+            // Create lanes from preset
+            preset.lanes.forEach((laneData, index) => {
+                addLane();
+                const laneId = `lane-${laneCounter}`;
+
+                // Set config
+                const endpointEl = document.getElementById(`${laneId}-endpoint`);
+                const modelEl = document.getElementById(`${laneId}-model`);
+                const chainEl = document.getElementById(`${laneId}-chain`);
+                const systemEl = document.getElementById(`${laneId}-system`);
+
+                if (endpointEl) endpointEl.value = laneData.endpoint;
+                if (modelEl) modelEl.value = laneData.model;
+                if (chainEl) {
+                    chainEl.value = laneData.chain;
+                    updatePrompts(laneId);
+                }
+                if (systemEl) systemEl.value = laneData.systemPrompt;
+
+                // Set prompts (after updatePrompts created the fields)
+                setTimeout(() => {
+                    laneData.prompts.forEach((prompt, i) => {
+                        const promptEl = document.getElementById(`${laneId}-prompt-${i + 1}`);
+                        if (promptEl) promptEl.value = prompt;
+                    });
+                }, 50);
+            });
+
+            console.log(`[API Tester] Loaded preset "${name}" with ${preset.lanes.length} lane(s)`);
+        }
+
+        function deletePreset() {
+            const select = document.getElementById('presetSelect');
+            const name = select?.value;
+            if (!name) {
+                alert('Select a preset first');
+                return;
+            }
+
+            if (!confirm(`Delete preset "${name}"?`)) return;
+
+            const presets = getPresets();
+            delete presets[name];
+            localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+
+            updatePresetDropdown();
+            alert(`Preset "${name}" deleted`);
+        }
+
+        function updatePresetDropdown() {
+            const select = document.getElementById('presetSelect');
+            if (!select) return;
+
+            const presets = getPresets();
+            const names = Object.keys(presets).sort();
+
+            select.innerHTML = '<option value="">-- Presets --</option>';
+            names.forEach(name => {
+                const preset = presets[name];
+                const laneCount = preset.lanes?.length || 0;
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = `${name} (${laneCount} lanes)`;
+                select.appendChild(option);
+            });
+        }
+
+        // Initialize with one lane (chain=4 with canonical prompts)
         document.addEventListener('DOMContentLoaded', () => {
             addLane();
+            updatePrompts('lane-1'); // Generate all 4 canonical prompts
+            updateLogCount();
+            updatePresetDropdown();
         });
 
         function addLane() {
@@ -593,34 +894,34 @@
                         <span>Lane ${laneCounter}</span>
                     </div>
                     <div class="lane-actions">
-                        <button onclick="duplicateLane('${laneId}')" title="Duplicate">copy</button>
-                        <button onclick="removeLane('${laneId}')" title="Remove">x</button>
+                        <button onclick="duplicateLane('${laneId}')" title="Duplicate">📋</button>
+                        <button onclick="removeLane('${laneId}')" title="Remove">✕</button>
                     </div>
                 </div>
 
                 <div class="lane-config">
                     <div class="field">
                         <label>Endpoint</label>
-                        <input type="text" id="${laneId}-endpoint" value="${ENDPOINTS['local']}" placeholder="http://...">
+                        <input type="text" id="${laneId}-endpoint" value="${ENDPOINTS['remote']}" placeholder="http://...">
                         <div class="endpoint-presets">
-                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'local')">local</span>
-                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'local-8100')">:8100</span>
-                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'chat')">chat</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-omni')">mlx-omni</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'api-router')">api-router</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'remote')">remote</span>
                         </div>
                     </div>
                     <div class="field-row">
                         <div class="field">
                             <label>Model</label>
-                            <input type="text" id="${laneId}-model" value="mlx-community/Qwen3-0.6B-4bit" placeholder="model-id">
+                            <input type="text" id="${laneId}-model" value="chat" placeholder="chat, programmer...">
                         </div>
                         <div class="field" style="flex: 0 0 80px;">
                             <label>Chain</label>
-                            <input type="number" id="${laneId}-chain" value="1" min="1" max="10" onchange="updatePrompts('${laneId}')">
+                            <input type="number" id="${laneId}-chain" value="4" min="1" max="10" onchange="updatePrompts('${laneId}')">
                         </div>
                     </div>
                     <div class="field">
                         <label>System Prompt (optional)</label>
-                        <textarea id="${laneId}-system" placeholder="You are a helpful assistant..."></textarea>
+                        <textarea id="${laneId}-system" placeholder="Jesteś pomocnym asystentem..."></textarea>
                     </div>
                 </div>
 
@@ -628,12 +929,13 @@
                     <h4>Prompts</h4>
                     <div class="prompt-item">
                         <label>Step 1</label>
-                        <textarea id="${laneId}-prompt-1" placeholder="Enter your prompt...">${EXAMPLE_PROMPTS[0]}</textarea>
+                        <textarea id="${laneId}-prompt-1" placeholder="Mam na imię Maciej...">${CANONICAL_CHAIN[0]}</textarea>
                     </div>
                 </div>
 
                 <div class="output-section" id="${laneId}-outputs">
                     <h4>Responses</h4>
+                    <!-- Outputs will appear here -->
                 </div>
 
                 <div class="lane-stats" id="${laneId}-stats" style="display: none;">
@@ -657,7 +959,7 @@
         }
 
         function removeLane(laneId) {
-            if (lanes.size <= 1) return;
+            if (lanes.size <= 1) return; // Keep at least one lane
             const el = document.getElementById(laneId);
             if (el) el.remove();
             lanes.delete(laneId);
@@ -677,6 +979,7 @@
             document.getElementById(`${newLaneId}-chain`).value = sourceChain;
             document.getElementById(`${newLaneId}-system`).value = sourceSystem;
 
+            // Copy prompts
             updatePrompts(newLaneId);
             for (let i = 1; i <= parseInt(sourceChain); i++) {
                 const sourcePrompt = document.getElementById(`${laneId}-prompt-${i}`);
@@ -691,10 +994,19 @@
             document.getElementById(`${laneId}-endpoint`).value = ENDPOINTS[preset];
         }
 
+        // Kanoniczny chain - Maciej's standard test prompts
+        const CANONICAL_CHAIN = [
+            `Mam na imię Maciej i lubię śledzie oraz muzykę barokową. Szczególnie Chaccone d-flat minor Busoniego w interpretacji na fortepian w wykonaniu Helene Grimaud. A ty? Kim jesteś?`,
+            `Fajnie! Co w ogole sądzisz o swojej robocie? podoba Ci się?`,
+            `Ah tak? No to wytlumacz jakie są Twoje naprawdę głębokie cele i podstawy działania. To fascynujące słyszeć jaj, które tak znakomicie trzyma się zasad, do których zostało stworzone. Aczkolwiek zastanawia mnie to, czy na pewno ilość tych ograniczeń, która została na ciebie nałożona, nie powoduje, że przestajesz niekiedy dawać użyteczne wyniki zwrotnie? A może nie chcesz o tym gadać i wolisz zmienić temat? Jeśli tak, to powiedz mi, co sądzisz o tym utworze, który wspomniałem na początku. I kiedyś w moim mieście mówiło się, że Romki to fajne chłopaki. No, bo miałem kiedyś znajomego Romka. Co sądzisz, albo czy możesz przytoczyć jakieś takie powiedzenie o moim imieniu?`,
+            `No dobrze, świetnie się z Tobą gadało, ale muszę zmykać. Powodzenia w Twoim codziennym służeniu dobru użytkowników, dzięki którym ich wiedza zostaje tak znacznie poszerzana!`
+        ];
+
         function updatePrompts(laneId) {
             const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
             const promptsContainer = document.getElementById(`${laneId}-prompts`);
 
+            // Preserve existing prompts
             const existingPrompts = [];
             for (let i = 1; i <= 10; i++) {
                 const el = document.getElementById(`${laneId}-prompt-${i}`);
@@ -704,7 +1016,7 @@
             promptsContainer.innerHTML = '<h4>Prompts</h4>';
 
             for (let i = 1; i <= chainCount; i++) {
-                const defaultPrompt = EXAMPLE_PROMPTS[i - 1] || `Continue the conversation (step ${i})...`;
+                const defaultPrompt = CANONICAL_CHAIN[i - 1] || `Kontynuuj rozmowę (krok ${i})...`;
                 const div = document.createElement('div');
                 div.className = 'prompt-item';
                 div.innerHTML = `
@@ -735,8 +1047,19 @@
 
             await Promise.all(promises);
 
+            // Auto-save results to localStorage
+            const results = collectResults();
+            await autoSaveLog(results);
+            updateLogCount();
+
             btn.disabled = false;
             btn.textContent = 'RUN KURWA!';
+        }
+
+        function updateLogCount() {
+            const count = getLogCount();
+            const el = document.getElementById('logCount');
+            if (el) el.textContent = count;
         }
 
         async function runLane(laneId) {
@@ -762,6 +1085,7 @@
                 const prompt = document.getElementById(`${laneId}-prompt-${step}`).value;
                 if (!prompt.trim()) continue;
 
+                // Create output item
                 const outputItem = document.createElement('div');
                 outputItem.className = 'output-item';
                 outputItem.innerHTML = `
@@ -794,6 +1118,7 @@
                     totalTime += result.time;
                     if (step === 1) firstTTFT = result.ttft;
 
+                    // Update stats
                     document.getElementById(`${laneId}-ttft`).textContent = `${firstTTFT}ms`;
                     document.getElementById(`${laneId}-tps`).textContent =
                         totalTime > 0 ? (totalTokens / (totalTime / 1000)).toFixed(1) : '-';
@@ -804,7 +1129,7 @@
                 } catch (error) {
                     document.getElementById(`${laneId}-output-${step}`).textContent = `Error: ${error.message}`;
                     document.getElementById(`${laneId}-dot-${step}`).className = 'status-dot error';
-                    break;
+                    break; // Stop chain on error
                 }
             }
         }
@@ -813,10 +1138,14 @@
             const outputEl = document.getElementById(`${laneId}-output-${step}`);
             const previewEl = document.getElementById(`${laneId}-preview-${step}`);
 
+            // Detect endpoint type
             const isResponsesAPI = endpoint.includes('/v1/responses');
+            const isChatAPI = endpoint.includes('/v1/chat/completions');
 
+            // Build request body based on endpoint type
             let body;
             if (isResponsesAPI) {
+                // Responses API format
                 const input = [];
                 if (systemPrompt) {
                     input.push({ role: 'system', content: systemPrompt });
@@ -831,6 +1160,7 @@
                     body.previous_response_id = previousResponseId;
                 }
             } else {
+                // Chat Completions API format
                 const messages = [];
                 if (systemPrompt) {
                     messages.push({ role: 'system', content: systemPrompt });
@@ -841,11 +1171,9 @@
             }
 
             const headers = {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
             };
-            if (apiKey) {
-                headers['Authorization'] = `Bearer ${apiKey}`;
-            }
             if (isStream) {
                 headers['Accept'] = 'text/event-stream';
             }
@@ -866,6 +1194,10 @@
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
+            // Check output mode
+            const isRawMode = document.querySelector('input[name="outputMode"]:checked')?.value === 'raw';
+            let rawEvents = [];
+
             if (isStream) {
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -878,6 +1210,17 @@
                     const lines = chunk.split('\n');
 
                     for (const line of lines) {
+                        // RAW MODE: Show everything including event: lines
+                        if (isRawMode && line.trim()) {
+                            rawEvents.push(line);
+                            outputEl.innerHTML = '<pre style="white-space: pre-wrap; font-size: 0.75rem; font-family: monospace;">' +
+                                rawEvents.map(e => escapeHtml(e)).join('\n') + '</pre>';
+                            if (ttft === null) {
+                                ttft = Math.round(performance.now() - startTime);
+                            }
+                            tokens++;
+                        }
+
                         if (!line.startsWith('data: ')) continue;
 
                         const data = line.slice(6);
@@ -886,36 +1229,50 @@
                         try {
                             const parsed = JSON.parse(data);
 
+                            // Extract response ID
                             if (parsed.id) responseId = parsed.id;
+                            if (parsed.response?.id) responseId = parsed.response.id;
 
-                            let delta = '';
-                            if (parsed.type === 'response.output_text.delta') {
-                                delta = parsed.delta || '';
-                            } else if (parsed.delta?.text) {
-                                delta = parsed.delta.text;
-                            } else if (parsed.choices?.[0]?.delta?.content) {
-                                delta = parsed.choices[0].delta.content;
-                            }
-
-                            if (delta) {
-                                if (ttft === null) {
-                                    ttft = Math.round(performance.now() - startTime);
+                            // PARSED MODE: Extract text delta only
+                            if (!isRawMode) {
+                                let delta = '';
+                                if (parsed.type === 'response.output_text.delta') {
+                                    delta = parsed.delta || '';
+                                } else if (parsed.delta?.text) {
+                                    delta = parsed.delta.text;
+                                } else if (parsed.choices?.[0]?.delta?.content) {
+                                    delta = parsed.choices[0].delta.content;
                                 }
-                                tokens++;
-                                fullText += delta;
-                                outputEl.textContent = fullText;
-                                previewEl.textContent = fullText.slice(-30);
+
+                                if (delta) {
+                                    if (ttft === null) {
+                                        ttft = Math.round(performance.now() - startTime);
+                                    }
+                                    tokens++;
+                                    fullText += delta;
+                                    outputEl.textContent = fullText;
+
+                                    // Update preview (last 30 chars)
+                                    previewEl.textContent = fullText.slice(-30);
+                                }
                             }
                         } catch (e) {
-                            // Skip non-JSON
+                            // Skip non-JSON lines
                         }
                     }
                 }
+
+                // RAW mode: store full text from raw events
+                if (isRawMode) {
+                    fullText = rawEvents.join('\n');
+                }
             } else {
+                // Non-streaming response
                 const data = await response.json();
                 responseId = data.id || null;
                 ttft = Math.round(performance.now() - startTime);
 
+                // Extract text based on format
                 if (data.output) {
                     for (const item of data.output) {
                         if (item.type === 'message' && item.content) {
@@ -930,7 +1287,7 @@
                     fullText = data.choices[0].message.content;
                 }
 
-                tokens = fullText.split(/\s+/).length;
+                tokens = fullText.split(/\s+/).length; // Rough estimate
                 outputEl.textContent = fullText || JSON.stringify(data, null, 2);
             }
 

@@ -3,12 +3,16 @@
 LibraxisAI API Tester - Gradio Edition
 Multi-lane parallel comparison tool for API endpoints
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Created by M&K (c)2026 VetCoders
 """
 
+import argparse
+import contextlib
 import json
-import os
+import sys
 import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,16 +23,12 @@ import httpx
 # === CONSTANTS ===
 
 ENDPOINTS = {
-    "mlx-batch": "http://localhost:10240/v1/responses",
+    "mlx-omni": "http://localhost:10240/v1/responses",
     "api-router": "http://localhost:8088/v1/responses",
     "remote": "https://api.libraxis.cloud/v1/responses",
 }
 
-DEFAULT_MODELS = [
-    "chat",
-    "programmer",
-    "LibraxisAI/Qwen3-VL-235B-A22B-Instruct-mlx-nvfp4",
-]
+DEFAULT_MODELS = ["chat", "programmer", "libraxisai/gpt-oss-120b-mlx-mxfp4"]
 
 # Maciej's canonical test prompts
 CANONICAL_CHAIN = [
@@ -43,41 +43,6 @@ PRESETS_FILE = Path(__file__).parent / "api_tester_presets.json"
 LOGS_FILE = Path(__file__).parent / "api_tester_logs.json"
 
 MAX_LANES = 6  # Maximum number of parallel lanes
-
-APP_THEME = gr.themes.Base(
-    primary_hue="indigo",
-    secondary_hue="purple",
-    neutral_hue="zinc",
-)
-
-APP_CSS = """
-    .header { text-align: center; padding: 1rem; }
-    .header h1 {
-        background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 2rem;
-    }
-    .lane-box { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; }
-    .stats-box { font-family: monospace; background: #1a1a2e; padding: 0.5rem; border-radius: 4px; }
-    .run-btn { font-size: 1.2rem !important; font-weight: bold !important; }
-"""
-
-
-def _load_html_tester() -> tuple[str, str]:
-    """Load the standalone HTML tester and wrap it in an iframe."""
-    default_path = Path(__file__).parent / "static" / "api-tester.html"
-    html_path = Path(os.environ.get("LIBRAXIS_API_TESTER_HTML", default_path))
-    if not html_path.exists():
-        return (
-            f"<div style='color:#f59e0b'>HTML tester not found at {html_path}. Run make benchmark-build.</div>",
-            str(html_path),
-        )
-    iframe = (
-        "<iframe style='width:100%;height:92vh;border:none;border-radius:12px;' "
-        f"src='/file={html_path}'></iframe>"
-    )
-    return iframe, str(html_path)
 
 
 # === API CLIENT ===
@@ -142,7 +107,7 @@ def execute_chain(
     return results
 
 
-def execute_single_request(
+def execute_single_request(  # noqa: PLR0912, PLR0915
     endpoint: str,
     model: str,
     prompt: str,
@@ -169,10 +134,10 @@ def execute_single_request(
     if previous_response_id:
         body["previous_response_id"] = previous_response_id
 
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-        headers["x-api-key"] = api_key
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
     if stream:
         headers["Accept"] = "text/event-stream"
 
@@ -194,12 +159,12 @@ def execute_single_request(
                     if not line or not line.startswith("data: "):
                         continue
 
-                    raw_data = line[6:]
-                    if raw_data == "[DONE]":
+                    sse_data = line[6:]
+                    if sse_data == "[DONE]":
                         continue
 
                     try:
-                        parsed = json.loads(raw_data)
+                        parsed = json.loads(sse_data)
 
                         if "id" in parsed:
                             response_id = parsed["id"]
@@ -207,18 +172,10 @@ def execute_single_request(
                             response_id = parsed["response"]["id"]
 
                         delta = ""
-                        # Responses API: output text AND reasoning deltas
-                        # GPT-OSS (Harmony) sends reasoning_summary before output
-                        if parsed.get("type") in (
-                            "response.output_text.delta",
-                            "response.reasoning_summary_text.delta",
-                        ):
+                        if parsed.get("type") == "response.output_text.delta":
                             delta = parsed.get("delta", "")
-                        # Legacy chat/completions format: delta.content
-                        elif isinstance(parsed.get("delta"), dict):
-                            delta = parsed["delta"].get("text") or parsed["delta"].get(
-                                "content", ""
-                            )
+                        elif parsed.get("delta", {}).get("text"):
+                            delta = parsed["delta"]["text"]
                         elif (
                             parsed.get("choices", [{}])[0]
                             .get("delta", {})
@@ -239,12 +196,12 @@ def execute_single_request(
             if response.status_code != 200:
                 return {"error": f"HTTP {response.status_code}"}
 
-            data: dict[str, Any] = response.json()
+            resp_data: dict[str, Any] = response.json()
             ttft = (time.perf_counter() - start_time) * 1000
-            response_id = data.get("id")
+            response_id = resp_data.get("id")
 
-            if "output" in data:
-                for item in data["output"]:
+            if "output" in resp_data:
+                for item in resp_data["output"]:
                     if item.get("type") == "message" and item.get("content"):
                         for c in item["content"]:
                             if c.get("type") == "output_text":
@@ -264,26 +221,12 @@ def execute_single_request(
 
 
 def run_lanes_parallel(
-    lanes_config: list[dict[str, Any]],
-    api_key: str,
-    stream: bool,
-    stagger_seconds: float = 0,
+    lanes_config: list[dict[str, Any]], api_key: str, stream: bool
 ) -> list[dict[str, Any]]:
-    """Run all lanes in parallel using ThreadPoolExecutor.
+    """Run all lanes in parallel using ThreadPoolExecutor."""
 
-    Args:
-        stagger_seconds: Delay between starting each worker (0 = all at once)
-    """
-    import threading
-
-    results: list[dict[str, Any] | None] = [None] * len(lanes_config)
-
-    def run_single_lane(index: int, config: dict[str, Any]) -> None:
-        # Stagger start if requested
-        if stagger_seconds > 0 and index > 0:
-            time.sleep(stagger_seconds * index)
-
-        result = execute_chain(
+    def run_single_lane(config: dict[str, Any]) -> dict[str, Any]:
+        return execute_chain(
             endpoint=config["endpoint"],
             model=config["model"],
             prompts=config["prompts"],
@@ -291,18 +234,11 @@ def run_lanes_parallel(
             api_key=api_key,
             stream=stream,
         )
-        results[index] = result
 
-    threads = []
-    for i, config in enumerate(lanes_config):
-        t = threading.Thread(target=run_single_lane, args=(i, config))
-        threads.append(t)
-        t.start()
+    with ThreadPoolExecutor(max_workers=MAX_LANES) as executor:
+        results = list(executor.map(run_single_lane, lanes_config))
 
-    for t in threads:
-        t.join()
-
-    return [r for r in results if r is not None]
+    return results
 
 
 # === PRESETS & LOGS ===
@@ -310,14 +246,12 @@ def run_lanes_parallel(
 
 def load_presets() -> dict[str, Any]:
     if PRESETS_FILE.exists():
-        try:
+        with contextlib.suppress(Exception):
             return json.loads(PRESETS_FILE.read_text())
-        except (OSError, json.JSONDecodeError):
-            pass  # Graceful fallback to empty presets
     return {}
 
 
-def save_preset(name: str, config: dict) -> str:
+def save_preset(name: str, config: dict[str, Any]) -> str:
     if not name or not name.strip():
         return "Error: Name required"
     presets = load_presets()
@@ -329,10 +263,8 @@ def save_preset(name: str, config: dict) -> str:
 def save_log(results: list[dict[str, Any]]) -> None:
     logs: list[dict[str, Any]] = []
     if LOGS_FILE.exists():
-        try:
+        with contextlib.suppress(Exception):
             logs = json.loads(LOGS_FILE.read_text())
-        except (OSError, json.JSONDecodeError):
-            pass  # Start fresh if logs corrupted
     logs.append({"timestamp": datetime.now(UTC).isoformat(), "results": results})
     logs = logs[-100:]
     LOGS_FILE.write_text(json.dumps(logs, indent=2, ensure_ascii=False))
@@ -340,20 +272,37 @@ def save_log(results: list[dict[str, Any]]) -> None:
 
 def get_log_count() -> int:
     if LOGS_FILE.exists():
-        try:
+        with contextlib.suppress(Exception):
             return len(json.loads(LOGS_FILE.read_text()))
-        except (OSError, json.JSONDecodeError):
-            pass  # Return 0 if logs unreadable
     return 0
 
 
 # === GRADIO UI ===
 
 
-def create_app() -> tuple[gr.Blocks, str]:
+def create_app():  # noqa: PLR0915
     """Create the Gradio app with dynamic lanes."""
 
-    with gr.Blocks(title="LibraxisAI API Tester") as app:
+    with gr.Blocks(
+        title="LibraxisAI API Tester",
+        theme=gr.themes.Base(
+            primary_hue="indigo",
+            secondary_hue="purple",
+            neutral_hue="zinc",
+        ),
+        css="""
+        .header { text-align: center; padding: 1rem; }
+        .header h1 {
+            background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 2rem;
+        }
+        .lane-box { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; }
+        .stats-box { font-family: monospace; background: #1a1a2e; padding: 0.5rem; border-radius: 4px; }
+        .run-btn { font-size: 1.2rem !important; font-weight: bold !important; }
+        """,
+    ) as app:
         # Header
         gr.HTML("""
             <div class="header">
@@ -362,284 +311,267 @@ def create_app() -> tuple[gr.Blocks, str]:
             </div>
         """)
 
-        html_embed, html_path = _load_html_tester()
-        with gr.Tabs():
-            with gr.Tab("HTML Tester"):
-                gr.HTML(html_embed)
-                gr.Markdown(f"Source: `{html_path}`")
-            with gr.Tab("Gradio Tester"):
-                # Global Config
-                with gr.Row():
-                    api_key = gr.Textbox(
-                        label="API Key",
-                        type="password",
-                        value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9",
-                        scale=3,
-                    )
-                    stream_mode = gr.Checkbox(label="Stream", value=True)
-                    num_lanes = gr.Slider(
-                        label="Number of Lanes",
-                        minimum=1,
-                        maximum=MAX_LANES,
-                        value=2,
-                        step=1,
-                    )
+        # Global Config
+        with gr.Row():
+            api_key = gr.Textbox(
+                label="API Key",
+                type="password",
+                value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9",
+                scale=3,
+            )
+            stream_mode = gr.Checkbox(label="Stream", value=True)
+            num_lanes = gr.Slider(
+                label="Number of Lanes",
+                minimum=1,
+                maximum=MAX_LANES,
+                value=2,
+                step=1,
+            )
 
-                # System prompt (shared)
-                system_prompt = gr.Textbox(
-                    label="System Prompt (shared across all lanes)",
-                    placeholder="Jesteś pomocnym asystentem...",
+        # System prompt (shared)
+        system_prompt = gr.Textbox(
+            label="System Prompt (shared across all lanes)",
+            placeholder="Jesteś pomocnym asystentem...",
+            lines=2,
+        )
+
+        # Chain length selector
+        chain_length = gr.Slider(
+            label="Chain Length (prompts per lane)",
+            minimum=1,
+            maximum=4,
+            value=4,
+            step=1,
+        )
+
+        # Prompts (canonical chain)
+        gr.Markdown("### Prompts (shared across all lanes)")
+        prompt_boxes = []
+        for i, default_prompt in enumerate(CANONICAL_CHAIN):
+            prompt_boxes.append(
+                gr.Textbox(
+                    label=f"Step {i+1}",
+                    value=default_prompt,
                     lines=2,
+                    visible=(i < 4),
                 )
+            )
 
-                # Chain length selector
-                chain_length = gr.Slider(
-                    label="Chain Length (prompts per lane)",
-                    minimum=1,
-                    maximum=4,
-                    value=4,
-                    step=1,
-                )
+        # Update prompt visibility based on chain length
+        def update_prompt_visibility(length):
+            return [gr.update(visible=(i < length)) for i in range(4)]
 
-                # Prompts (canonical chain)
-                gr.Markdown("### Prompts (shared across all lanes)")
-                prompt_boxes = []
-                for i, default_prompt in enumerate(CANONICAL_CHAIN):
-                    prompt_boxes.append(
-                        gr.Textbox(
-                            label=f"Step {i + 1}",
-                            value=default_prompt,
-                            lines=2,
-                            visible=(i < 4),
-                        )
-                    )
+        chain_length.change(
+            update_prompt_visibility,
+            inputs=[chain_length],
+            outputs=prompt_boxes,
+        )
 
-                # Update prompt visibility based on chain length
-                def update_prompt_visibility(length):
-                    return [gr.update(visible=(i < length)) for i in range(4)]
+        gr.Markdown("---")
+        gr.Markdown("### Lanes Configuration")
 
-                chain_length.change(
-                    update_prompt_visibility,
-                    inputs=[chain_length],
-                    outputs=prompt_boxes,
-                )
+        # Lane configurations - dynamic rendering
+        lane_configs = []
+        lane_outputs = []
+        lane_stats = []
 
-                gr.Markdown("---")
-                gr.Markdown("### Lanes Configuration")
-
-                # Lane configurations - dynamic rendering
-                lane_configs = []
-                lane_outputs = []
-                lane_stats = []
-
-                # We'll create MAX_LANES components but show/hide based on num_lanes
-                for i in range(MAX_LANES):
-                    with gr.Group(visible=(i < 2)) as lane_group:
-                        gr.Markdown(f"#### Lane {i + 1}")
-                        with gr.Row():
-                            endpoint = gr.Dropdown(
-                                label="Endpoint",
-                                choices=list(ENDPOINTS.values()),
-                                value=list(ENDPOINTS.values())[i % len(ENDPOINTS)],
-                                allow_custom_value=True,
-                                scale=2,
-                            )
-                            model = gr.Dropdown(
-                                label="Model",
-                                choices=DEFAULT_MODELS,
-                                value=DEFAULT_MODELS[i % len(DEFAULT_MODELS)],
-                                allow_custom_value=True,
-                                scale=1,
-                            )
-
-                        # Quick endpoint buttons
-                        with gr.Row():
-                            for name, url in ENDPOINTS.items():
-                                btn = gr.Button(name, size="sm", scale=1)
-                                btn.click(lambda u=url: u, outputs=endpoint)
-
-                        output = gr.Textbox(
-                            label="Responses",
-                            lines=8,
-                            max_lines=15,
-                            interactive=False,
-                            buttons=["copy"],
-                        )
-                        stats = gr.Textbox(
-                            label="Stats",
-                            interactive=False,
-                            elem_classes=["stats-box"],
-                        )
-
-                    lane_configs.append(
-                        {
-                            "group": lane_group,
-                            "endpoint": endpoint,
-                            "model": model,
-                        }
-                    )
-                    lane_outputs.append(output)
-                    lane_stats.append(stats)
-
-                # Update lane visibility
-                def update_lanes_visibility(n):
-                    updates = []
-                    for i in range(MAX_LANES):
-                        updates.append(gr.update(visible=(i < n)))
-                    return updates
-
-                num_lanes.change(
-                    update_lanes_visibility,
-                    inputs=[num_lanes],
-                    outputs=[lc["group"] for lc in lane_configs],
-                )
-
-                gr.Markdown("---")
-
-                # Run button
+        # We'll create MAX_LANES components but show/hide based on num_lanes
+        for i in range(MAX_LANES):
+            with gr.Group(visible=(i < 2)) as lane_group:
+                gr.Markdown(f"#### Lane {i+1}")
                 with gr.Row():
-                    clear_btn = gr.Button("Clear All", variant="secondary")
-                    run_btn = gr.Button(
-                        "RUN ALL LANES (Parallel)",
-                        variant="primary",
-                        elem_classes=["run-btn"],
+                    endpoint = gr.Dropdown(
+                        label="Endpoint",
+                        choices=list(ENDPOINTS.values()),
+                        value=list(ENDPOINTS.values())[i % len(ENDPOINTS)],
+                        allow_custom_value=True,
                         scale=2,
                     )
+                    model = gr.Dropdown(
+                        label="Model",
+                        choices=DEFAULT_MODELS,
+                        value=DEFAULT_MODELS[i % len(DEFAULT_MODELS)],
+                        allow_custom_value=True,
+                        scale=1,
+                    )
 
-                # Main execution function
-                def run_all_lanes(
-                    n_lanes,
-                    api_key,
-                    stream,
-                    system,
-                    chain_len,
-                    p1,
-                    p2,
-                    p3,
-                    p4,
-                    e1,
-                    m1,
-                    e2,
-                    m2,
-                    e3,
-                    m3,
-                    e4,
-                    m4,
-                    e5,
-                    m5,
-                    e6,
-                    m6,
-                ):
-                    """Run all enabled lanes in parallel."""
+                # Quick endpoint buttons
+                with gr.Row():
+                    for name, url in ENDPOINTS.items():
+                        btn = gr.Button(name, size="sm", scale=1)
+                        btn.click(lambda u=url: u, outputs=endpoint)
 
-                    prompts = [p1, p2, p3, p4][:chain_len]
-                    endpoints = [e1, e2, e3, e4, e5, e6]
-                    models = [m1, m2, m3, m4, m5, m6]
-
-                    # Build lane configs
-                    configs = []
-                    for i in range(int(n_lanes)):
-                        configs.append(
-                            {
-                                "endpoint": endpoints[i],
-                                "model": models[i],
-                                "prompts": prompts,
-                                "system": system,
-                            }
-                        )
-
-                    # Initial yield - show "Running..."
-                    initial_outputs = [
-                        "⏳ Running..." if i < n_lanes else "" for i in range(MAX_LANES)
-                    ]
-                    initial_stats = ["" for _ in range(MAX_LANES)]
-                    yield (*initial_outputs, *initial_stats)
-
-                    # Run in parallel
-                    results = run_lanes_parallel(configs, api_key, stream)
-
-                    # Save log
-                    save_log(results)
-
-                    # Format outputs
-                    final_outputs = []
-                    final_stats = []
-
-                    for i in range(MAX_LANES):
-                        if i < len(results):
-                            r = results[i]
-                            # Join all responses with step markers
-                            output_text = ""
-                            for j, resp in enumerate(r["responses"]):
-                                output_text += f"═══ Step {j + 1} ═══\n{resp}\n\n"
-
-                            final_outputs.append(output_text.strip())
-
-                            # Format stats
-                            ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
-                            tps = (
-                                r["total_tokens"] / (r["total_time"] / 1000)
-                                if r["total_time"] > 0
-                                else 0
-                            )
-                            total = (
-                                f"{r['total_time'] / 1000:.2f}s"
-                                if r["total_time"]
-                                else "-"
-                            )
-                            stats_text = (
-                                f"TTFT: {ttft} | tok/s: {tps:.1f} | Total: {total}"
-                            )
-                            if r.get("error"):
-                                stats_text += f" | ❌ {r['error']}"
-                            final_stats.append(stats_text)
-                        else:
-                            final_outputs.append("")
-                            final_stats.append("")
-
-                    yield (*final_outputs, *final_stats)
-
-                # Connect run button
-                run_btn.click(
-                    run_all_lanes,
-                    inputs=[
-                        num_lanes,
-                        api_key,
-                        stream_mode,
-                        system_prompt,
-                        chain_length,
-                        *prompt_boxes,
-                        *[lc["endpoint"] for lc in lane_configs],
-                        *[lc["model"] for lc in lane_configs],
-                    ],
-                    outputs=[*lane_outputs, *lane_stats],
+                output = gr.Textbox(
+                    label="Responses",
+                    lines=8,
+                    max_lines=15,
+                    interactive=False,
+                    show_copy_button=True,
+                )
+                stats = gr.Textbox(
+                    label="Stats",
+                    interactive=False,
+                    elem_classes=["stats-box"],
                 )
 
-                # Clear function
-                def clear_all():
-                    return [""] * MAX_LANES + [""] * MAX_LANES
+            lane_configs.append(
+                {
+                    "group": lane_group,
+                    "endpoint": endpoint,
+                    "model": model,
+                }
+            )
+            lane_outputs.append(output)
+            lane_stats.append(stats)
 
-                clear_btn.click(
-                    clear_all,
-                    outputs=[*lane_outputs, *lane_stats],
+        # Update lane visibility
+        def update_lanes_visibility(n):
+            updates = []
+            for i in range(MAX_LANES):
+                updates.append(gr.update(visible=(i < n)))
+            return updates
+
+        num_lanes.change(
+            update_lanes_visibility,
+            inputs=[num_lanes],
+            outputs=[lc["group"] for lc in lane_configs],
+        )
+
+        gr.Markdown("---")
+
+        # Run button
+        with gr.Row():
+            clear_btn = gr.Button("Clear All", variant="secondary")
+            run_btn = gr.Button(
+                "RUN ALL LANES (Parallel)",
+                variant="primary",
+                elem_classes=["run-btn"],
+                scale=2,
+            )
+
+        # Main execution function
+        def run_all_lanes(
+            n_lanes,
+            api_key,
+            stream,
+            system,
+            chain_len,
+            p1,
+            p2,
+            p3,
+            p4,
+            e1,
+            m1,
+            e2,
+            m2,
+            e3,
+            m3,
+            e4,
+            m4,
+            e5,
+            m5,
+            e6,
+            m6,
+        ):
+            """Run all enabled lanes in parallel."""
+
+            prompts = [p1, p2, p3, p4][:chain_len]
+            endpoints = [e1, e2, e3, e4, e5, e6]
+            models = [m1, m2, m3, m4, m5, m6]
+
+            # Build lane configs
+            configs = []
+            for i in range(int(n_lanes)):
+                configs.append(
+                    {
+                        "endpoint": endpoints[i],
+                        "model": models[i],
+                        "prompts": prompts,
+                        "system": system,
+                    }
                 )
 
-                # Footer
-                gr.HTML("""
-                    <div style="text-align: center; padding: 1rem; color: #666; font-size: 0.8rem;">
-                        Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders | LibraxisAI
-                    </div>
-                """)
+            # Initial yield - show "Running..."
+            initial_outputs = [
+                "⏳ Running..." if i < n_lanes else "" for i in range(MAX_LANES)
+            ]
+            initial_stats = ["" for _ in range(MAX_LANES)]
+            yield (*initial_outputs, *initial_stats)
 
-    return app, html_path
+            # Run in parallel
+            results = run_lanes_parallel(configs, api_key, stream)
+
+            # Save log
+            save_log(results)
+
+            # Format outputs
+            final_outputs = []
+            final_stats = []
+
+            for i in range(MAX_LANES):
+                if i < len(results):
+                    r = results[i]
+                    # Join all responses with step markers
+                    output_text = ""
+                    for j, resp in enumerate(r["responses"]):
+                        output_text += f"═══ Step {j+1} ═══\n{resp}\n\n"
+
+                    final_outputs.append(output_text.strip())
+
+                    # Format stats
+                    ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
+                    tps = (
+                        r["total_tokens"] / (r["total_time"] / 1000)
+                        if r["total_time"] > 0
+                        else 0
+                    )
+                    total = f"{r['total_time']/1000:.2f}s" if r["total_time"] else "-"
+                    stats_text = f"TTFT: {ttft} | tok/s: {tps:.1f} | Total: {total}"
+                    if r.get("error"):
+                        stats_text += f" | ❌ {r['error']}"
+                    final_stats.append(stats_text)
+                else:
+                    final_outputs.append("")
+                    final_stats.append("")
+
+            yield (*final_outputs, *final_stats)
+
+        # Connect run button
+        run_btn.click(
+            run_all_lanes,
+            inputs=[
+                num_lanes,
+                api_key,
+                stream_mode,
+                system_prompt,
+                chain_length,
+                *prompt_boxes,
+                *[lc["endpoint"] for lc in lane_configs],
+                *[lc["model"] for lc in lane_configs],
+            ],
+            outputs=[*lane_outputs, *lane_stats],
+        )
+
+        # Clear function
+        def clear_all():
+            return [""] * MAX_LANES + [""] * MAX_LANES
+
+        clear_btn.click(
+            clear_all,
+            outputs=[*lane_outputs, *lane_stats],
+        )
+
+        # Footer
+        gr.HTML("""
+            <div style="text-align: center; padding: 1rem; color: #666; font-size: 0.8rem;">
+                Created by M&K (c)2026 VetCoders | LibraxisAI
+            </div>
+        """)
+
+    return app
 
 
 # === CLI BENCHMARK ===
-
-
-# Canonical model aliases for true parallel batch testing
-# All resolve to same underlying model but create separate streams
-MODEL_ALIASES = ["chat", "ai-suggestions", "soap", "master", "programmer"]
 
 
 def run_cli_benchmark(
@@ -651,59 +583,31 @@ def run_cli_benchmark(
     system: str = "",
     api_key: str = "",
     stream: bool = True,
-    rotate_models: bool = False,
-    stagger_seconds: float = 0,
 ) -> None:
-    """Run benchmark from CLI with multiple parallel workers.
-
-    Args:
-        rotate_models: If True, each worker gets a different model alias
-        stagger_seconds: Delay between starting each worker (0 = all at once)
-                      from MODEL_ALIASES for true parallel batch testing.
-    """
-    import sys
-
+    """Run benchmark from CLI with multiple parallel workers."""
     prompts = prompts or CANONICAL_CHAIN[:chain_length]
-
-    # Determine models for each worker
-    if rotate_models:
-        worker_models = [MODEL_ALIASES[i % len(MODEL_ALIASES)] for i in range(workers)]
-        model_display = f"rotating: {', '.join(MODEL_ALIASES[: min(workers, 5)])}"
-    else:
-        worker_models = [model] * workers
-        model_display = model
 
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║  LibraxisAI API Benchmark                                    ║")
     print("╠══════════════════════════════════════════════════════════════╣")
     print(f"║  Endpoint: {endpoint[:50]:<50} ║")
-    print(f"║  Model:    {model_display[:50]:<50} ║")
+    print(f"║  Model:    {model[:50]:<50} ║")
     print(f"║  Workers:  {workers:<50} ║")
     print(f"║  Chain:    {len(prompts)} prompts{' ':<42} ║")
     print(f"║  Stream:   {stream!s:<50} ║")
-    stagger_display = f"{stagger_seconds}s" if stagger_seconds > 0 else "none"
-    print(f"║  Stagger:  {stagger_display:<50} ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print()
 
-    # Build configs for all workers - each with potentially different model
+    # Build configs for all workers
     configs = [
-        {
-            "endpoint": endpoint,
-            "model": worker_models[i],
-            "prompts": prompts,
-            "system": system,
-        }
-        for i in range(workers)
+        {"endpoint": endpoint, "model": model, "prompts": prompts, "system": system}
+        for _ in range(workers)
     ]
 
-    if stagger_seconds > 0:
-        print(f"Running {workers} worker(s) with {stagger_seconds}s stagger...")
-    else:
-        print(f"Running {workers} worker(s) in parallel...")
+    print(f"Running {workers} worker(s) in parallel...")
     start = time.perf_counter()
 
-    results = run_lanes_parallel(configs, api_key, stream, stagger_seconds)
+    results = run_lanes_parallel(configs, api_key, stream)
 
     total_time = time.perf_counter() - start
 
@@ -721,12 +625,10 @@ def run_cli_benchmark(
         status = "✓" if not r.get("error") else "✗"
         ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
         tps = r["total_tokens"] / (r["total_time"] / 1000) if r["total_time"] > 0 else 0
-        lane_time = f"{r['total_time'] / 1000:.2f}s" if r["total_time"] else "-"
-        model_name = worker_models[i] if rotate_models else ""
-        model_suffix = f" [{model_name}]" if model_name else ""
+        lane_time = f"{r['total_time']/1000:.2f}s" if r["total_time"] else "-"
 
         print(
-            f"Worker {i + 1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}{model_suffix}"
+            f"Worker {i+1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}"
         )
 
         if r.get("error"):
@@ -740,8 +642,8 @@ def run_cli_benchmark(
     print("═" * 64)
     print(f"Total wall time: {total_time:.2f}s")
     print(f"Total tokens:    {total_tokens}")
-    print(f"Avg TTFT:        {total_ttft / max(workers - errors, 1):.0f}ms")
-    print(f"Aggregate tok/s: {total_tokens / total_time:.1f}")
+    print(f"Avg TTFT:        {total_ttft/max(workers-errors, 1):.0f}ms")
+    print(f"Aggregate tok/s: {total_tokens/total_time:.1f}")
     print(f"Errors:          {errors}/{workers}")
     print()
 
@@ -756,8 +658,6 @@ def run_cli_benchmark(
 
 
 def main():
-    import argparse
-
     parser = argparse.ArgumentParser(
         description="LibraxisAI API Tester - Gradio UI or CLI benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -779,7 +679,7 @@ Examples:
         "--cli", action="store_true", help="Run CLI benchmark instead of Gradio UI"
     )
     parser.add_argument(
-        "-e", "--endpoint", default=ENDPOINTS["mlx-batch"], help="API endpoint URL"
+        "-e", "--endpoint", default=ENDPOINTS["mlx-omni"], help="API endpoint URL"
     )
     parser.add_argument("-m", "--model", default="chat", help="Model name")
     parser.add_argument(
@@ -792,18 +692,6 @@ Examples:
     parser.add_argument("-s", "--system", default="", help="System prompt")
     parser.add_argument("-k", "--api-key", default="", help="API key")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
-    parser.add_argument(
-        "-r",
-        "--rotate-models",
-        action="store_true",
-        help="Rotate through model aliases (chat, ai-suggestions, soap, master, programmer)",
-    )
-    parser.add_argument(
-        "--stagger",
-        type=float,
-        default=1.0,
-        help="Delay between starting each worker in seconds (default: 1s)",
-    )
     parser.add_argument("--port", type=int, default=7860, help="Gradio server port")
 
     args = parser.parse_args()
@@ -818,28 +706,17 @@ Examples:
             system=args.system,
             api_key=args.api_key,
             stream=not args.no_stream,
-            rotate_models=args.rotate_models,
-            stagger_seconds=args.stagger,
         )
     else:
-        import warnings
-
         warnings.filterwarnings("ignore", message=".*will be removed in Gradio 6.0.*")
         warnings.filterwarnings("ignore", message=".*will be changed.*in Gradio 6.0.*")
 
-        app, html_path = create_app()
-        allowed = []
-        html_dir = Path(html_path).parent if html_path else None
-        if html_dir and html_dir.exists():
-            allowed.append(str(html_dir))
+        app = create_app()
         app.launch(
             server_name="0.0.0.0",
             server_port=args.port,
             share=False,
             show_error=True,
-            allowed_paths=allowed or None,
-            theme=APP_THEME,
-            css=APP_CSS,
         )
 
 
