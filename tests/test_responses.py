@@ -407,11 +407,11 @@ class TestChainedResponses:
                     payload["previous_response_id"] = prev_id
 
                 r = client.post(f"{TEST_BASE_URL}/v1/responses", json=payload)
-                assert r.status_code == 200, f"Turn {i+1} failed: {r.text}"
+                assert r.status_code == 200, f"Turn {i + 1} failed: {r.text}"
 
                 data = r.json()
                 prev_id = data.get("id")
-                assert prev_id, f"No response ID in turn {i+1}"
+                assert prev_id, f"No response ID in turn {i + 1}"
 
                 # Extract text from response
                 text = ""
@@ -422,7 +422,7 @@ class TestChainedResponses:
                                 text += part.get("text", "")
 
                 responses.append({"turn": i + 1, "prompt": prompt, "response": text})
-                print(f"\nTurn {i+1}: {prompt[:30]}...")
+                print(f"\nTurn {i + 1}: {prompt[:30]}...")
                 print(f"  Response: {text[:100]}...")
 
         assert len(responses) == len(turns)
