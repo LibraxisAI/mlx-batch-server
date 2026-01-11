@@ -172,7 +172,9 @@ def execute_single_request(
                             delta = parsed.get("delta", "")
                         # Legacy chat/completions format: delta.content
                         elif isinstance(parsed.get("delta"), dict):
-                            delta = parsed["delta"].get("text") or parsed["delta"].get("content", "")
+                            delta = parsed["delta"].get("text") or parsed["delta"].get(
+                                "content", ""
+                            )
                         elif (
                             parsed.get("choices", [{}])[0]
                             .get("delta", {})
@@ -218,12 +220,23 @@ def execute_single_request(
 
 
 def run_lanes_parallel(
-    lanes_config: list[dict], api_key: str, stream: bool
+    lanes_config: list[dict], api_key: str, stream: bool, stagger_seconds: float = 0
 ) -> list[dict]:
-    """Run all lanes in parallel using ThreadPoolExecutor."""
+    """Run all lanes in parallel using ThreadPoolExecutor.
 
-    def run_single_lane(config):
-        return execute_chain(
+    Args:
+        stagger_seconds: Delay between starting each worker (0 = all at once)
+    """
+    import threading
+
+    results = [None] * len(lanes_config)
+
+    def run_single_lane(index: int, config: dict):
+        # Stagger start if requested
+        if stagger_seconds > 0 and index > 0:
+            time.sleep(stagger_seconds * index)
+
+        result = execute_chain(
             endpoint=config["endpoint"],
             model=config["model"],
             prompts=config["prompts"],
@@ -231,9 +244,16 @@ def run_lanes_parallel(
             api_key=api_key,
             stream=stream,
         )
+        results[index] = result
 
-    with ThreadPoolExecutor(max_workers=MAX_LANES) as executor:
-        results = list(executor.map(run_single_lane, lanes_config))
+    threads = []
+    for i, config in enumerate(lanes_config):
+        t = threading.Thread(target=run_single_lane, args=(i, config))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
 
     return results
 
@@ -592,11 +612,13 @@ def run_cli_benchmark(
     api_key: str = "",
     stream: bool = True,
     rotate_models: bool = False,
+    stagger_seconds: float = 0,
 ) -> None:
     """Run benchmark from CLI with multiple parallel workers.
 
     Args:
         rotate_models: If True, each worker gets a different model alias
+        stagger_seconds: Delay between starting each worker (0 = all at once)
                       from MODEL_ALIASES for true parallel batch testing.
     """
     import sys
@@ -606,7 +628,7 @@ def run_cli_benchmark(
     # Determine models for each worker
     if rotate_models:
         worker_models = [MODEL_ALIASES[i % len(MODEL_ALIASES)] for i in range(workers)]
-        model_display = f"rotating: {', '.join(MODEL_ALIASES[:min(workers, 5)])}"
+        model_display = f"rotating: {', '.join(MODEL_ALIASES[: min(workers, 5)])}"
     else:
         worker_models = [model] * workers
         model_display = model
@@ -619,19 +641,29 @@ def run_cli_benchmark(
     print(f"║  Workers:  {workers:<50} ║")
     print(f"║  Chain:    {len(prompts)} prompts{' ':<42} ║")
     print(f"║  Stream:   {stream!s:<50} ║")
+    stagger_display = f"{stagger_seconds}s" if stagger_seconds > 0 else "none"
+    print(f"║  Stagger:  {stagger_display:<50} ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print()
 
     # Build configs for all workers - each with potentially different model
     configs = [
-        {"endpoint": endpoint, "model": worker_models[i], "prompts": prompts, "system": system}
+        {
+            "endpoint": endpoint,
+            "model": worker_models[i],
+            "prompts": prompts,
+            "system": system,
+        }
         for i in range(workers)
     ]
 
-    print(f"Running {workers} worker(s) in parallel...")
+    if stagger_seconds > 0:
+        print(f"Running {workers} worker(s) with {stagger_seconds}s stagger...")
+    else:
+        print(f"Running {workers} worker(s) in parallel...")
     start = time.perf_counter()
 
-    results = run_lanes_parallel(configs, api_key, stream)
+    results = run_lanes_parallel(configs, api_key, stream, stagger_seconds)
 
     total_time = time.perf_counter() - start
 
@@ -721,8 +753,16 @@ Examples:
     parser.add_argument("-k", "--api-key", default="", help="API key")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
     parser.add_argument(
-        "-r", "--rotate-models", action="store_true",
-        help="Rotate through model aliases (chat, ai-suggestions, soap, master, programmer)"
+        "-r",
+        "--rotate-models",
+        action="store_true",
+        help="Rotate through model aliases (chat, ai-suggestions, soap, master, programmer)",
+    )
+    parser.add_argument(
+        "--stagger",
+        type=float,
+        default=1.0,
+        help="Delay between starting each worker in seconds (default: 1s)",
     )
     parser.add_argument("--port", type=int, default=7860, help="Gradio server port")
 
@@ -739,6 +779,7 @@ Examples:
             api_key=args.api_key,
             stream=not args.no_stream,
             rotate_models=args.rotate_models,
+            stagger_seconds=args.stagger,
         )
     else:
         import warnings
