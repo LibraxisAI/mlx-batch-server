@@ -129,10 +129,10 @@ def execute_single_request(
     if previous_response_id:
         body["previous_response_id"] = previous_response_id
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["x-api-key"] = api_key
     if stream:
         headers["Accept"] = "text/event-stream"
 
@@ -167,10 +167,12 @@ def execute_single_request(
                             response_id = parsed["response"]["id"]
 
                         delta = ""
+                        # Responses API: delta is a string
                         if parsed.get("type") == "response.output_text.delta":
                             delta = parsed.get("delta", "")
-                        elif parsed.get("delta", {}).get("text"):
-                            delta = parsed["delta"]["text"]
+                        # Legacy chat/completions format: delta.content
+                        elif isinstance(parsed.get("delta"), dict):
+                            delta = parsed["delta"].get("text") or parsed["delta"].get("content", "")
                         elif (
                             parsed.get("choices", [{}])[0]
                             .get("delta", {})
@@ -575,6 +577,11 @@ def create_app():
 # === CLI BENCHMARK ===
 
 
+# Canonical model aliases for true parallel batch testing
+# All resolve to same underlying model but create separate streams
+MODEL_ALIASES = ["chat", "ai-suggestions", "soap", "master", "programmer"]
+
+
 def run_cli_benchmark(
     endpoint: str,
     model: str,
@@ -584,27 +591,41 @@ def run_cli_benchmark(
     system: str = "",
     api_key: str = "",
     stream: bool = True,
+    rotate_models: bool = False,
 ) -> None:
-    """Run benchmark from CLI with multiple parallel workers."""
+    """Run benchmark from CLI with multiple parallel workers.
+
+    Args:
+        rotate_models: If True, each worker gets a different model alias
+                      from MODEL_ALIASES for true parallel batch testing.
+    """
     import sys
 
     prompts = prompts or CANONICAL_CHAIN[:chain_length]
+
+    # Determine models for each worker
+    if rotate_models:
+        worker_models = [MODEL_ALIASES[i % len(MODEL_ALIASES)] for i in range(workers)]
+        model_display = f"rotating: {', '.join(MODEL_ALIASES[:min(workers, 5)])}"
+    else:
+        worker_models = [model] * workers
+        model_display = model
 
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║  LibraxisAI API Benchmark                                    ║")
     print("╠══════════════════════════════════════════════════════════════╣")
     print(f"║  Endpoint: {endpoint[:50]:<50} ║")
-    print(f"║  Model:    {model[:50]:<50} ║")
+    print(f"║  Model:    {model_display[:50]:<50} ║")
     print(f"║  Workers:  {workers:<50} ║")
     print(f"║  Chain:    {len(prompts)} prompts{' ':<42} ║")
     print(f"║  Stream:   {stream!s:<50} ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print()
 
-    # Build configs for all workers
+    # Build configs for all workers - each with potentially different model
     configs = [
-        {"endpoint": endpoint, "model": model, "prompts": prompts, "system": system}
-        for _ in range(workers)
+        {"endpoint": endpoint, "model": worker_models[i], "prompts": prompts, "system": system}
+        for i in range(workers)
     ]
 
     print(f"Running {workers} worker(s) in parallel...")
@@ -629,9 +650,11 @@ def run_cli_benchmark(
         ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
         tps = r["total_tokens"] / (r["total_time"] / 1000) if r["total_time"] > 0 else 0
         lane_time = f"{r['total_time'] / 1000:.2f}s" if r["total_time"] else "-"
+        model_name = worker_models[i] if rotate_models else ""
+        model_suffix = f" [{model_name}]" if model_name else ""
 
         print(
-            f"Worker {i + 1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}"
+            f"Worker {i + 1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}{model_suffix}"
         )
 
         if r.get("error"):
@@ -697,6 +720,10 @@ Examples:
     parser.add_argument("-s", "--system", default="", help="System prompt")
     parser.add_argument("-k", "--api-key", default="", help="API key")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
+    parser.add_argument(
+        "-r", "--rotate-models", action="store_true",
+        help="Rotate through model aliases (chat, ai-suggestions, soap, master, programmer)"
+    )
     parser.add_argument("--port", type=int, default=7860, help="Gradio server port")
 
     args = parser.parse_args()
@@ -711,6 +738,7 @@ Examples:
             system=args.system,
             api_key=args.api_key,
             stream=not args.no_stream,
+            rotate_models=args.rotate_models,
         )
     else:
         import warnings

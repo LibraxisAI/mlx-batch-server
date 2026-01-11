@@ -58,6 +58,14 @@ class TestFilterHarmonyTokens:
         assert "<|call|>" not in result
         assert "<|end|>" not in result
 
+    def test_strips_return_assistant_markers(self):
+        """Should strip <|return|> and <|assistant|> tokens (fix 2026-01-11)."""
+        text = "Hello<|return|>World<|assistant|>!"
+        result = filter_harmony_tokens(text)
+        assert "<|return|>" not in result
+        assert "<|assistant|>" not in result
+        assert result == "HelloWorld!"
+
     def test_preserves_clean_text(self):
         """Should preserve text without Harmony tokens."""
         text = "Hello, World!"

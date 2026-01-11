@@ -145,8 +145,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "RUF059", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
-"tests/**/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "RUF059", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
+"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
+"tests/**/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
 "playground/*" = ["ERA", "ARG", "PLC0415", "SIM105", "SIM113", "SIM115", "B007", "PLR0912", "PLR0915", "PTH123", "W291", "W293", "E402"]
 "examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
 "examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
