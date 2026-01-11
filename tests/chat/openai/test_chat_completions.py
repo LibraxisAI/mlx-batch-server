@@ -2,9 +2,10 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
+from openai import OpenAI
+
 from mlx_batch_server.chat.mlx import models as mlx_models
 from mlx_batch_server.main import app
-from openai import OpenAI
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -121,9 +122,9 @@ class TestChatCompletions:
 
                 # Validate basic structure of each chunk
                 assert chunk.model == model, "Incorrect model name"
-                assert chunk.object == "chat.completion.chunk", (
-                    "Incorrect response object type"
-                )
+                assert (
+                    chunk.object == "chat.completion.chunk"
+                ), "Incorrect response object type"
                 assert len(chunk.choices) == 1, "Incorrect number of choices"
 
                 # Collect content
@@ -169,9 +170,9 @@ class TestChatCompletions:
 
                 # Validate basic structure of each chunk
                 assert chunk.model == model, "Incorrect model name"
-                assert chunk.object == "chat.completion.chunk", (
-                    "Incorrect response object type"
-                )
+                assert (
+                    chunk.object == "chat.completion.chunk"
+                ), "Incorrect response object type"
 
                 choice = chunk.choices[0]
                 # Collect content

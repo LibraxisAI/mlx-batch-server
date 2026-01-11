@@ -3,6 +3,7 @@
 import logging
 
 import pytest
+
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 from mlx_batch_server.chat.mlx.core_types import CompletionContent, GenerationResult
 

@@ -3,6 +3,7 @@ from collections.abc import Generator
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
+
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 from mlx_batch_server.chat.openai.openai_adapter import OpenAIAdapter
 from mlx_batch_server.chat.openai.schema import (

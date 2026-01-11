@@ -63,7 +63,7 @@ class MlxAudioModel(TTSModelAdapter):
 
         generate_audio(
             text=request.input,
-            model_path=self.path_or_hf_repo,
+            model=self.path_or_hf_repo,
             voice=voice,
             speed=request.speed,
             lang_code=lang_code,
@@ -98,4 +98,4 @@ class TTSService:
             self.sample_audio_path.unlink(missing_ok=True)
             return audio_content
         except Exception as e:
-            raise Exception(f"Error reading audio file: {e!s}")
+            raise Exception(f"Error reading audio file: {e!s}") from e

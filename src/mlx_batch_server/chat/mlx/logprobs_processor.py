@@ -49,7 +49,9 @@ class LogprobsProcessor:
             top_indices = mx.argpartition(-current_logprobs, kth=top_k - 1)[:top_k]
             top_probs = mx.clip(current_logprobs[top_indices], a_min=-100, a_max=None)
 
-            for idx, logprob in zip(top_indices.tolist(), top_probs.tolist()):
+            for idx, logprob in zip(
+                top_indices.tolist(), top_probs.tolist(), strict=False
+            ):
                 token = self.tokenizer.decode([idx])
                 token_bytes = token.encode("utf-8")
                 top_logprobs.append(

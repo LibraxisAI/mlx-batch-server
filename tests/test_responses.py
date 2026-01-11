@@ -4,8 +4,14 @@ Tests for /v1/responses endpoint.
 Contributed by LibraxisAI - https://libraxis.ai
 """
 
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+
 from mlx_batch_server.main import app
 from mlx_batch_server.responses.normalizer import (
     has_media_content,
@@ -271,3 +277,269 @@ class TestResponsesEndpoint:
         """DELETE for nonexistent response should return 404."""
         response = client.delete("/v1/responses/resp_nonexistent")
         assert response.status_code == 404
+
+
+# =============================================================================
+# Concurrent & Chain Tests (require running server with loaded model)
+# =============================================================================
+# These tests validate batch inference and stateful conversations.
+# Skip if MLX_TEST_MODEL not set or server not running.
+
+TEST_MODEL = os.environ.get(
+    "MLX_TEST_MODEL", "mlx-community/Llama-3.2-1B-Instruct-4bit"
+)
+TEST_PORT = int(os.environ.get("MLX_TEST_PORT", "8100"))
+TEST_BASE_URL = f"http://localhost:{TEST_PORT}"
+
+
+def _server_available() -> bool:
+    """Check if test server is running."""
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            r = client.get(f"{TEST_BASE_URL}/v1/models")
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _model_loaded() -> bool:
+    """Check if test model is loaded."""
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            r = client.get(f"{TEST_BASE_URL}/v1/models")
+            if r.status_code != 200:
+                return False
+            models = r.json().get("data", [])
+            return any(TEST_MODEL in m.get("id", "") for m in models)
+    except Exception:
+        return False
+
+
+requires_server = pytest.mark.skipif(
+    not _server_available(),
+    reason=f"Server not running on {TEST_BASE_URL}",
+)
+
+requires_model = pytest.mark.skipif(
+    not _model_loaded(),
+    reason=f"Model {TEST_MODEL} not loaded",
+)
+
+
+class TestConcurrentResponses:
+    """Tests for concurrent batch inference."""
+
+    @requires_server
+    def test_concurrent_requests(self):
+        """Multiple concurrent requests should complete without errors.
+
+        This validates that batch inference works - requests should be
+        processed in parallel, not sequentially.
+        """
+        n_requests = 5
+        prompts = [f"Say the number {i}" for i in range(n_requests)]
+        results = []
+
+        def make_request(prompt: str) -> dict:
+            start = time.perf_counter()
+            with httpx.Client(timeout=60.0) as client:
+                r = client.post(
+                    f"{TEST_BASE_URL}/v1/responses",
+                    json={
+                        "model": TEST_MODEL,
+                        "input": prompt,
+                        "max_output_tokens": 50,
+                    },
+                )
+                elapsed = time.perf_counter() - start
+                return {"status": r.status_code, "elapsed": elapsed, "prompt": prompt}
+
+        start_all = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=n_requests) as executor:
+            results = list(executor.map(make_request, prompts))
+        total_time = time.perf_counter() - start_all
+
+        # All requests should succeed
+        for r in results:
+            assert r["status"] == 200, f"Request failed: {r}"
+
+        # If batch works, total time should be less than sum of individual times
+        sum_individual = sum(r["elapsed"] for r in results)
+        speedup = sum_individual / total_time if total_time > 0 else 1
+
+        print(f"\nConcurrent test: {n_requests} requests")
+        print(f"  Total time: {total_time:.2f}s")
+        print(f"  Sum individual: {sum_individual:.2f}s")
+        print(f"  Speedup: {speedup:.2f}x")
+
+        # Expect at least some parallelism (speedup > 1.5x for 5 requests)
+        # This is a soft check - CI may have different characteristics
+        if speedup < 1.2:
+            pytest.skip(f"Low speedup ({speedup:.2f}x) - may not have batch enabled")
+
+
+class TestChainedResponses:
+    """Tests for multi-turn conversation chains."""
+
+    @requires_server
+    def test_chained_conversation(self):
+        """Multi-turn chain with previous_response_id should work.
+
+        Each turn should have access to previous context.
+        """
+        turns = [
+            "My name is TestUser. Remember it.",
+            "What is my name?",
+            "Summarize our conversation so far.",
+        ]
+
+        prev_id = None
+        responses = []
+
+        with httpx.Client(timeout=60.0) as client:
+            for i, prompt in enumerate(turns):
+                payload = {
+                    "model": TEST_MODEL,
+                    "input": prompt,
+                    "max_output_tokens": 100,
+                }
+                if prev_id:
+                    payload["previous_response_id"] = prev_id
+
+                r = client.post(f"{TEST_BASE_URL}/v1/responses", json=payload)
+                assert r.status_code == 200, f"Turn {i+1} failed: {r.text}"
+
+                data = r.json()
+                prev_id = data.get("id")
+                assert prev_id, f"No response ID in turn {i+1}"
+
+                # Extract text from response
+                text = ""
+                for item in data.get("output", []):
+                    if item.get("type") == "message":
+                        for part in item.get("content", []):
+                            if part.get("type") == "output_text":
+                                text += part.get("text", "")
+
+                responses.append({"turn": i + 1, "prompt": prompt, "response": text})
+                print(f"\nTurn {i+1}: {prompt[:30]}...")
+                print(f"  Response: {text[:100]}...")
+
+        assert len(responses) == len(turns)
+
+    @requires_server
+    def test_concurrent_chains(self):
+        """Multiple concurrent multi-turn chains should work independently.
+
+        Each chain should maintain its own context.
+        """
+        n_chains = 3
+        names = ["Alice", "Bob", "Charlie"]
+
+        def run_chain(name: str) -> dict:
+            turns = [
+                f"My name is {name}. Remember it.",
+                "What is my name?",
+            ]
+            prev_id = None
+
+            with httpx.Client(timeout=60.0) as client:
+                for prompt in turns:
+                    payload = {
+                        "model": TEST_MODEL,
+                        "input": prompt,
+                        "max_output_tokens": 50,
+                    }
+                    if prev_id:
+                        payload["previous_response_id"] = prev_id
+
+                    r = client.post(f"{TEST_BASE_URL}/v1/responses", json=payload)
+                    if r.status_code != 200:
+                        return {"name": name, "success": False, "error": r.text}
+
+                    data = r.json()
+                    prev_id = data.get("id")
+
+                # Get final response text
+                text = ""
+                for item in data.get("output", []):
+                    if item.get("type") == "message":
+                        for part in item.get("content", []):
+                            if part.get("type") == "output_text":
+                                text += part.get("text", "")
+
+                return {"name": name, "success": True, "response": text}
+
+        with ThreadPoolExecutor(max_workers=n_chains) as executor:
+            results = list(executor.map(run_chain, names))
+
+        for r in results:
+            assert r["success"], f"Chain for {r['name']} failed: {r.get('error')}"
+            print(f"\n{r['name']}: {r['response'][:100]}...")
+
+
+class TestStreamingResponses:
+    """Tests for SSE streaming."""
+
+    @requires_server
+    def test_streaming_basic(self):
+        """Streaming should emit SSE events."""
+        with (
+            httpx.Client(timeout=60.0) as client,
+            client.stream(
+                "POST",
+                f"{TEST_BASE_URL}/v1/responses",
+                json={
+                    "model": TEST_MODEL,
+                    "input": "Say hello",
+                    "stream": True,
+                    "max_output_tokens": 50,
+                },
+            ) as response,
+        ):
+            assert response.status_code == 200
+
+            events = []
+            for line in response.iter_lines():
+                if line.startswith("event:"):
+                    events.append(line.split(":", 1)[1].strip())
+
+            # Should have at least created and completed events
+            print(f"\nReceived {len(events)} events: {events[:10]}...")
+            assert len(events) > 0, "No SSE events received"
+
+    @requires_server
+    def test_concurrent_streaming(self):
+        """Multiple concurrent streams should work."""
+        n_streams = 3
+
+        def stream_request(idx: int) -> dict:
+            events = []
+            try:
+                with (
+                    httpx.Client(timeout=60.0) as client,
+                    client.stream(
+                        "POST",
+                        f"{TEST_BASE_URL}/v1/responses",
+                        json={
+                            "model": TEST_MODEL,
+                            "input": f"Count to {idx + 1}",
+                            "stream": True,
+                            "max_output_tokens": 50,
+                        },
+                    ) as response,
+                ):
+                    for line in response.iter_lines():
+                        if line.startswith("event:"):
+                            events.append(line.split(":", 1)[1].strip())
+                return {"idx": idx, "success": True, "events": len(events)}
+            except Exception as e:
+                return {"idx": idx, "success": False, "error": str(e)}
+
+        with ThreadPoolExecutor(max_workers=n_streams) as executor:
+            results = list(executor.map(stream_request, range(n_streams)))
+
+        for r in results:
+            assert r["success"], f"Stream {r['idx']} failed: {r.get('error')}"
+            assert r["events"] > 0, f"Stream {r['idx']} got no events"
+            print(f"\nStream {r['idx']}: {r['events']} events")

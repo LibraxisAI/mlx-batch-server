@@ -9,6 +9,7 @@ import time
 from unittest.mock import Mock, patch
 
 import pytest
+
 from mlx_batch_server.chat.mlx.wrapper_cache import MLXWrapperCache, WrapperCacheKey
 
 

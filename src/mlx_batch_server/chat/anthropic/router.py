@@ -3,6 +3,7 @@ from collections.abc import Generator
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, StreamingResponse
+
 from mlx_batch_server.chat.anthropic.anthropic_messages_adapter import (
     AnthropicMessagesAdapter,
 )

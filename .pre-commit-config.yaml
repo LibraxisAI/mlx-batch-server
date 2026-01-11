@@ -9,6 +9,7 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=1000']
+        exclude: '^uv\.lock$'
       - id: check-ast
       - id: check-merge-conflict
       - id: detect-private-key

@@ -1,4 +1,5 @@
 from mlx_lm import load
+
 from mlx_batch_server.chat.mlx.tools.chat_template import ChatTemplate
 
 

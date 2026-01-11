@@ -4,9 +4,10 @@ from textwrap import dedent
 
 import pytest
 from fastapi.testclient import TestClient
-from mlx_batch_server.main import app
 from openai import OpenAI
 from pydantic import BaseModel
+
+from mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

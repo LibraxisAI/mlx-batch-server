@@ -2,8 +2,9 @@ import json
 import logging
 from textwrap import dedent
 
-from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 from pydantic import BaseModel
+
+from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelType(str, Enum):
@@ -17,9 +17,7 @@ class EmbeddingRequest(BaseModel):
     user: str | None = None
     dimensions: int | None = None
 
-    # Allow any additional fields
-    class Config:
-        extra = "allow"  # This allows additional fields not defined in the model
+    model_config = ConfigDict(extra="allow")
 
     def get_extra_params(self) -> dict[str, Any]:
         """Get all extra parameters that aren't part of the standard OpenAI API."""

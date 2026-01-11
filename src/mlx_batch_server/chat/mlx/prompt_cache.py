@@ -13,6 +13,7 @@ from mlx_lm.models.cache import (
     make_prompt_cache,
     trim_prompt_cache,
 )
+
 from mlx_batch_server.chat.mlx.model_types import MLXModel
 
 from ...utils.logger import logger
