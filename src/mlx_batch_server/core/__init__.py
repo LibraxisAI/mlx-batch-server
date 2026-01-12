@@ -1,5 +1,5 @@
 """
-Core configuration and utilities for Mlx batch Server.
+Core configuration and utilities for MLX Omni Server.
 
 """
 

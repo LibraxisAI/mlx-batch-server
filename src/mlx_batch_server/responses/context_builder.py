@@ -10,7 +10,7 @@ Key features:
 - Chain walking with depth and token limits
 - Handles mixed chains: STT -> LLM -> LLM -> ...
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Created by M&K (c)2026 The LibraxisAI Team
 Co-Authored-By: Maciej (void@div0.space) & Klaudiusz (the1st@whoai.am)
 """
 

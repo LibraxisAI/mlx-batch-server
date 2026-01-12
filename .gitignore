@@ -176,5 +176,5 @@ GEMINI.md
 .loctree/
 
 # Server runtime
-.mlx-omni-server.pid
-mlx-omni-server.log
+.mlx-batch-server.pid
+mlx-batch-server.log

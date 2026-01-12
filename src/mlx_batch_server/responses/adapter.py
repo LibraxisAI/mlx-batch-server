@@ -6,21 +6,16 @@ with support for both local MLX models and external providers.
 
 Includes hosted tool execution (web_search, code_interpreter).
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Created by M&K (c)2026 The LibraxisAI Team
 """
 
 from __future__ import annotations
 
-import base64
-import io
 import json
-import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
-
-from PIL import Image
 
 from ..batch import BatchStreamChunk, get_batch_coordinator
 from ..chat.mlx.wrapper_cache import wrapper_cache
@@ -40,7 +35,6 @@ from ..utils.harmony_parser import (
 )
 from ..utils.logger import logger
 from .normalizer import (
-    collect_system_preamble,
     has_media_content,
     normalise_responses_payload,
     responses_to_chat_messages,
@@ -57,24 +51,6 @@ from .schema import (
 if TYPE_CHECKING:
     from ..chat.mlx.chat_generator import ChatGenerator
 
-# ChatML special tokens to filter from non-Harmony model outputs
-_CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
-
-
-# ------------------------------------------------------------------
-# VLM lifecycle proxies — delegate to the unified wrapper_cache
-# ------------------------------------------------------------------
-
-
-def get_loaded_vlm_models() -> list[str]:
-    """Return model IDs currently resident in the VLM cache."""
-    return wrapper_cache.get_loaded_vlm_models()
-
-
-def unload_vlm_model(model_id: str | None = None) -> list[str]:
-    """Unload one or all VLM models (delegates to wrapper_cache)."""
-    return wrapper_cache.unload_vlm_model(model_id)
-
 
 class ResponsesAdapter:
     """
@@ -83,7 +59,7 @@ class ResponsesAdapter:
     Supports:
     - Local MLX models via ChatGenerator
     - External providers via multi-provider routing
-    - Vision models via mlx-vlm
+    - Vision models via Ollama routing
     - Hosted tool execution (web_search, code_interpreter)
     """
 
@@ -105,496 +81,16 @@ class ResponsesAdapter:
         generator = self._get_chat_generator(model_id)
         return OpenAIAdapter(generator)
 
-    def _prepare_tools_for_request(
-        self,
-        request_tools: Any,
-    ) -> tuple[list[dict[str, Any]], list[Tool] | None]:
-        """Normalize tool definitions for both direct and batched text flows."""
-        tool_definitions = get_tool_definitions(request_tools)
-        if not tool_definitions:
-            return [], None
-
-        tools_for_request = [
-            Tool(
-                type="function",
-                function={
-                    "name": tool_def.get("name", ""),
-                    "description": tool_def.get("description", ""),
-                    "parameters": tool_def.get("parameters", {}),
-                },
-            )
-            for tool_def in tool_definitions
-            if tool_def.get("type") == "function"
-        ]
-        return tool_definitions, tools_for_request or None
-
     def _should_use_batch(self) -> bool:
         """Check if batch inference is enabled."""
         settings = get_settings()
         return settings.enable_batch_inference
-
-    def _multimodal_validation_error(
-        self,
-        normalised_body: dict[str, Any],
-    ) -> str | None:
-        """Return a contract violation message for unsupported media combinations."""
-        if normalised_body.get("tools"):
-            return "Multimodal requests with tools are not supported yet."
-
-        media_turns = 0
-        for turn in normalised_body.get("input", []):
-            if not isinstance(turn, dict):
-                continue
-            content = turn.get("content", [])
-            if isinstance(content, dict):
-                content = [content]
-            if not isinstance(content, list):
-                continue
-            if any(
-                isinstance(part, dict)
-                and part.get("type") in {"input_image", "input_video"}
-                for part in content
-            ):
-                media_turns += 1
-
-        if media_turns > 1:
-            return (
-                "Multimodal requests with media across multiple turns are not "
-                "supported yet."
-            )
-        return None
-
-    def _batch_fallback_reason(
-        self,
-        normalised_body: dict[str, Any],
-    ) -> str | None:
-        """Return the reason a text request must stay off the batch lane."""
-        if normalised_body.get("tools"):
-            return "tools"
-        if normalised_body.get("stop"):
-            return "custom stop"
-        top_p = normalised_body.get("top_p")
-        if top_p not in (None, 1, 1.0):
-            return "custom top_p"
-        text_format = (normalised_body.get("text") or {}).get("format")
-        if text_format and text_format.get("type") != "text":
-            return "structured output"
-        return None
-
-    def _get_vlm_backend(self, model_id: str) -> tuple[Any, Any]:
-        """Load or reuse a vision-language model (via unified wrapper_cache)."""
-        return wrapper_cache.get_vlm_backend(model_id)
-
-    def _decode_base64_image(self, data: str) -> Image.Image:
-        """Decode a base64 or data URL image into a PIL image."""
-        if data.startswith("data:"):
-            if "," not in data:
-                raise ValueError("Invalid data URL for image")
-            _, data = data.split(",", 1)
-
-        data = data.strip()
-        if not data:
-            raise ValueError("Empty base64 image data")
-
-        missing = len(data) % 4
-        if missing:
-            data += "=" * (4 - missing)
-
-        image_bytes = base64.b64decode(data)
-        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-    def _content_has_image(self, content: Any) -> bool:
-        if isinstance(content, dict):
-            return content.get("type") == "input_image"
-        if isinstance(content, list):
-            return any(
-                isinstance(part, dict) and part.get("type") == "input_image"
-                for part in content
-            )
-        return False
-
-    def _content_has_video(self, content: Any) -> bool:
-        if isinstance(content, dict):
-            return content.get("type") == "input_video"
-        if isinstance(content, list):
-            return any(
-                isinstance(part, dict) and part.get("type") == "input_video"
-                for part in content
-            )
-        return False
-
-    def _has_image_content(self, normalised_body: dict[str, Any]) -> bool:
-        for turn in normalised_body.get("input", []):
-            if not isinstance(turn, dict):
-                continue
-            if self._content_has_image(turn.get("content")):
-                return True
-        return False
-
-    def _has_video_content(self, normalised_body: dict[str, Any]) -> bool:
-        for turn in normalised_body.get("input", []):
-            if not isinstance(turn, dict):
-                continue
-            if self._content_has_video(turn.get("content")):
-                return True
-        return False
-
-    def _has_vision_content(self, normalised_body: dict[str, Any]) -> bool:
-        return self._has_image_content(normalised_body) or self._has_video_content(
-            normalised_body
-        )
-
-    def _extract_text_content(self, content: Any) -> str:
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, dict):
-            if content.get("type") in (
-                "input_text",
-                "output_text",
-                "text",
-                "reasoning_text",
-            ):
-                text_value = content.get("text")
-                return str(text_value) if text_value is not None else ""
-            text_value = content.get("text")
-            return str(text_value) if text_value is not None else ""
-        if isinstance(content, list):
-            parts: list[str] = []
-            for part in content:
-                if isinstance(part, str):
-                    if part:
-                        parts.append(part)
-                    continue
-                if isinstance(part, dict):
-                    if (
-                        part.get("type")
-                        in (
-                            "input_text",
-                            "output_text",
-                            "text",
-                            "reasoning_text",
-                        )
-                        or "text" in part
-                    ):
-                        text_value = part.get("text")
-                        if text_value is not None:
-                            parts.append(str(text_value))
-                    continue
-                if part is not None:
-                    parts.append(str(part))
-            return "\n".join(parts)
-        return str(content)
-
-    def _build_vlm_messages(
-        self, normalised_body: dict[str, Any]
-    ) -> list[dict[str, str]]:
-        messages: list[dict[str, str]] = []
-
-        preamble = collect_system_preamble(normalised_body)
-        if preamble:
-            messages.append({"role": "system", "content": "\n\n".join(preamble)})
-
-        for turn in normalised_body.get("input", []):
-            if not isinstance(turn, dict):
-                continue
-
-            role = str(turn.get("role", "user")).lower()
-            if role not in {"system", "user", "assistant", "tool", "developer"}:
-                role = "user"
-
-            content = turn.get("content")
-            text = self._extract_text_content(content)
-
-            if text or (role == "user" and self._content_has_image(content)):
-                messages.append({"role": role, "content": text})
-
-        if not messages:
-            messages.append({"role": "user", "content": ""})
-
-        return messages
-
-    def _extract_image_inputs(self, normalised_body: dict[str, Any]) -> list[Any]:
-        images: list[Any] = []
-        for turn in normalised_body.get("input", []):
-            if not isinstance(turn, dict):
-                continue
-
-            content = turn.get("content", [])
-            if isinstance(content, dict):
-                content = [content]
-            if not isinstance(content, list):
-                continue
-
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") != "input_image":
-                    continue
-
-                if part.get("image_base64"):
-                    images.append(self._decode_base64_image(str(part["image_base64"])))
-                    continue
-
-                source = part.get("image_url")
-                if isinstance(source, str) and source.startswith("data:"):
-                    images.append(self._decode_base64_image(source))
-                elif source:
-                    images.append(source)
-
-        return images
-
-    def _extract_video_inputs(self, normalised_body: dict[str, Any]) -> list[str]:
-        """Extract video source paths/URLs from normalised request body."""
-        videos: list[str] = []
-        for turn in normalised_body.get("input", []):
-            if not isinstance(turn, dict):
-                continue
-
-            content = turn.get("content", [])
-            if isinstance(content, dict):
-                content = [content]
-            if not isinstance(content, list):
-                continue
-
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") != "input_video":
-                    continue
-
-                source = part.get("video_url")
-                if source:
-                    videos.append(str(source))
-
-        return videos
-
-    _VLM_DEFAULT_MAX_TOKENS = 4096
-
-    def _vlm_generation_kwargs(self, normalised_body: dict[str, Any]) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
-        max_tokens = normalised_body.get("max_output_tokens") or normalised_body.get(
-            "max_tokens"
-        )
-        # mlx-vlm defaults to 256 tokens which is too low for most use cases
-        kwargs["max_tokens"] = (
-            max_tokens if max_tokens is not None else self._VLM_DEFAULT_MAX_TOKENS
-        )
-
-        temperature = normalised_body.get("temperature")
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-
-        top_p = normalised_body.get("top_p")
-        if top_p is not None:
-            kwargs["top_p"] = top_p
-
-        return kwargs
-
-    def _build_vlm_prompt(
-        self,
-        apply_chat_template,
-        model,
-        processor,
-        normalised_body: dict[str, Any],
-        images: list[Any],
-    ) -> str:
-        messages = self._build_vlm_messages(normalised_body)
-        return apply_chat_template(
-            processor,
-            model.config,
-            messages,
-            add_generation_prompt=True,
-            num_images=len(images),
-        )
-
-    def _prepare_vlm_stream_request(
-        self,
-        model_id: str,
-        normalised_body: dict[str, Any],
-    ) -> (
-        tuple[Any, Any, str, list[Any], dict[str, Any]]
-        | tuple[None, None, None, None, dict[str, Any]]
-    ):
-        """Build everything needed for multimodal single-flight streaming.
-
-        Returns either:
-        - ``(model, processor, prompt, images, kwargs)`` on success, or
-        - ``(None, None, None, None, error_payload)`` on contract/import/input failure.
-        """
-        images = self._extract_image_inputs(normalised_body)
-        videos = self._extract_video_inputs(normalised_body)
-
-        validation_error = self._multimodal_validation_error(normalised_body)
-        if validation_error:
-            return (
-                None,
-                None,
-                None,
-                None,
-                {
-                    "message": validation_error,
-                    "code": "invalid_request_error",
-                },
-            )
-
-        if not images and not videos:
-            return (
-                None,
-                None,
-                None,
-                None,
-                {
-                    "message": "Vision request missing images or videos",
-                    "code": "invalid_request_error",
-                },
-            )
-
-        try:
-            from mlx_vlm import apply_chat_template
-        except Exception as exc:
-            return (
-                None,
-                None,
-                None,
-                None,
-                {
-                    "message": f"mlx-vlm is required for vision responses: {exc}",
-                    "code": "internal_error",
-                },
-            )
-
-        model, processor = self._get_vlm_backend(model_id)
-        kwargs = self._vlm_generation_kwargs(normalised_body)
-
-        if videos:
-            from mlx_batch_server.utils.video_loader import (
-                build_video_prompt_and_inputs,
-            )
-
-            text_prompt = self._extract_text_content(
-                normalised_body.get("input", [{}])[-1].get("content")
-            )
-            video_data = build_video_prompt_and_inputs(
-                videos, text_prompt or "Describe this video.", processor, model.config
-            )
-            prompt = video_data.pop("prompt")
-            kwargs.update(video_data)
-            return model, processor, prompt, images, kwargs
-
-        prompt = self._build_vlm_prompt(
-            apply_chat_template,
-            model,
-            processor,
-            normalised_body,
-            images,
-        )
-        return model, processor, prompt, images, kwargs
-
-    def _vision_start_events(
-        self, make_event, response_obj: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        return [
-            make_event("response.created", {"response": response_obj.copy()}),
-            make_event("response.in_progress", {"response": response_obj.copy()}),
-        ]
-
-    def _vision_message_start_events(
-        self, make_event, message_item_id: str
-    ) -> list[dict[str, Any]]:
-        return [
-            make_event(
-                "response.output_item.added",
-                {
-                    "output_index": 0,
-                    "item": {
-                        "id": message_item_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "in_progress",
-                        "content": [],
-                    },
-                },
-            ),
-            make_event(
-                "response.content_part.added",
-                {
-                    "output_index": 0,
-                    "content_index": 0,
-                    "part": {"type": "output_text", "text": ""},
-                },
-            ),
-        ]
-
-    def _vision_finalize_events(
-        self,
-        make_event,
-        response_id: str,
-        response_model: str,
-        message_item_id: str,
-        final_text: str,
-    ) -> list[dict[str, Any]]:
-        return [
-            make_event(
-                "response.output_text.done",
-                {
-                    "output_index": 0,
-                    "content_index": 0,
-                    "text": final_text,
-                },
-            ),
-            make_event(
-                "response.content_part.done",
-                {
-                    "output_index": 0,
-                    "content_index": 0,
-                    "part": {"type": "output_text", "text": final_text},
-                },
-            ),
-            make_event(
-                "response.output_item.done",
-                {
-                    "output_index": 0,
-                    "item": {
-                        "id": message_item_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{"type": "output_text", "text": final_text}],
-                    },
-                },
-            ),
-            make_event(
-                "response.completed",
-                {
-                    "response": {
-                        "id": response_id,
-                        "object": "response",
-                        "status": "completed",
-                        "model": response_model,
-                        "output": [
-                            {
-                                "id": message_item_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "status": "completed",
-                                "content": [
-                                    {"type": "output_text", "text": final_text}
-                                ],
-                            }
-                        ],
-                    }
-                },
-            ),
-        ]
 
     async def _stream_batch_tokens(
         self,
         model_id: str,
         messages: list[dict[str, Any]],
         max_tokens: int | None = None,
-        tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
     ) -> AsyncGenerator[BatchStreamChunk, None]:
         """Stream tokens through batch coordinator.
@@ -603,7 +99,6 @@ class ResponsesAdapter:
             model_id: Model to use
             messages: Chat messages
             max_tokens: Max tokens to generate
-            tools: Optional tools for function calling
             temperature: Sampling temperature
 
         Yields:
@@ -630,7 +125,6 @@ class ResponsesAdapter:
         async for chunk in coordinator.stream_request(
             messages=messages,
             max_tokens=max_tokens or 4096,
-            tools=tools,
             sampler_config=sampler_config,
         ):
             yield chunk
@@ -669,24 +163,13 @@ class ResponsesAdapter:
             body = request.model_dump(exclude_none=True)
             normalised = normalise_responses_payload(body)
 
-            # Check for media content (images or video)
-            if self._has_vision_content(normalised):
-                validation_error = self._multimodal_validation_error(normalised)
-                if validation_error:
-                    return build_error_response(
-                        validation_error,
-                        error_code="invalid_request_error",
-                        model=request_model,
-                    )
-                return await self._generate_vision(model_id, normalised, request_model)
-
+            # Check for media content
             if has_media_content(normalised):
-                logger.warning(
-                    "Media content detected without images; falling back to text-only"
-                )
-
-            # Text-only path
-            return await self._generate_text(model_id, normalised, request_model)
+                # Route to vision model
+                return await self._generate_vision(model_id, normalised, request_model)
+            else:
+                # Text-only path
+                return await self._generate_text(model_id, normalised, request_model)
 
         except Exception as e:
             logger.error(f"Responses generation failed: {e}", exc_info=True)
@@ -709,9 +192,24 @@ class ResponsesAdapter:
         messages = responses_to_chat_messages(normalised_body)
 
         # Expand hosted tools to function definitions
-        _, tools_for_request = self._prepare_tools_for_request(
-            normalised_body.get("tools")
-        )
+        request_tools = normalised_body.get("tools")
+        tool_definitions = get_tool_definitions(request_tools)
+
+        # Convert to Tool objects if we have tools
+        tools_for_request = None
+        if tool_definitions:
+            tools_for_request = [
+                Tool(
+                    type="function",
+                    function={
+                        "name": t.get("name", ""),
+                        "description": t.get("description", ""),
+                        "parameters": t.get("parameters", {}),
+                    },
+                )
+                for t in tool_definitions
+                if t.get("type") == "function"
+            ]
 
         # Build ChatCompletionRequest
         chat_request = ChatCompletionRequest(
@@ -848,194 +346,29 @@ class ResponsesAdapter:
         request_model: str | None = None,
     ) -> ResponseResponse:
         """
-        Generate response for vision/multimodal content via mlx-vlm.
+        Generate response for vision/multimodal content.
 
-        Supports both image and video inputs.  Video uses a separate pipeline
-        that processes frames through the processor and passes ``video_grid_thw``
-        to the generate function.
+        Currently routes to Ollama for vision models.
+        Can be extended to support other vision providers.
         """
-        response_model = request_model or model_id
-
-        images = self._extract_image_inputs(normalised_body)
-        videos = self._extract_video_inputs(normalised_body)
-
-        if not images and not videos:
-            logger.warning(
-                "Vision content detected but no media found; falling back to text-only"
-            )
-            return await self._generate_text(model_id, normalised_body, request_model)
-
-        try:
-            from mlx_vlm import apply_chat_template
-            from mlx_vlm.generate import generate as vlm_generate
-        except Exception as exc:
-            raise RuntimeError("mlx-vlm is required for vision responses") from exc
-
-        model, processor = self._get_vlm_backend(model_id)
-        gen_kwargs = self._vlm_generation_kwargs(normalised_body)
-
-        with wrapper_cache.vlm_execution(model_id):
-            if videos:
-                # --- Video path: use mlx-vlm video pipeline ---
-                from mlx_batch_server.utils.video_loader import (
-                    build_video_prompt_and_inputs,
-                )
-
-                text_prompt = self._extract_text_content(
-                    normalised_body.get("input", [{}])[-1].get("content")
-                )
-                video_data = build_video_prompt_and_inputs(
-                    videos,
-                    text_prompt or "Describe this video.",
-                    processor,
-                    model.config,
-                )
-
-                result = vlm_generate(
-                    model,
-                    processor,
-                    video_data["prompt"],
-                    image=images or None,
-                    **{k: v for k, v in video_data.items() if k not in ("prompt",)},
-                    **gen_kwargs,
-                )
-            else:
-                # --- Image-only path (existing) ---
-                prompt = self._build_vlm_prompt(
-                    apply_chat_template,
-                    model,
-                    processor,
-                    normalised_body,
-                    images,
-                )
-
-                result = vlm_generate(
-                    model,
-                    processor,
-                    prompt,
-                    image=images,
-                    **gen_kwargs,
-                )
-
-        content_text = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
-        output_items = build_text_output(content_text)
-
-        return ResponseResponse(
-            id=f"resp_{uuid.uuid4().hex}",
-            created_at=int(time.time()),
-            model=response_model,
-            status=ResponseStatus.COMPLETED,
-            output=output_items,
-            usage=ResponseUsage(
-                input_tokens=result.prompt_tokens,
-                output_tokens=result.generation_tokens,
-                total_tokens=result.total_tokens,
-            ),
-            _provider="mlx-batch-server",
+        # For now, fall back to text extraction
+        # Vision routing will be added in future iteration
+        logger.warning(
+            f"Vision content detected but vision routing not yet implemented. "
+            f"Falling back to text-only processing for model {model_id}"
         )
 
-    async def _generate_vision_stream(
-        self,
-        model_id: str,
-        normalised_body: dict[str, Any],
-        request_model: str | None = None,
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        response_model = request_model or model_id
-        response_id = f"resp_{uuid.uuid4().hex}"
-        message_item_id = f"msg_{uuid.uuid4().hex}"
+        # Extract text from multimodal content
+        text_only_body = dict(normalised_body)
+        for turn in text_only_body.get("input", []):
+            if isinstance(turn, dict):
+                turn["content"] = [
+                    p
+                    for p in turn.get("content", [])
+                    if isinstance(p, dict) and p.get("type") == "input_text"
+                ]
 
-        seq_num = 0
-
-        def make_event(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
-            nonlocal seq_num
-            event = {"type": event_type, "sequence_number": seq_num, **data}
-            seq_num += 1
-            return event
-
-        response_obj = {
-            "id": response_id,
-            "object": "response",
-            "status": "in_progress",
-            "model": response_model,
-            "output": [],
-        }
-        for event in self._vision_start_events(make_event, response_obj):
-            yield event
-
-        try:
-            from mlx_vlm.generate import (
-                stream_generate as vlm_stream_generate,
-            )
-        except Exception as exc:
-            yield make_event(
-                "error",
-                {
-                    "error": {
-                        "message": f"mlx-vlm is required for vision responses: {exc}",
-                        "code": "internal_error",
-                    }
-                },
-            )
-            return
-
-        model, processor, prompt, images, kwargs = self._prepare_vlm_stream_request(
-            model_id,
-            normalised_body,
-        )
-        if model is None:
-            yield make_event("error", {"error": kwargs})
-            return
-
-        output_text_parts: list[str] = []
-        message_item_emitted = False
-
-        with wrapper_cache.vlm_execution(model_id):
-            for result in vlm_stream_generate(
-                model,
-                processor,
-                prompt,
-                image=images or None,
-                **kwargs,
-            ):
-                delta = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
-                if not delta:
-                    continue
-
-                if not message_item_emitted:
-                    for event in self._vision_message_start_events(
-                        make_event,
-                        message_item_id,
-                    ):
-                        yield event
-                    message_item_emitted = True
-
-                output_text_parts.append(delta)
-                yield make_event(
-                    "response.output_text.delta",
-                    {
-                        "output_index": 0,
-                        "content_index": 0,
-                        "delta": delta,
-                    },
-                )
-
-        final_text = "".join(output_text_parts)
-
-        if not message_item_emitted:
-            for event in self._vision_message_start_events(
-                make_event,
-                message_item_id,
-            ):
-                yield event
-
-        for event in self._vision_finalize_events(
-            make_event,
-            response_id,
-            response_model,
-            message_item_id,
-            final_text,
-        ):
-            yield event
+        return await self._generate_text(model_id, text_only_body, request_model)
 
     async def generate_stream(  # noqa: PLR0912, PLR0915
         self,
@@ -1083,39 +416,27 @@ class ResponsesAdapter:
             body = request.model_dump(exclude_none=True)
             normalised = normalise_responses_payload(body)
 
-            if self._has_vision_content(normalised):
-                validation_error = self._multimodal_validation_error(normalised)
-                if validation_error:
-                    yield make_event(
-                        "error",
-                        {
-                            "error": {
-                                "message": validation_error,
-                                "code": "invalid_request_error",
-                            }
-                        },
-                    )
-                    return
-                async for event in self._generate_vision_stream(
-                    model_id,
-                    normalised,
-                    request_model,
-                ):
-                    yield event
-                return
-
-            if has_media_content(normalised):
-                logger.warning(
-                    "Media content detected without images; streaming text-only"
-                )
-
             # Convert to chat messages
             messages = responses_to_chat_messages(normalised)
 
             # Expand hosted tools
-            tool_definitions, tools_for_request = self._prepare_tools_for_request(
-                normalised.get("tools")
-            )
+            request_tools = normalised.get("tools")
+            tool_definitions = get_tool_definitions(request_tools)
+
+            tools_for_request = None
+            if tool_definitions:
+                tools_for_request = [
+                    Tool(
+                        type="function",
+                        function={
+                            "name": t.get("name", ""),
+                            "description": t.get("description", ""),
+                            "parameters": t.get("parameters", {}),
+                        },
+                    )
+                    for t in tool_definitions
+                    if t.get("type") == "function"
+                ]
 
             # Build streaming request
             chat_request = ChatCompletionRequest(
@@ -1133,10 +454,13 @@ class ResponsesAdapter:
                 tools=tools_for_request,
             )
 
-            # Generate IDs (full 32-char hex for proper uniqueness)
-            response_id = f"resp_{uuid.uuid4().hex}"
-            reasoning_item_id = f"rs_{uuid.uuid4().hex}"
-            message_item_id = f"msg_{uuid.uuid4().hex}"
+            # Get adapter
+            adapter = self._get_openai_adapter(model_id)
+
+            # Generate IDs
+            response_id = f"resp_{uuid.uuid4().hex[:6]}"
+            reasoning_item_id = f"rs_{uuid.uuid4().hex[:6]}"
+            message_item_id = f"msg_{uuid.uuid4().hex[:6]}"
 
             # Resolve model alias to check Harmony format (chat -> gpt-oss-120b)
             settings = get_settings()
@@ -1185,14 +509,7 @@ class ResponsesAdapter:
             message_item_emitted = False
 
             # Decide streaming mode: batch vs single
-            batch_fallback_reason = self._batch_fallback_reason(normalised)
-            use_batch = self._should_use_batch() and batch_fallback_reason is None
-            if self._should_use_batch() and batch_fallback_reason is not None:
-                logger.info(
-                    "Falling back to single text lane for %s: %s",
-                    model_id,
-                    batch_fallback_reason,
-                )
+            use_batch = self._should_use_batch()
 
             # Create unified token stream
             async def token_stream() -> AsyncGenerator[str, None]:
@@ -1204,14 +521,12 @@ class ResponsesAdapter:
                         messages=messages,
                         max_tokens=normalised.get("max_output_tokens")
                         or normalised.get("max_tokens"),
-                        tools=tool_definitions or None,
                         temperature=normalised.get("temperature"),
                     ):
                         if batch_chunk.text:
                             yield batch_chunk.text
                 else:
                     # Single mode: use OpenAI adapter
-                    adapter = self._get_openai_adapter(model_id)
                     for chunk in adapter.generate_stream(chat_request):
                         if not chunk.choices:
                             continue
@@ -1307,11 +622,6 @@ class ResponsesAdapter:
                         )
                 else:
                     # Non-Harmony model: simple streaming
-                    # Filter ChatML special tokens (<|im_end|>, <|im_start|>)
-                    clean_content = _CHATML_SPECIAL_TOKENS_RE.sub("", raw_content)
-                    if not clean_content:
-                        continue  # Skip empty chunks after filtering
-
                     if not message_item_emitted:
                         yield make_event(
                             "response.output_item.added",
@@ -1336,13 +646,13 @@ class ResponsesAdapter:
                         )
                         message_item_emitted = True
 
-                    output_text_parts.append(clean_content)
+                    output_text_parts.append(raw_content)
                     yield make_event(
                         "response.output_text.delta",
                         {
                             "output_index": 0,
                             "content_index": 0,
-                            "delta": clean_content,
+                            "delta": raw_content,
                         },
                     )
 

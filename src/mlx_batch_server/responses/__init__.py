@@ -10,7 +10,7 @@ Features:
 - Context chain walking for conversation history
 - In-memory storage with optional Redis backend
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Created by M&K (c)2026 The LibraxisAI Team
 """
 
 from .context_builder import (

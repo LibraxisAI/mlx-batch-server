@@ -1,12 +1,12 @@
 """
-MLX Omni Server - Entry point.
+MLX Batch Server - Entry point.
 
 Provides OpenAI-compatible APIs using Apple's MLX framework.
 """
 
 # Patch deprecated pkg_resources usage in jieba (via f5-tts-mlx)
 # MUST be first import - before any module that transitively imports jieba
-from mlx_omni_server.utils import compat as _compat  # noqa: F401
+from mlx_batch_server.utils import compat as _compat  # noqa: F401
 
 import argparse
 import os
@@ -15,7 +15,7 @@ import os
 def build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser for the server."""
     parser = argparse.ArgumentParser(
-        description="MLX Omni Server - OpenAI-compatible APIs on Apple Silicon"
+        description="MLX Batch Server - OpenAI-compatible APIs on Apple Silicon"
     )
     parser.add_argument(
         "--host",
@@ -77,7 +77,7 @@ def create_app():
         except ImportError:
             pass  # Batch module may not be available
 
-    application = FastAPI(title="MLX Omni Server", lifespan=lifespan)
+    application = FastAPI(title="MLX Batch Server", lifespan=lifespan)
 
     # Add request/response logging middleware
     application.add_middleware(RequestResponseLoggingMiddleware)
@@ -86,7 +86,7 @@ def create_app():
     application.include_router(api_router)
 
     # Configure CORS from environment
-    cors_origins = os.environ.get("MLX_OMNI_CORS", "")
+    cors_origins = os.environ.get("MLX_BATCH_CORS", "")
     if cors_origins:
         origins = [origin.strip() for origin in cors_origins.split(",")]
         application.add_middleware(
@@ -122,15 +122,15 @@ def __getattr__(name):
 
 
 def start():
-    """Start the MLX Omni Server."""
+    """Start the MLX Batch Server."""
     # Parse args FIRST - before any heavy imports
     # This makes --help instant
     parser = build_parser()
     args = parser.parse_args()
 
     # Set environment variables for app configuration
-    os.environ["MLX_OMNI_LOG_LEVEL"] = args.log_level
-    os.environ["MLX_OMNI_CORS"] = args.cors_allow_origins
+    os.environ["MLX_BATCH_LOG_LEVEL"] = args.log_level
+    os.environ["MLX_BATCH_CORS"] = args.cors_allow_origins
 
     # NOW import uvicorn and start (lazy import)
     import uvicorn
@@ -141,7 +141,7 @@ def start():
 
     # Start server - uvicorn will import the app via __getattr__
     uvicorn.run(
-        "mlx_omni_server.main:app",
+        "mlx_batch_server.main:app",
         host=args.host,
         port=args.port,
         log_level=args.log_level,
