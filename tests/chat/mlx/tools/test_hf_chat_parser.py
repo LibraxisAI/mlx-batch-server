@@ -1,6 +1,6 @@
 import unittest
 
-from mlx_omni_server.chat.mlx.tools.hugging_face import HuggingFaceToolParser
+from mlx_batch_server.chat.mlx.tools.hugging_face import HuggingFaceToolParser
 
 
 class TestHuggingFaceToolParser(unittest.TestCase):

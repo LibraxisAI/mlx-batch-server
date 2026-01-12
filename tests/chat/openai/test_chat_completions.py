@@ -4,8 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 from openai import OpenAI
 
-from mlx_omni_server.chat.mlx import models as mlx_models
-from mlx_omni_server.main import app
+from mlx_batch_server.chat.mlx import models as mlx_models
+from mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ def openai_client(client):
 
 
 class TestChatCompletions:
-
     def test_chat_completions_normal(self, openai_client):
         try:
             model = "mlx-community/gemma-3-1b-it-4bit-DWQ"
@@ -52,7 +51,7 @@ class TestChatCompletions:
             assert choices.logprobs is None, "logprobs is not None"
             assert choices.message is not None, "No message in response"
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_chat_completions_extra_body(self, openai_client):
@@ -79,7 +78,7 @@ class TestChatCompletions:
             assert choices.logprobs is None, "logprobs is not None"
             assert choices.message is not None, "No message in response"
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_chat_completions_draft_model(self, openai_client):
@@ -103,7 +102,7 @@ class TestChatCompletions:
             assert choices.logprobs is None, "logprobs is not None"
             assert choices.message is not None, "No message in response"
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_chat_completions_stream(self, openai_client):
@@ -139,7 +138,7 @@ class TestChatCompletions:
             logger.info(f"Complete generated content: {content}")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_chat_completions_stream_options(self, openai_client):
@@ -192,5 +191,5 @@ class TestChatCompletions:
             logger.info(f"Complete generated content: {content}")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
