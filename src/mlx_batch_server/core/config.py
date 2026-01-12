@@ -172,6 +172,26 @@ class Settings(BaseSettings):
         description="Enable periodic health checks",
     )
 
+    # === Model Cache Configuration ===
+    model_cache_max_size: int = Field(
+        default=1,
+        description="Max extra models in cache (beyond pinned). Set 0 for pinned-only.",
+    )
+    model_cache_ttl: int = Field(
+        default=600,
+        description="TTL in seconds for non-pinned models (default: 10 minutes)",
+    )
+    pinned_models: str = Field(
+        default="libraxisai/gpt-oss-120b-mlx-mxfp4",
+        description="Comma-separated model IDs to keep always loaded (never evict)",
+    )
+
+    def get_pinned_models(self) -> list[str]:
+        """Get list of pinned model IDs that should never be evicted."""
+        if not self.pinned_models:
+            return []
+        return [m.strip() for m in self.pinned_models.split(",") if m.strip()]
+
     @field_validator("cloud_fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: str) -> str:

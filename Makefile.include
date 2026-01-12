@@ -1,0 +1,100 @@
+# mlx-batch-server/Makefile.include
+# Targets for inclusion in root Makefile
+# Created by M&K (c)2026 The LibraxisAI Team
+#
+# Usage in root Makefile:
+#   include mlx-batch-server/Makefile.include
+#
+# Then call:
+#   make batch-dev       Run in foreground
+#   make batch-bench     Run benchmark UI
+#   make batch-lint      Lint code
+#   make batch-test      Run tests
+
+BATCH_DIR := mlx-batch-server
+BATCH_PORT ?= 8100
+BATCH_MODEL ?= chat
+
+# === DEVELOPMENT ===
+.PHONY: batch-dev batch-run batch-stop batch-restart batch-logs
+
+batch-dev: ## Run mlx-batch-server in foreground (port 8100)
+	@cd $(BATCH_DIR) && $(MAKE) dev PORT=$(BATCH_PORT)
+
+batch-run: ## Run mlx-batch-server as daemon
+	@cd $(BATCH_DIR) && $(MAKE) run PORT=$(BATCH_PORT)
+
+batch-stop: ## Stop mlx-batch-server daemon
+	@cd $(BATCH_DIR) && $(MAKE) stop
+
+batch-restart: ## Restart mlx-batch-server daemon
+	@cd $(BATCH_DIR) && $(MAKE) restart PORT=$(BATCH_PORT)
+
+batch-logs: ## Tail mlx-batch-server logs
+	@cd $(BATCH_DIR) && $(MAKE) logs
+
+# === MODEL MANAGEMENT ===
+.PHONY: batch-ps batch-load batch-unload batch-status
+
+batch-ps: ## List loaded models
+	@cd $(BATCH_DIR) && $(MAKE) ps
+
+batch-load: ## Load model (BATCH_MODEL=<model-id>)
+	@cd $(BATCH_DIR) && $(MAKE) load MODEL=$(BATCH_MODEL)
+
+batch-unload: ## Unload current model
+	@cd $(BATCH_DIR) && $(MAKE) unload
+
+batch-status: ## Show server status
+	@cd $(BATCH_DIR) && $(MAKE) status
+
+batch-stats: ## Show batch coordinator stats
+	@cd $(BATCH_DIR) && $(MAKE) batch-stats
+
+# === BENCHMARKING ===
+.PHONY: batch-bench batch-bench-cli batch-bench-quick
+
+batch-bench: ## Run Gradio benchmark UI (port 7860)
+	@cd $(BATCH_DIR) && $(MAKE) benchmark
+
+batch-bench-cli: ## Run CLI benchmark (BATCH_WORKERS=10)
+	@cd $(BATCH_DIR) && $(MAKE) benchmark-cli BENCH_WORKERS=$(BATCH_WORKERS)
+
+batch-bench-quick: ## Quick 1-worker benchmark
+	@cd $(BATCH_DIR) && $(MAKE) benchmark-quick
+
+# === CODE QUALITY ===
+.PHONY: batch-lint batch-lint-fix batch-format batch-test batch-test-cov batch-check
+
+batch-lint: ## Run linters
+	@cd $(BATCH_DIR) && $(MAKE) lint
+
+batch-lint-fix: ## Run linters with auto-fix
+	@cd $(BATCH_DIR) && $(MAKE) lint-fix
+
+batch-format: ## Format code
+	@cd $(BATCH_DIR) && $(MAKE) format
+
+batch-test: ## Run tests
+	@cd $(BATCH_DIR) && $(MAKE) test
+
+batch-test-cov: ## Run tests with coverage
+	@cd $(BATCH_DIR) && $(MAKE) test-cov
+
+batch-check: ## Run all quality checks
+	@cd $(BATCH_DIR) && $(MAKE) check
+
+# === INSTALLATION ===
+.PHONY: batch-install batch-setup
+
+batch-install: ## Install as CLI tool
+	@cd $(BATCH_DIR) && $(MAKE) install
+
+batch-setup: ## Full dev setup
+	@cd $(BATCH_DIR) && $(MAKE) setup
+
+# === CLEANUP ===
+.PHONY: batch-clean
+
+batch-clean: ## Clean build artifacts
+	@cd $(BATCH_DIR) && $(MAKE) clean

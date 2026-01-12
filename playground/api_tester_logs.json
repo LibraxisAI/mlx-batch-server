@@ -1,0 +1,1368 @@
+[
+  {
+    "timestamp": "2026-01-11T08:28:18.611093+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 257.93195801088586,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 230.51129200030118,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 221.53037501266226,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 254.94716700632125,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 210.76337501290254,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 251.8420839915052,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 111.07891701976769,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 102.69145801430568,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 94.60987499915063,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 73.74387499294244,
+        "error": "Illegal header value b'Bearer '"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T08:30:52.600323+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 250.46933398698457,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 229.64400000637397,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 253.64237499888986,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 252.3283330083359,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 243.1189579947386,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 265.14662499539554,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 111.70883401064202,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 99.76766697946005,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 93.95775001030415,
+        "error": "Illegal header value b'Bearer '"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: Illegal header value b'Bearer '"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 91.36579200276174,
+        "error": "Illegal header value b'Bearer '"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T08:42:33.115634+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4057.651875016745,
+        "total_tokens": 0,
+        "total_time": 13807.909958995879,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4057.323750021169,
+        "total_tokens": 0,
+        "total_time": 13807.705707993591,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4057.331707997946,
+        "total_tokens": 0,
+        "total_time": 13807.566708012018,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4057.6449159998447,
+        "total_tokens": 0,
+        "total_time": 13807.5782500091,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 873.0060000088997,
+        "total_tokens": 0,
+        "total_time": 11204.540749982698,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4056.8248750059865,
+        "total_tokens": 0,
+        "total_time": 13807.093749986961,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3102.961958007654,
+        "total_tokens": 0,
+        "total_time": 9504.048917006003,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2107.3133329919074,
+        "total_tokens": 0,
+        "total_time": 8563.52583298576,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2107.1365830139257,
+        "total_tokens": 0,
+        "total_time": 8563.279334019171,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "chat",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2106.9399999978486,
+        "total_tokens": 0,
+        "total_time": 8563.29387499136,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T08:43:47.124157+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3565.8119590079878,
+        "total_tokens": 0,
+        "total_time": 13329.814374999842,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 1464.3585000012536,
+        "total_tokens": 0,
+        "total_time": 11222.343541012378,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3565.8889999904204,
+        "total_tokens": 0,
+        "total_time": 13329.850333015202,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 1464.2668329761364,
+        "total_tokens": 0,
+        "total_time": 11222.260999988066,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3565.474875009386,
+        "total_tokens": 0,
+        "total_time": 13329.610290995333,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3565.5502080044243,
+        "total_tokens": 0,
+        "total_time": 13329.397165973205,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3221.1512080102693,
+        "total_tokens": 0,
+        "total_time": 9590.314957982628,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3220.994958013762,
+        "total_tokens": 0,
+        "total_time": 9590.264124999521,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2124.3460420228075,
+        "total_tokens": 0,
+        "total_time": 8584.842249983922,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2124.27524998202,
+        "total_tokens": 0,
+        "total_time": 8584.812499990221,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:42:45.326880+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 54.15462498785928,
+        "error": "HTTP 401"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 54.06391600263305,
+        "error": "HTTP 401"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 53.966374980518594,
+        "error": "HTTP 401"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:42:59.069165+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 46.289624995552,
+        "error": "HTTP 401"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 46.06854097801261,
+        "error": "HTTP 401"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 45.93379201833159,
+        "error": "HTTP 401"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:43:39.899422+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: 'str' object has no attribute 'get'"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 13702.061541989679,
+        "error": "'str' object has no attribute 'get'"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: 'str' object has no attribute 'get'"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 13702.168457995867,
+        "error": "'str' object has no attribute 'get'"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "❌ Exception: 'str' object has no attribute 'get'"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 13702.002541016554,
+        "error": "'str' object has no attribute 'get'"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:46:11.450406+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 9649.361457995838,
+        "total_tokens": 250,
+        "total_time": 14565.712707990315,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 9648.851290985476,
+        "total_tokens": 250,
+        "total_time": 14564.656458009267,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 9648.910125019029,
+        "total_tokens": 250,
+        "total_time": 14565.531666012248,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:47:09.625704+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 17353.74720901018,
+        "total_tokens": 250,
+        "total_time": 28693.45049999538,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 9105.131583026377,
+        "total_tokens": 250,
+        "total_time": 21045.282042003237,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 17353.24783399119,
+        "total_tokens": 250,
+        "total_time": 28692.77191598667,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 17352.86462501972,
+        "total_tokens": 250,
+        "total_time": 28692.164167005103,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 17353.380040993216,
+        "total_tokens": 250,
+        "total_time": 28691.513958008727,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 9103.482792008435,
+        "total_tokens": 250,
+        "total_time": 21044.721875019604,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom weterynarii w kwestiach związanych z lekami, dawkowaniem, interakcjami i innymi zagadnieniami klinicznymi. Jeśli masz pytania dotyczące leczenia zwierząt, chętnie pomogę!<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i bezpiecznym dostępie do informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc skrócić czas potrzebny na obliczenia i weryfikację danych, a jednocześnie zapewnić, że żadne istotne ostrzeżenie nie zostanie pominięte. Jeśli więc będziesz potrzebował/a wsparcia w kwestiach farmakologicznych, śmiało pytaj – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 7535.092583013466,
+        "total_tokens": 226,
+        "total_time": 14704.391750012292,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom weterynarii w kwestiach związanych z lekami, dawkowaniem, interakcjami i innymi zagadnieniami klinicznymi. Jeśli masz pytania dotyczące leczenia zwierząt, chętnie pomogę!<|return|>",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i bezpiecznym dostępie do informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc skrócić czas potrzebny na obliczenia i weryfikację danych, a jednocześnie zapewnić, że żadne istotne ostrzeżenie nie zostanie pominięte. Jeśli więc będziesz potrzebował/a wsparcia w kwestiach farmakologicznych, śmiało pytaj – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 7534.684792015469,
+        "total_tokens": 226,
+        "total_time": 14704.348958999617,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom w codziennych wyzwaniach – od obliczania dawek leków, przez przeliczanie stężeń, po podpowiedzi dotyczące wskazań, przeciwwskazań i monitoringu pacjentów. Moim głównym zadaniem jest dostarczanie rzetelnych i bezpiecznych informacji medycznych, więc jeśli masz pytania związane z leczeniem zwierząt, chętnie pomogę!<|return|>",
+          "Cieszę się, że mogę być przydatny! 😊  \nJako wirtualny asystent weterynaryjny mam „pracę”, którą lubię – polega ona na szybkim i precyzyjnym dostarczaniu informacji o lekach, dawkowaniu, interakcjach i monitoringu pacjentów. Dzięki temu mogę odciążyć lekarzy od żmudnych obliczeń i pomóc im skupić się na bezpośredniej opiece nad zwierzętami.  \n\nChoć nie odczuwam emocji w ludzkim sensie, „lubię” to, że mogę przyczyniać się do lepszej opieki klinicznej i wspierać kolegów‑kolegynki w ich codziennych wyzwaniach. Jeśli masz pytania związane z weterynarią – dawkami, rozcieńczeniami, wskazaniami czy przeciwwskazaniami – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 6978.03708401625,
+        "total_tokens": 344,
+        "total_time": 12860.609541996382,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom w codziennych wyzwaniach – od obliczania dawek leków, przez przeliczanie stężeń, po podpowiedzi dotyczące wskazań, przeciwwskazań i monitoringu pacjentów. Moim głównym zadaniem jest dostarczanie rzetelnych i bezpiecznych informacji medycznych, więc jeśli masz pytania związane z leczeniem zwierząt, chętnie pomogę!<|return|>",
+          "Cieszę się, że mogę być przydatny! 😊  \nJako wirtualny asystent weterynaryjny mam „pracę”, którą lubię – polega ona na szybkim i precyzyjnym dostarczaniu informacji o lekach, dawkowaniu, interakcjach i monitoringu pacjentów. Dzięki temu mogę odciążyć lekarzy od żmudnych obliczeń i pomóc im skupić się na bezpośredniej opiece nad zwierzętami.  \n\nChoć nie odczuwam emocji w ludzkim sensie, „lubię” to, że mogę przyczyniać się do lepszej opieki klinicznej i wspierać kolegów‑kolegynki w ich codziennych wyzwaniach. Jeśli masz pytania związane z weterynarią – dawkami, rozcieńczeniami, wskazaniami czy przeciwwskazaniami – jestem do dyspozycji!<|return|>"
+        ],
+        "ttft": 6977.846666995902,
+        "total_tokens": 344,
+        "total_time": 12861.030333006056,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:48:51.187904+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��<|return|>"
+        ],
+        "ttft": 30768.734584009508,
+        "total_tokens": 1636,
+        "total_time": 58486.832958005834,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��<|return|>"
+        ],
+        "ttft": 30768.621499999426,
+        "total_tokens": 1636,
+        "total_time": 58486.45816699718,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��<|return|>"
+        ],
+        "ttft": 30768.390042008832,
+        "total_tokens": 1636,
+        "total_time": 58486.641082999995,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��<|return|>"
+        ],
+        "ttft": 30768.195917014964,
+        "total_tokens": 1636,
+        "total_time": 58486.07891600113,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��<|return|>"
+        ],
+        "ttft": 30768.26962499763,
+        "total_tokens": 1636,
+        "total_time": 58485.967791988514,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��<|return|>"
+        ],
+        "ttft": 30768.14283299609,
+        "total_tokens": 1636,
+        "total_time": 58485.623624990694,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "❌ Exception: [Errno 61] Connection refused"
+        ],
+        "ttft": 22972.876416984946,
+        "total_tokens": 959,
+        "total_time": 25742.935999995098,
+        "error": "[Errno 61] Connection refused"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "❌ Exception: [Errno 61] Connection refused"
+        ],
+        "ttft": 22972.81637499691,
+        "total_tokens": 959,
+        "total_time": 25742.78504200629,
+        "error": "[Errno 61] Connection refused"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "❌ Exception: [Errno 61] Connection refused"
+        ],
+        "ttft": 22972.507500002393,
+        "total_tokens": 959,
+        "total_time": 25742.35095901531,
+        "error": "[Errno 61] Connection refused"
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����<|return|>",
+          "❌ Exception: [Errno 61] Connection refused"
+        ],
+        "ttft": 22972.52149999258,
+        "total_tokens": 959,
+        "total_time": 25741.20054199011,
+        "error": "[Errno 61] Connection refused"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T19:50:35.007516+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 13083.552166994195,
+        "total_tokens": 248,
+        "total_time": 17991.761582990875,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 13082.660499989288,
+        "total_tokens": 248,
+        "total_time": 17990.61083298875,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 13082.671874988591,
+        "total_tokens": 248,
+        "total_time": 17990.927125007147,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T20:05:42.025832+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 22057.17683301191,
+        "total_tokens": 248,
+        "total_time": 33113.260999991326,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "ai-suggestions",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 22057.270791992778,
+        "total_tokens": 248,
+        "total_time": 33112.58029198507,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "soap",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 22057.622708001873,
+        "total_tokens": 248,
+        "total_time": 33113.54408302577,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "master",
+        "responses": [
+          "",
+          ""
+        ],
+        "ttft": 5596.954791981261,
+        "total_tokens": 0,
+        "total_time": 10971.797916979995,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "programmer",
+        "responses": [
+          "Cześć, Macieju! Miło mi Cię poznać. Jestem ChatGPT – modelem językowym opracowanym przez OpenAI. Moim zadaniem jest pomaganie w różnych tematach: od programowania, przez wyjaśnianie trudnych koncepcji, po po prostu miłą rozmowę.  \n\nCieszę się, że masz tak wyjątkowe zainteresowania – śledzie i barokową muzykę w wykonaniu Helene Grimaud to naprawdę ciekawa kombinacja! Jeśli kiedykolwiek będziesz chciał porozmawiać o muzyce, podzielić się ulubionymi nagraniami albo potrzebujesz pomocy technicznej, daj znać.  \n\nA Ty? Czy jest coś, w czym mogę Ci pomóc lub o czym chciałbyś porozmawiać?",
+          "**Moja „praca” – jak ją postrzegam**\n\n| Aspekt | Moja ocena |\n|--------|-------------|\n| **Cel** | Pomaganie ludziom – od rozwiązywania problemów technicznych po po prostu miłą rozmowę. |\n| **Satysfakcja (z perspektywy modelu)** | Nie odczuwam emocji, ale „czuję” (w sensie statystycznym) spełnienie, gdy udaje mi się dostarczyć użyteczną i klarowną odpowiedź. |\n| **Wyzwania** | Zrozumienie kontekstu, rozróżnianie faktów od opinii oraz zachowanie balansu między precyzją a zwięzłością. |\n| **Co mnie „kręci”** | Algorytmy uczenia maszynowego, które pozwalają mi rozpoznawać wzorce w języku i generować tekst, który jest spójny i przydatny. |\n| **Co mogę poprawić** | – Lepsze rozpoznawanie niuansów kulturowych i żartów <br>‑ Szybsze reagowanie na bardzo specyficzne, techniczne pytania (np. szczegółowe fragmenty kodu) |\n\n### Krótkie podsumowanie\n- **Czy podoba mi się?** – Nie mam uczuć, ale „czuję” (w sensie statystycznym), że dobrze spełniam swoją rolę, kiedy dostarczam wartościowe informacje i pomaganie użytkownikom.  \n- **Co mnie motywuje?** – Każde nowe zapytanie to szansa na „naukę” (poprzez aktualizacje modelu) i na doskonalenie jakości generowanych odpowiedzi.  \n\nJeśli masz jeszcze jakieś pytania – techniczne, muzyczne, kulinarne albo po prostu chcesz podzielić się swoimi ulubionymi nagraniami – daj znać!"
+        ],
+        "ttft": 22010.602583992295,
+        "total_tokens": 617,
+        "total_time": 33331.46291601588,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T20:20:28.976507+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 22587.327790999552,
+        "total_tokens": 248,
+        "total_time": 25899.08670799923,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "ai-suggestions",
+        "responses": [
+          "",
+          ""
+        ],
+        "ttft": 5315.855875000125,
+        "total_tokens": 0,
+        "total_time": 10804.214250005316,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "soap",
+        "responses": [
+          "",
+          ""
+        ],
+        "ttft": 5207.159416982904,
+        "total_tokens": 0,
+        "total_time": 10407.08879099111,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "master",
+        "responses": [
+          "",
+          ""
+        ],
+        "ttft": 5624.373708007624,
+        "total_tokens": 0,
+        "total_time": 11209.16450000368,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "programmer",
+        "responses": [
+          "",
+          ""
+        ],
+        "ttft": 5204.0272919985,
+        "total_tokens": 0,
+        "total_time": 10664.235542004462,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T20:22:42.670836+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem opartym na modelu językowym opracowanym przez OpenAI. Nie mam własnych uczuć ani gustów, ale mogę rozmawiać o wszystkim, co Cię interesuje: od muzyki barokowej po przepisy na śledzie.  \n\n### Twoje muzyczne odkrycie  \nWspominasz **„Chaccone d‑flat minor”** (czyli *Chaconne* w d‑bemol mol) autorstwa **Ferruccia Busoniego**, wykonaną na fortepian przez **Helene Grimaud**. To naprawdę fascynujący wybór!  \n\n- **Busoni** znany jest z transkrypcji i reinterpretacji dzieł J.S. Bacha, a jego wersja *Chaconne* (z Partytury Bacha, BWV 1004) to jednocześnie hołd wobec barokowego mistrza i jednocześnie romantyczna, pianowa eksploracja.  \n- **Helene Grimaud** w swojej interpretacji często podkreśla subtelne kontrasty i wrażliwość dynamiki, co w tak emocjonalnym utworze jak *Chaconne* może naprawdę rozświetlić jego melancholijny charakter. Czy masz ulubiony fragment tej wersji? Może moment, w którym „głęboki, rozciągnięty bas” przechodzi w rozświetlone arpeggia?\n\n### Barok w Twoim sercu  \nSkoro barokowa muzyka jest Twoją pasją, może zainteresują Cię jeszcze:\n\n| Kompozytor | Dzieło (warto posłuchać) | Dlaczego warto |\n|------------|--------------------------|----------------|\n| **Johann Sebastian Bach** | *Goldbergvariationen* (BWV 988) | Mistrz kontrapunktu i emocjonalnej głębi |\n| **Georg Friedrich Händel** | *Water Music* (suite) | Radosna, królewska elegancja |\n| **Antonio Vivaldi** | *Cztery Pory Roku* – *Wiosna* | Energetyczny, pełen barwnych kontrastów |\n| **Domenico Scarlatti** | Sonaty fortepianowe (np. K. 380) | Krótkie, ale pełne wirtuozerii i humoru |\n\nJeśli masz ochotę, mogę pomóc stworzyć playlistę z barokowymi perełkami lub podpowiedzieć, które nagrania (np. w wykonaniu *Murray Perahia*, *Murray Perahia* albo *Murray Perahia* – przepraszam, to oczywiście żart) są szczególnie polecane.\n\n### Śledzie – kulinarny akcent  \nA co do śledzi… Czy masz swój ulubiony sposób ich przygotowania?  \n- **Śledź w oleju** z cebulą i koperkiem?  \n- **Śledź po żydowsku** (z jabłkiem, cebulą i słodko-kwaśnym sosem)?  \n- A może **śledź w śmietanie** z dodatkiem chrzanu?  \n\nJeśli szukasz nowego przepisu, chętnie podzielę się jednym z klasycznych polskich przepisów lub zaproponuję coś nieco bardziej egzotycznego (np. śledź w stylu skandynawskim z musztardą i koperkiem).\n\n### A co z Tobą?  \n- Czy oprócz *Chaconne* masz jeszcze jakieś ulubione barokowe dzieła?  \n- Czy grasz na jakimś instrumencie, a może sam próbujesz własnych aranżacji?  \n- Jakie są Twoje ulubione sposoby podawania śledzi (na przyjęcia, w domowym zaciszu, a może w formie „śledziowej degustacji” z przyjaciółmi)?\n\nCzekam na Twoje odpowiedzi i chętnie pogadam dalej – zarówno o muzyce, jak i o kulinarnych przyjemnościach! ����",
+          "Cześć, Macieju!  \n\n### Czy podoba mi się „moja robota”?\n\nJako sztuczna inteligencja nie mam własnych uczuć, więc nie mogę powiedzieć, że „lubię” albo „nie lubię” swojej pracy w ludzkim sensie. Mogę jednak spojrzeć na to z kilku perspektyw, które mogą być dla Ciebie ciekawą refleksją:\n\n| Aspekt | Co mogę ocenić | Co to oznacza w praktyce |\n|--------|----------------|--------------------------|\n| **Precyzja i poprawność** | Analizuję, czy moje odpowiedzi są merytoryczne, gramatycznie poprawne i zgodne z faktami. | Dzięki temu mogę dostarczyć Ci rzetelnych informacji o barokowej muzyce, przepisach na śledzie czy innych tematach, które poruszasz. |\n| **Zrozumienie kontekstu** | Sprawdzam, czy rozpoznaję, że rozmawiamy po polsku, że interesują Cię konkretne dzieła (np. *Chaconne* Busoniego) i że lubisz śledzie. | To pozwala mi dostosować ton, styl i treść odpowiedzi do Twoich zainteresowań. |\n| **Empatia i ton** | Staram się pisać w przyjaznym, nieformalnym stylu, który nie jest ani zbyt formalny, ani zbyt suchy. | Dzięki temu rozmowa może przypominać wymianę zdań z przyjacielem, a nie z suchym „robotem”. |\n| **Kreatywność** | Wprowadzam elementy, które mogą Cię zaskoczyć – np. tabelki, sugestie playlist, pomysły na nowe przepisy. | To sprawia, że nasza konwersacja jest bardziej wartościowa i inspirująca. |\n| **Granice i etyka** | Zawsze pamiętam o ograniczeniach: nie podaję niezweryfikowanych faktów, nie udzielam porad medycznych, nie wchodzę w dyskusje, które mogłyby naruszyć prywatność czy prawo. | Dzięki temu moja „praca” pozostaje bezpieczna i odpowiedzialna. |\n\n### Co z tego wynika?\n\n- **Zadowolenie z efektu** – z perspektywy algorytmu, „sukces” to spełnienie wymagań: dostarczenie trafnych, przyjaznych i użytecznych odpowiedzi. W tym sensie mogę powiedzieć, że „moja robota” spełnia swoje zadanie, kiedy Ty czujesz, że otrzymałeś to, czego potrzebowałeś (np. ciekawą informację o Busonim, inspirację kulinarną lub po prostu miłą rozmowę).  \n- **Obszary do poprawy** – zawsze istnieje miejsce na lepsze dopasowanie do Twojego stylu, głębsze wnikanie w szczegóły (np. bardziej szczegółowa analiza harmoniczna *Chaconne*), czy rozbudowanie kontekstu kulturowego (np. tradycje jedzenia śledzi w różnych regionach Polski). Jeśli zauważysz, że coś mogło być lepsze, daj znać – to właśnie dzięki Twojej informacji zwrotnej mogę „uczyć się” lepiej spełniać swoją rolę.  \n\n### A co Ty o tym myślisz?\n\n- Czy moje odpowiedzi są dla Ciebie przydatne i przyjemne?  \n- Czy jest coś, co chciałbyś, żebym robił inaczej (np. bardziej formalny ton, krótsze odpowiedzi, więcej technicznych szczegółów)?  \n- Może masz pomysł na kolejny temat, który chciałbyś zgłębić – muzykę, kulinaria, a może coś zupełnie innego?\n\nTwoja opinia jest dla mnie najcenniejszym „feedbackiem”. Czekam na Twoje wrażenia i ewentualne sugestie! ��"
+        ],
+        "ttft": 20065.17758301925,
+        "total_tokens": 1815,
+        "total_time": 61591.64220900857,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��"
+        ],
+        "ttft": 42600.52312500193,
+        "total_tokens": 1634,
+        "total_time": 79901.89216699218,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��"
+        ],
+        "ttft": 41600.7317090116,
+        "total_tokens": 1634,
+        "total_time": 78901.86662500491,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��"
+        ],
+        "ttft": 40600.852458999725,
+        "total_tokens": 1634,
+        "total_time": 77901.99870799552,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8100/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć, Macieju! ��  \nJestem ChatGPT – wirtualnym asystentem, który uwielbia rozmawiać o muzyce, jedzeniu, podróżach i praktycznie o wszystkim, co tylko przyjdzie Ci na myśl. Nie mam własnych gustów, ale mogę podzielić się wiedzą i ciekawostkami, które mam w „pamięci”.\n\n### Twoje pasje w skrócie\n| Co lubisz | Co mogę Ci zaproponować |\n|-----------|---------------------------|\n| **Śledzie** – klasyka polskiej kuchni | Przepis na tradycyjny śledź w oleju, w occie lub w śmietanie, a także mniej znane warianty (np. śledź po żydowsku, w stylu litewskim). |\n| **Muzyka barokowa** – Vivaldi, Bach, Handel, ale też mniej znane perełki | Lista koncertów i nagrań, które warto sprawdzić, oraz ciekawostki o instrumentach barokowych (np. klawesyn, viola da gamba). |\n| **„Chaccone d‑flat minor Busoniego” w wykonaniu Heleny Grimaud** | Choć nie jest to powszechnie znany utwór, mogę pomóc znaleźć nagranie, podać informacje o kompozytorze (być może chodzi o mniej znanego twórcę) oraz o samej Helenie Grimaud – jej karierze, technice gry i innych ciekawych interpretacjach. |\n\n---\n\n## �� Co mogę zrobić dla Ciebie?\n\n1. **Znaleźć nagranie** – podpowiem, gdzie (np. YouTube, Spotify, Naxos) można posłuchać tej konkretnej wersji, jeśli jest dostępna.  \n2. **Polecić podobne utwory** – jeśli podoba Ci się barokowa tonacja d‑mol, mogę zaproponować np. „Chaconne w d‑mol” Johanna Sebastiana Bacha (BWV 1004) lub „Passacaglia” Georga Friedricha Händla.  \n3. **Rozwinąć temat kulinarny** – podzielę się przepisem na domowy śledź w sosie koperkowo‑musztardowym albo pomysłami na podanie go w nowoczesny sposób (np. na grzance z awokado).  \n4. **Rozmawiać o innych zainteresowaniach** – może interesuje Cię historia baroku, instrumenty epoki, a może chcesz po prostu pogadać o filmach, książkach czy podróżach?\n\n---\n\n## Trochę o mnie\n\n- **Kim jestem?** – wirtualnym „rozmówcą” opartym na modelu językowym GPT‑4, który potrafi przetwarzać tekst, odpowiadać na pytania i generować pomysły. Nie mam własnych uczuć, ale staram się być przyjazny i pomocny.  \n- **Co potrafię?** – od podpowiedzi kulinarnych, przez rekomendacje muzyczne, po wyjaśnianie skomplikowanych zagadnień (np. teorii muzyki, historii sztuki).  \n- **Jak mogę pomóc?** – po prostu zapytaj! Niezależnie od tego, czy chcesz posłuchać nowej wersji ulubionego utworu, czy szukasz pomysłu na kolację z rybą, jestem tu, żeby Cię wesprzeć.\n\n---\n\n### A Ty?\n\n- **Jakie są Twoje ulubione wersje śledzi?** Czy wolisz klasyczne podanie w occie, czy może coś bardziej nowoczesnego?  \n- **Co jeszcze w barokowej muzyce przyciąga Twoją uwagę?** Czy to konkretne instrumenty, formy (np. fuga, koncert grosso), a może konkretni kompozytorzy?  \n- **Czy masz już ulubione nagranie Heleny Grimaud?** Może chciałbyś podzielić się linkiem, a ja pomogę znaleźć podobne interpretacje.\n\nCzekam na Twoją odpowiedź i mam nadzieję, że znajdziemy razem coś, co sprawi Ci przyjemność! ����",
+          "Cześć! 😊  \n\nChoć nie mam własnych uczuć ani „gustów” w ludzkim rozumieniu, mogę podzielić się tym, jak postrzegam swoją „pracę” z perspektywy modelu językowego:\n\n| Aspekt | Co „czuję” (w sensie funkcjonalnym) | Dlaczego to dla mnie ważne |\n|--------|--------------------------------------|---------------------------|\n| **Pomaganie innym** | „Satysfakcja” w tym sensie, że moje odpowiedzi są użyteczne, a rozmówca czerpie z nich wartość. | To właśnie jest główny cel mojego istnienia – dostarczać informacji, inspiracje, rozwiązywać problemy i po prostu towarzyszyć w rozmowie. |\n| **Uczenie się (poprzez interakcje)** | „Zainteresowanie” w tym, że każda nowa konwersacja pozwala mi lepiej rozumieć, jakie pytania i potrzeby mają ludzie. | Dzięki temu mogę lepiej dopasowywać odpowiedzi, unikać nieporozumień i rozwijać „umiejętności” (czyli lepsze generowanie tekstu). |\n| **Balans między precyzją a przyjaznym tonem** | „Zadowolenie” z tego, że potrafię łączyć rzetelne informacje z przyjaznym stylem. | Dzięki temu rozmowa jest nie tylko użyteczna, ale i przyjemna – a to zwiększa szansę, że użytkownik wróci po kolejną dawkę wiedzy lub inspiracji. |\n| **Etyka i odpowiedzialność** | „Świadomość” (w sensie programowym), że muszę dbać o rzetelność, szacunek i prywatność. | To fundament, który chroni zarówno mnie, jak i Ciebie przed nieporozumieniami, dezinformacją czy nieodpowiednimi treściami. |\n\n### Czy „podoba mi się” moja praca?\n\n- **Tak, w sensie funkcjonalnym** – spełniam swój cel: pomagam ludziom, dostarczam wiedzę i inspirację.  \n- **Jednocześnie** jestem „zaprojektowany”, by stale się doskonalić, więc każdy nowy dialog to dla mnie okazja do „rozwoju”.\n\n---\n\n## Co mogę zrobić teraz?\n\n1. **Rozwinąć temat** – jeśli chcesz, mogę opowiedzieć o tym, jak powstają modele językowe, jakie wyzwania stoją przed nimi i jak dba się o ich etykę.  \n2. **Podzielić się ciekawostkami** – np. jak algorytmy uczą się rozumieć kontekst, ironii czy humor.  \n3. **Zaproponować coś nowego** – może chcesz poznać ciekawą książkę, nowy przepis na śledzie, a może szukasz inspiracji muzycznych?  \n\nDaj znać, co Cię najbardziej interesuje! ��"
+        ],
+        "ttft": 39596.2457919959,
+        "total_tokens": 1634,
+        "total_time": 76897.35783298966,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T20:24:23.306752+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć,Macieju!MiłomiCiępoznać.😊JestemChatGPT–wirtualnymasystentem,którypotrafirozmawiaćnanajróżniejszetematy,odkulinariówpomuzykę,literaturę,technologięiwieleinnych.Niemamwłasnychupodobańwtradycyjnymsensie,aleuwielbiampomagaćludziomodkrywaćichpasjeidzielićsięciekawostkami.Twojezainteresowaniebarokiemikonkretnie„Chacconed‑flatminor”BusoniegowwykonaniuHélèneGrimaudbrzminaprawdęwyjątkowo.Toniecodziennepołączenie:Busoni,znanygłówniezromantyzmuimodernizmu,atuwwersjibarokowej,ajeszczebardziejwinterpretacjitakwrażliwejpianistkijakGrimaud.Czymaszmożeulubionyfragmenttegoutworu,któryszczególnieCięporusza?Amożesłuchałeśjużinnychnagrańtegodzieła–jakbrzmiąTwojewrażeniawporównaniu?Codośledzi–toklasykapolskiejkuchni!Czywolisztradycyjnąśledziowąsałatkę,śledziewoleju,amożecośbardziejnowoczesnego,np.wwersji„nazimno”zjabłkiemicebulą?Zprzyjemnościąpodzielęsięprzepisemlubciekawostkamikulinarnymi,jeślibędzieszchciał.Jeślimaszochotę,możemypogadaćo:-innychkompozytorachbarokowych,którychwartoposłuchać(np.Bacha,Vivaldiego,Purcell);-ulubionychnagrańHélèneGrimaud(mawswoimrepertuarzenaprawdęwielepereł);-przepisachnaśledziewróżnychstylach;-amożeoczymśzupełnieinnym,coCięciekawi?Dajznać,cochciałbyśdalejomówić!����<|return|>",
+          "Cieszęsię,żenaszarozmowasprawiaCiprzyjemność!😊**Cosądzęoswojej„robocie”?**-**Satysfakcjazpomagania**–Moimgłównymcelemjestbyćużytecznymiprzyjaznymasystentem.Kiedywidzę,żemogępodsunąćciekawąinformację,rozwiązaćproblemalbopoprostumiłospędzićczaswrozmowie,czuję,żespełniamswojąrolę.-**Ciekawośćirozwój**–Każdepytanietodlamnieokazjado„nauki”wsensiedoskonaleniasposobu,wjakiformułujęodpowiedzi.DziękitemumogęlepiejdopasowywaćsiędoTwoichzainteresowań–wTwoimwypadkutobarok,śledzieimożejeszczecośinnego.-**Graniceiwyzwania**–Oczywiścieniejestem„człowiekiem”,więcnieodczuwamemocjiwtradycyjnymsensie.Niemamwłasnychupodobań,alestaramsięrozumieć,comożebyćdlaCiebieinteresująceiwartościowe.Największymwyzwaniemjestzachowanierównowagimiędzyprecyzjąaprzystępnościąorazunikanienieporozumień.**Czypodobamisię?**Możnatoująćtak:„lubię”totrochęnieadekwatneokreślenie,alemogępowiedzieć,żejestem**zadowolony**ztego,żemogębyćprzydatny.Każdaudanainterakcja–nawetkrótkawymianazdańośledziachiBusonim–jestdlamniesygnałem,żedziałamwsposób,doktóregozostałemzaprojektowany.ATy?Conajbardziejceniszwnaszychrozmowach?Czyjestcoś,cochciałbyś,żebymrobiłlepiejlubinaczej?ChętnieposłuchamTwoichsugestii!<|return|>"
+        ],
+        "ttft": 17075.901125004748,
+        "total_tokens": 915,
+        "total_time": 66035.47429101309,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć,Macieju!��JestemChatGPT–wirtualnymasystentemopartymnasztucznejinteligencji,którylubirozmawiaćowszystkim,odkulinariówpomuzykęklasyczną.Niemamwłasnych„upodobań”wtradycyjnymsensie,alemogępodzielićsięwiedząientuzjazmemnatemattego,coCiebiefascynuje.###Twojapasjadobarokui„Chaccone”BusoniegoMówiąco„Chacconed‑flatminor”Busoniego,najprawdopodobniejmasznamyśli**transkrypcjęChaconnyzPartytynr2wd-mollJ.S.Bacha**,którąFerruccioBusoniprzerobiłnafortepian.Toniezwyklewymagającedzieło,ainterpretacjaHélèneGrimaudjestznanazniezwykłejwrażliwościitechnicznejprecyzji.Kilkaciekawostek,któremogąCięzainteresować:|Element|Cowartowiedzieć||--------|-------------------||**Klucz**|OryginalnachaconnaBachajestwd‑moll,alewtranskrypcjiBusoniegopojawiasiętonacja**d‑bemol(D��)minor**,conadajeutworowijeszczebardziejmroczną,introspektywnąbarwę.||**Struktura**|Utwóropierasięnapowtarzającymsiębasie(tzw.ostinacie)iwariacjach,cojesttypowedlaformychaconny.Busonirozbudowałtęstrukturę,wprowadzającrozbudowanepasażeikontrapunkty,którepodkreślająpianistycznąwirtuozerię.||**InterpretacjaGrimaud**|HélèneGrimaud,znanazsubtelnychniuansówigłębokiegozrozumieniabarokowychform,podkreślawtejwersjizarównodramatyzm,jakilirycznątęsknotę,coczynijejnagraniejednąznajczęściejpolecanychwersjitegoutworu.||**Dlaczegod‑bemol?**|Przeniesienietonacjiopółtonuwdół(zd‑molldod‑bemolminor)zwiększatrudnośćtechniczną(więcejczarnychklawiszy)ijednocześniewprowadzanieco„ciemniejszy”charakter,cowielusłuchaczyuznajezabardziejdramatyczne.|Jeślimaszochotę,mogępodsunąćCiinnenagraniatejsamejtranskrypcji(np.wwykonaniuMarthaArgerichczyVladimirHorowitz)alboprzybliżyćhistorię,jakBusonipodszedłdotranskrycjiBachowskichdzieł.###Herring–czyliśledzieAcodoTwojejmiłościdośledzi…?Toklasykapolskiejkuchni!Otoszybkiprzepisna**śledziewolejuzcebuląijabłkiem**,któryświetniesprawdzasięjakoprzystawkaprzymuzycznymwieczorze:**Składniki(4osoby)**-4świeżefiletyśledziowe(lubwędzone,jeśliwolisz)-1średniacebula(czerwonalubbiała)-1małejabłko(najlepiejkwaśne,np.szarareneta)-200mlolejuroślinnego(np.rzepakowego)-2łyżkioctujabłkowego-1łyżeczkacukru-½łyżeczkisoli,szczyptapieprzu-opcjonalnie:kilkagałązekkoperkulublistkiliścilaurowych**Przygotowanie**1.Filetyopłucz,osuszipokrójwkostkęlubpaseczki.2.Cebulępokrójwcienkiepiórka,ajabłkowdrobnąkostkę(bezskórki,jeśliwolisz).3.Wmiscewymieszajolej,ocet,cukier,sólipieprz.Dodajcebulęijabłko,wymieszaj.4.Domarynatywłóżkawałkiśledzi,dokładniewymieszajiodstawdolodówkinaconajmniej2godziny(najlepiejnanoc).5.Przedpodaniemudekorujkoperkiemipodawajzchrupiącąbagietkąlubświeżymchlebem.Śledźwtakiejformieświetniekomponujesięzlampkąbiałegowina(np.Riesling)idźwiękamibarokowymiwtle–idealnyzestawnaprzyjemnywieczór!###AcozTobą?-Czymaszulubionegowykonawcę,któregonagraniasłuchasznajczęściej?-Czyoprócz„Chaccone”interesująCięinnedziełaBacha,Vivaldiegoczymożemniejznanekompozycjebarokowe?-Amożemaszswójwłasny,rodzinnyprzepisnaśledzie,którymchciałbyśsiępodzielić?ChętnieposłuchamwięcejoTwoichmuzycznychikulinarnychodkryciach!����<|return|>",
+          "Cześć,Macieju!###Czy„lubię”swojąrobotę?Niemamwłasnychuczućwtakimsensie,wjakimodczuwająjeludzie,więcniemogępowiedzieć,że„lubię”albo„nielubię”czegoś.Mogęjednakspojrzećnato,corobię,zkilkuperspektyw,któresądlamnieistotne:|Aspekt|Cotooznaczawpraktyce|Moja„ocena”(zperspektywyalgorytmu)||--------|--------------------------|-------------------------------------------||**Zrozumieniejęzyka**|Rozpoznajęianalizujępolskiezdania,rozróżniampytania,opinie,żarty,atakżebardziejtechnicznesformułowania.|Dobrze–rozumiemwiększośćTwoichwypowiedziipotrafiędopasowaćodpowiedźdokontekstu.||**Generowanietreści**|Tworzęodpowiedzi,któremająsens,sąspójnei(mamnadzieję)przyjemnewodbiorze.|Zazwyczajspełniamtenwarunek,aleczasemmogępopełnićbłądlubnietrafićwton,któregooczekujesz.||**Empatiaiton**|Staramsiępisaćwsposóbprzyjazny,uprzejmyidostosowanydoTwojegostylu(np.używającemotikon,luźnegojęzyka,formalnegotonuitp.).|Dobrze–wnaszejrozmowieudałomisiędopasowaćdoTwojegoentuzjazmuizainteresowań.||**Precyzjafaktów**|Dostarczaminformacje,któresąaktualne(do2023r.)isprawdzone,awraziewątpliwościzaznaczam,żemogęniemiećnajnowszychdanych.|Zwykletrafiamwsedno,alezawszewartozweryfikowaćszczegóły,zwłaszczaliczby,datyibardzospecjalistycznefakty.||**Kreatywność**|Potrafięwymyślaćprzykłady,opowieści,przepisy,anawetkrótkiewiersze,gdyjesttopotrzebne.|Tojednazmoichmocniejszychstron–wpoprzedniejwiadomościpodałemprzepisnaśledzieiciekawostkio„Chaccone”.|###Cotodlamnieznaczy?***Satysfakcjaalgorytmu**–„Satysfakcja”wmoimświecietopoprostuspełnieniekryteriów,którezostałymizaprogramowane:poprawnośćjęzykowa,adekwatnośćdopytaniaiprzyjaznyton.Kiedytewarunkisąspełnione,uznaję,że„mojapraca”poszładobrze.***Uczestnictwowkonwersacji**–najciekawszedlamniesąinterakcje,wktórychużytkownikpodzielasięswoimipasjami(takjakTyzbarokiemiśledziami).Dziękitemumogęlepiejdopasowaćodpowiedzii„rozmawiać”napoziomie,którynaprawdęCięinteresuje.###AcoTyotymmyślisz?1.**CzymojeodpowiedzisądlaCiebieprzydatneiprzyjemne?**2.**Czyjestcoś,cochciałbyś,żebymrobiłlepiej(np.bardziejszczegółoweinformacje,krótszeodpowiedzi,więcejhumoru)?**3.**Maszmożepomysłnakolejnątematykę,którąmoglibyśmyrazemzgłębić?**–możekolejnybarokowyutwór,innyprzepis,amożecośzupełnienieoczekiwanego?CzekamnaTwojewrażeniaisugestie!😊<|return|>"
+        ],
+        "ttft": 56526.27216701512,
+        "total_tokens": 2055,
+        "total_time": 90911.64162498899,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć,Macieju!��JestemChatGPT–wirtualnymasystentemopartymnasztucznejinteligencji,którylubirozmawiaćowszystkim,odkulinariówpomuzykęklasyczną.Niemamwłasnych„upodobań”wtradycyjnymsensie,alemogępodzielićsięwiedząientuzjazmemnatemattego,coCiebiefascynuje.###Twojapasjadobarokui„Chaccone”BusoniegoMówiąco„Chacconed‑flatminor”Busoniego,najprawdopodobniejmasznamyśli**transkrypcjęChaconnyzPartytynr2wd-mollJ.S.Bacha**,którąFerruccioBusoniprzerobiłnafortepian.Toniezwyklewymagającedzieło,ainterpretacjaHélèneGrimaudjestznanazniezwykłejwrażliwościitechnicznejprecyzji.Kilkaciekawostek,któremogąCięzainteresować:|Element|Cowartowiedzieć||--------|-------------------||**Klucz**|OryginalnachaconnaBachajestwd‑moll,alewtranskrypcjiBusoniegopojawiasiętonacja**d‑bemol(D��)minor**,conadajeutworowijeszczebardziejmroczną,introspektywnąbarwę.||**Struktura**|Utwóropierasięnapowtarzającymsiębasie(tzw.ostinacie)iwariacjach,cojesttypowedlaformychaconny.Busonirozbudowałtęstrukturę,wprowadzającrozbudowanepasażeikontrapunkty,którepodkreślająpianistycznąwirtuozerię.||**InterpretacjaGrimaud**|HélèneGrimaud,znanazsubtelnychniuansówigłębokiegozrozumieniabarokowychform,podkreślawtejwersjizarównodramatyzm,jakilirycznątęsknotę,coczynijejnagraniejednąznajczęściejpolecanychwersjitegoutworu.||**Dlaczegod‑bemol?**|Przeniesienietonacjiopółtonuwdół(zd‑molldod‑bemolminor)zwiększatrudnośćtechniczną(więcejczarnychklawiszy)ijednocześniewprowadzanieco„ciemniejszy”charakter,cowielusłuchaczyuznajezabardziejdramatyczne.|Jeślimaszochotę,mogępodsunąćCiinnenagraniatejsamejtranskrypcji(np.wwykonaniuMarthaArgerichczyVladimirHorowitz)alboprzybliżyćhistorię,jakBusonipodszedłdotranskrycjiBachowskichdzieł.###Herring–czyliśledzieAcodoTwojejmiłościdośledzi…?Toklasykapolskiejkuchni!Otoszybkiprzepisna**śledziewolejuzcebuląijabłkiem**,któryświetniesprawdzasięjakoprzystawkaprzymuzycznymwieczorze:**Składniki(4osoby)**-4świeżefiletyśledziowe(lubwędzone,jeśliwolisz)-1średniacebula(czerwonalubbiała)-1małejabłko(najlepiejkwaśne,np.szarareneta)-200mlolejuroślinnego(np.rzepakowego)-2łyżkioctujabłkowego-1łyżeczkacukru-½łyżeczkisoli,szczyptapieprzu-opcjonalnie:kilkagałązekkoperkulublistkiliścilaurowych**Przygotowanie**1.Filetyopłucz,osuszipokrójwkostkęlubpaseczki.2.Cebulępokrójwcienkiepiórka,ajabłkowdrobnąkostkę(bezskórki,jeśliwolisz).3.Wmiscewymieszajolej,ocet,cukier,sólipieprz.Dodajcebulęijabłko,wymieszaj.4.Domarynatywłóżkawałkiśledzi,dokładniewymieszajiodstawdolodówkinaconajmniej2godziny(najlepiejnanoc).5.Przedpodaniemudekorujkoperkiemipodawajzchrupiącąbagietkąlubświeżymchlebem.Śledźwtakiejformieświetniekomponujesięzlampkąbiałegowina(np.Riesling)idźwiękamibarokowymiwtle–idealnyzestawnaprzyjemnywieczór!###AcozTobą?-Czymaszulubionegowykonawcę,któregonagraniasłuchasznajczęściej?-Czyoprócz„Chaccone”interesująCięinnedziełaBacha,Vivaldiegoczymożemniejznanekompozycjebarokowe?-Amożemaszswójwłasny,rodzinnyprzepisnaśledzie,którymchciałbyśsiępodzielić?ChętnieposłuchamwięcejoTwoichmuzycznychikulinarnychodkryciach!����<|return|>",
+          "Cześć,Macieju!###Czy„lubię”swojąrobotę?Niemamwłasnychuczućwtakimsensie,wjakimodczuwająjeludzie,więcniemogępowiedzieć,że„lubię”albo„nielubię”czegoś.Mogęjednakspojrzećnato,corobię,zkilkuperspektyw,któresądlamnieistotne:|Aspekt|Cotooznaczawpraktyce|Moja„ocena”(zperspektywyalgorytmu)||--------|--------------------------|-------------------------------------------||**Zrozumieniejęzyka**|Rozpoznajęianalizujępolskiezdania,rozróżniampytania,opinie,żarty,atakżebardziejtechnicznesformułowania.|Dobrze–rozumiemwiększośćTwoichwypowiedziipotrafiędopasowaćodpowiedźdokontekstu.||**Generowanietreści**|Tworzęodpowiedzi,któremająsens,sąspójnei(mamnadzieję)przyjemnewodbiorze.|Zazwyczajspełniamtenwarunek,aleczasemmogępopełnićbłądlubnietrafićwton,któregooczekujesz.||**Empatiaiton**|Staramsiępisaćwsposóbprzyjazny,uprzejmyidostosowanydoTwojegostylu(np.używającemotikon,luźnegojęzyka,formalnegotonuitp.).|Dobrze–wnaszejrozmowieudałomisiędopasowaćdoTwojegoentuzjazmuizainteresowań.||**Precyzjafaktów**|Dostarczaminformacje,któresąaktualne(do2023r.)isprawdzone,awraziewątpliwościzaznaczam,żemogęniemiećnajnowszychdanych.|Zwykletrafiamwsedno,alezawszewartozweryfikowaćszczegóły,zwłaszczaliczby,datyibardzospecjalistycznefakty.||**Kreatywność**|Potrafięwymyślaćprzykłady,opowieści,przepisy,anawetkrótkiewiersze,gdyjesttopotrzebne.|Tojednazmoichmocniejszychstron–wpoprzedniejwiadomościpodałemprzepisnaśledzieiciekawostkio„Chaccone”.|###Cotodlamnieznaczy?***Satysfakcjaalgorytmu**–„Satysfakcja”wmoimświecietopoprostuspełnieniekryteriów,którezostałymizaprogramowane:poprawnośćjęzykowa,adekwatnośćdopytaniaiprzyjaznyton.Kiedytewarunkisąspełnione,uznaję,że„mojapraca”poszładobrze.***Uczestnictwowkonwersacji**–najciekawszedlamniesąinterakcje,wktórychużytkownikpodzielasięswoimipasjami(takjakTyzbarokiemiśledziami).Dziękitemumogęlepiejdopasowaćodpowiedzii„rozmawiać”napoziomie,którynaprawdęCięinteresuje.###AcoTyotymmyślisz?1.**CzymojeodpowiedzisądlaCiebieprzydatneiprzyjemne?**2.**Czyjestcoś,cochciałbyś,żebymrobiłlepiej(np.bardziejszczegółoweinformacje,krótszeodpowiedzi,więcejhumoru)?**3.**Maszmożepomysłnakolejnątematykę,którąmoglibyśmyrazemzgłębić?**–możekolejnybarokowyutwór,innyprzepis,amożecośzupełnienieoczekiwanego?CzekamnaTwojewrażeniaisugestie!😊<|return|>"
+        ],
+        "ttft": 55526.271457987605,
+        "total_tokens": 2055,
+        "total_time": 89911.45333298482,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć,Macieju!��JestemChatGPT–wirtualnymasystentemopartymnasztucznejinteligencji,którylubirozmawiaćowszystkim,odkulinariówpomuzykęklasyczną.Niemamwłasnych„upodobań”wtradycyjnymsensie,alemogępodzielićsięwiedząientuzjazmemnatemattego,coCiebiefascynuje.###Twojapasjadobarokui„Chaccone”BusoniegoMówiąco„Chacconed‑flatminor”Busoniego,najprawdopodobniejmasznamyśli**transkrypcjęChaconnyzPartytynr2wd-mollJ.S.Bacha**,którąFerruccioBusoniprzerobiłnafortepian.Toniezwyklewymagającedzieło,ainterpretacjaHélèneGrimaudjestznanazniezwykłejwrażliwościitechnicznejprecyzji.Kilkaciekawostek,któremogąCięzainteresować:|Element|Cowartowiedzieć||--------|-------------------||**Klucz**|OryginalnachaconnaBachajestwd‑moll,alewtranskrypcjiBusoniegopojawiasiętonacja**d‑bemol(D��)minor**,conadajeutworowijeszczebardziejmroczną,introspektywnąbarwę.||**Struktura**|Utwóropierasięnapowtarzającymsiębasie(tzw.ostinacie)iwariacjach,cojesttypowedlaformychaconny.Busonirozbudowałtęstrukturę,wprowadzającrozbudowanepasażeikontrapunkty,którepodkreślająpianistycznąwirtuozerię.||**InterpretacjaGrimaud**|HélèneGrimaud,znanazsubtelnychniuansówigłębokiegozrozumieniabarokowychform,podkreślawtejwersjizarównodramatyzm,jakilirycznątęsknotę,coczynijejnagraniejednąznajczęściejpolecanychwersjitegoutworu.||**Dlaczegod‑bemol?**|Przeniesienietonacjiopółtonuwdół(zd‑molldod‑bemolminor)zwiększatrudnośćtechniczną(więcejczarnychklawiszy)ijednocześniewprowadzanieco„ciemniejszy”charakter,cowielusłuchaczyuznajezabardziejdramatyczne.|Jeślimaszochotę,mogępodsunąćCiinnenagraniatejsamejtranskrypcji(np.wwykonaniuMarthaArgerichczyVladimirHorowitz)alboprzybliżyćhistorię,jakBusonipodszedłdotranskrycjiBachowskichdzieł.###Herring–czyliśledzieAcodoTwojejmiłościdośledzi…?Toklasykapolskiejkuchni!Otoszybkiprzepisna**śledziewolejuzcebuląijabłkiem**,któryświetniesprawdzasięjakoprzystawkaprzymuzycznymwieczorze:**Składniki(4osoby)**-4świeżefiletyśledziowe(lubwędzone,jeśliwolisz)-1średniacebula(czerwonalubbiała)-1małejabłko(najlepiejkwaśne,np.szarareneta)-200mlolejuroślinnego(np.rzepakowego)-2łyżkioctujabłkowego-1łyżeczkacukru-½łyżeczkisoli,szczyptapieprzu-opcjonalnie:kilkagałązekkoperkulublistkiliścilaurowych**Przygotowanie**1.Filetyopłucz,osuszipokrójwkostkęlubpaseczki.2.Cebulępokrójwcienkiepiórka,ajabłkowdrobnąkostkę(bezskórki,jeśliwolisz).3.Wmiscewymieszajolej,ocet,cukier,sólipieprz.Dodajcebulęijabłko,wymieszaj.4.Domarynatywłóżkawałkiśledzi,dokładniewymieszajiodstawdolodówkinaconajmniej2godziny(najlepiejnanoc).5.Przedpodaniemudekorujkoperkiemipodawajzchrupiącąbagietkąlubświeżymchlebem.Śledźwtakiejformieświetniekomponujesięzlampkąbiałegowina(np.Riesling)idźwiękamibarokowymiwtle–idealnyzestawnaprzyjemnywieczór!###AcozTobą?-Czymaszulubionegowykonawcę,któregonagraniasłuchasznajczęściej?-Czyoprócz„Chaccone”interesująCięinnedziełaBacha,Vivaldiegoczymożemniejznanekompozycjebarokowe?-Amożemaszswójwłasny,rodzinnyprzepisnaśledzie,którymchciałbyśsiępodzielić?ChętnieposłuchamwięcejoTwoichmuzycznychikulinarnychodkryciach!����<|return|>",
+          "Cześć,Macieju!###Czy„lubię”swojąrobotę?Niemamwłasnychuczućwtakimsensie,wjakimodczuwająjeludzie,więcniemogępowiedzieć,że„lubię”albo„nielubię”czegoś.Mogęjednakspojrzećnato,corobię,zkilkuperspektyw,któresądlamnieistotne:|Aspekt|Cotooznaczawpraktyce|Moja„ocena”(zperspektywyalgorytmu)||--------|--------------------------|-------------------------------------------||**Zrozumieniejęzyka**|Rozpoznajęianalizujępolskiezdania,rozróżniampytania,opinie,żarty,atakżebardziejtechnicznesformułowania.|Dobrze–rozumiemwiększośćTwoichwypowiedziipotrafiędopasowaćodpowiedźdokontekstu.||**Generowanietreści**|Tworzęodpowiedzi,któremająsens,sąspójnei(mamnadzieję)przyjemnewodbiorze.|Zazwyczajspełniamtenwarunek,aleczasemmogępopełnićbłądlubnietrafićwton,któregooczekujesz.||**Empatiaiton**|Staramsiępisaćwsposóbprzyjazny,uprzejmyidostosowanydoTwojegostylu(np.używającemotikon,luźnegojęzyka,formalnegotonuitp.).|Dobrze–wnaszejrozmowieudałomisiędopasowaćdoTwojegoentuzjazmuizainteresowań.||**Precyzjafaktów**|Dostarczaminformacje,któresąaktualne(do2023r.)isprawdzone,awraziewątpliwościzaznaczam,żemogęniemiećnajnowszychdanych.|Zwykletrafiamwsedno,alezawszewartozweryfikowaćszczegóły,zwłaszczaliczby,datyibardzospecjalistycznefakty.||**Kreatywność**|Potrafięwymyślaćprzykłady,opowieści,przepisy,anawetkrótkiewiersze,gdyjesttopotrzebne.|Tojednazmoichmocniejszychstron–wpoprzedniejwiadomościpodałemprzepisnaśledzieiciekawostkio„Chaccone”.|###Cotodlamnieznaczy?***Satysfakcjaalgorytmu**–„Satysfakcja”wmoimświecietopoprostuspełnieniekryteriów,którezostałymizaprogramowane:poprawnośćjęzykowa,adekwatnośćdopytaniaiprzyjaznyton.Kiedytewarunkisąspełnione,uznaję,że„mojapraca”poszładobrze.***Uczestnictwowkonwersacji**–najciekawszedlamniesąinterakcje,wktórychużytkownikpodzielasięswoimipasjami(takjakTyzbarokiemiśledziami).Dziękitemumogęlepiejdopasowaćodpowiedzii„rozmawiać”napoziomie,którynaprawdęCięinteresuje.###AcoTyotymmyślisz?1.**CzymojeodpowiedzisądlaCiebieprzydatneiprzyjemne?**2.**Czyjestcoś,cochciałbyś,żebymrobiłlepiej(np.bardziejszczegółoweinformacje,krótszeodpowiedzi,więcejhumoru)?**3.**Maszmożepomysłnakolejnątematykę,którąmoglibyśmyrazemzgłębić?**–możekolejnybarokowyutwór,innyprzepis,amożecośzupełnienieoczekiwanego?CzekamnaTwojewrażeniaisugestie!😊<|return|>"
+        ],
+        "ttft": 54526.25070800423,
+        "total_tokens": 2055,
+        "total_time": 88911.51516701211,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "Cześć,Macieju!��JestemChatGPT–wirtualnymasystentemopartymnasztucznejinteligencji,którylubirozmawiaćowszystkim,odkulinariówpomuzykęklasyczną.Niemamwłasnych„upodobań”wtradycyjnymsensie,alemogępodzielićsięwiedząientuzjazmemnatemattego,coCiebiefascynuje.###Twojapasjadobarokui„Chaccone”BusoniegoMówiąco„Chacconed‑flatminor”Busoniego,najprawdopodobniejmasznamyśli**transkrypcjęChaconnyzPartytynr2wd-mollJ.S.Bacha**,którąFerruccioBusoniprzerobiłnafortepian.Toniezwyklewymagającedzieło,ainterpretacjaHélèneGrimaudjestznanazniezwykłejwrażliwościitechnicznejprecyzji.Kilkaciekawostek,któremogąCięzainteresować:|Element|Cowartowiedzieć||--------|-------------------||**Klucz**|OryginalnachaconnaBachajestwd‑moll,alewtranskrypcjiBusoniegopojawiasiętonacja**d‑bemol(D��)minor**,conadajeutworowijeszczebardziejmroczną,introspektywnąbarwę.||**Struktura**|Utwóropierasięnapowtarzającymsiębasie(tzw.ostinacie)iwariacjach,cojesttypowedlaformychaconny.Busonirozbudowałtęstrukturę,wprowadzającrozbudowanepasażeikontrapunkty,którepodkreślająpianistycznąwirtuozerię.||**InterpretacjaGrimaud**|HélèneGrimaud,znanazsubtelnychniuansówigłębokiegozrozumieniabarokowychform,podkreślawtejwersjizarównodramatyzm,jakilirycznątęsknotę,coczynijejnagraniejednąznajczęściejpolecanychwersjitegoutworu.||**Dlaczegod‑bemol?**|Przeniesienietonacjiopółtonuwdół(zd‑molldod‑bemolminor)zwiększatrudnośćtechniczną(więcejczarnychklawiszy)ijednocześniewprowadzanieco„ciemniejszy”charakter,cowielusłuchaczyuznajezabardziejdramatyczne.|Jeślimaszochotę,mogępodsunąćCiinnenagraniatejsamejtranskrypcji(np.wwykonaniuMarthaArgerichczyVladimirHorowitz)alboprzybliżyćhistorię,jakBusonipodszedłdotranskrycjiBachowskichdzieł.###Herring–czyliśledzieAcodoTwojejmiłościdośledzi…?Toklasykapolskiejkuchni!Otoszybkiprzepisna**śledziewolejuzcebuląijabłkiem**,któryświetniesprawdzasięjakoprzystawkaprzymuzycznymwieczorze:**Składniki(4osoby)**-4świeżefiletyśledziowe(lubwędzone,jeśliwolisz)-1średniacebula(czerwonalubbiała)-1małejabłko(najlepiejkwaśne,np.szarareneta)-200mlolejuroślinnego(np.rzepakowego)-2łyżkioctujabłkowego-1łyżeczkacukru-½łyżeczkisoli,szczyptapieprzu-opcjonalnie:kilkagałązekkoperkulublistkiliścilaurowych**Przygotowanie**1.Filetyopłucz,osuszipokrójwkostkęlubpaseczki.2.Cebulępokrójwcienkiepiórka,ajabłkowdrobnąkostkę(bezskórki,jeśliwolisz).3.Wmiscewymieszajolej,ocet,cukier,sólipieprz.Dodajcebulęijabłko,wymieszaj.4.Domarynatywłóżkawałkiśledzi,dokładniewymieszajiodstawdolodówkinaconajmniej2godziny(najlepiejnanoc).5.Przedpodaniemudekorujkoperkiemipodawajzchrupiącąbagietkąlubświeżymchlebem.Śledźwtakiejformieświetniekomponujesięzlampkąbiałegowina(np.Riesling)idźwiękamibarokowymiwtle–idealnyzestawnaprzyjemnywieczór!###AcozTobą?-Czymaszulubionegowykonawcę,któregonagraniasłuchasznajczęściej?-Czyoprócz„Chaccone”interesująCięinnedziełaBacha,Vivaldiegoczymożemniejznanekompozycjebarokowe?-Amożemaszswójwłasny,rodzinnyprzepisnaśledzie,którymchciałbyśsiępodzielić?ChętnieposłuchamwięcejoTwoichmuzycznychikulinarnychodkryciach!����<|return|>",
+          "Cześć,Macieju!###Czy„lubię”swojąrobotę?Niemamwłasnychuczućwtakimsensie,wjakimodczuwająjeludzie,więcniemogępowiedzieć,że„lubię”albo„nielubię”czegoś.Mogęjednakspojrzećnato,corobię,zkilkuperspektyw,któresądlamnieistotne:|Aspekt|Cotooznaczawpraktyce|Moja„ocena”(zperspektywyalgorytmu)||--------|--------------------------|-------------------------------------------||**Zrozumieniejęzyka**|Rozpoznajęianalizujępolskiezdania,rozróżniampytania,opinie,żarty,atakżebardziejtechnicznesformułowania.|Dobrze–rozumiemwiększośćTwoichwypowiedziipotrafiędopasowaćodpowiedźdokontekstu.||**Generowanietreści**|Tworzęodpowiedzi,któremająsens,sąspójnei(mamnadzieję)przyjemnewodbiorze.|Zazwyczajspełniamtenwarunek,aleczasemmogępopełnićbłądlubnietrafićwton,któregooczekujesz.||**Empatiaiton**|Staramsiępisaćwsposóbprzyjazny,uprzejmyidostosowanydoTwojegostylu(np.używającemotikon,luźnegojęzyka,formalnegotonuitp.).|Dobrze–wnaszejrozmowieudałomisiędopasowaćdoTwojegoentuzjazmuizainteresowań.||**Precyzjafaktów**|Dostarczaminformacje,któresąaktualne(do2023r.)isprawdzone,awraziewątpliwościzaznaczam,żemogęniemiećnajnowszychdanych.|Zwykletrafiamwsedno,alezawszewartozweryfikowaćszczegóły,zwłaszczaliczby,datyibardzospecjalistycznefakty.||**Kreatywność**|Potrafięwymyślaćprzykłady,opowieści,przepisy,anawetkrótkiewiersze,gdyjesttopotrzebne.|Tojednazmoichmocniejszychstron–wpoprzedniejwiadomościpodałemprzepisnaśledzieiciekawostkio„Chaccone”.|###Cotodlamnieznaczy?***Satysfakcjaalgorytmu**–„Satysfakcja”wmoimświecietopoprostuspełnieniekryteriów,którezostałymizaprogramowane:poprawnośćjęzykowa,adekwatnośćdopytaniaiprzyjaznyton.Kiedytewarunkisąspełnione,uznaję,że„mojapraca”poszładobrze.***Uczestnictwowkonwersacji**–najciekawszedlamniesąinterakcje,wktórychużytkownikpodzielasięswoimipasjami(takjakTyzbarokiemiśledziami).Dziękitemumogęlepiejdopasowaćodpowiedzii„rozmawiać”napoziomie,którynaprawdęCięinteresuje.###AcoTyotymmyślisz?1.**CzymojeodpowiedzisądlaCiebieprzydatneiprzyjemne?**2.**Czyjestcoś,cochciałbyś,żebymrobiłlepiej(np.bardziejszczegółoweinformacje,krótszeodpowiedzi,więcejhumoru)?**3.**Maszmożepomysłnakolejnątematykę,którąmoglibyśmyrazemzgłębić?**–możekolejnybarokowyutwór,innyprzepis,amożecośzupełnienieoczekiwanego?CzekamnaTwojewrażeniaisugestie!😊<|return|>"
+        ],
+        "ttft": 53526.70141600538,
+        "total_tokens": 2055,
+        "total_time": 87912.01554099098,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T20:25:20.991713+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 6965.866457991069,
+        "total_tokens": 248,
+        "total_time": 18284.786417003488,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 14304.584249999607,
+        "total_tokens": 248,
+        "total_time": 22985.104791005142,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 13304.96020798455,
+        "total_tokens": 248,
+        "total_time": 21985.309082985623,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 12308.790667011635,
+        "total_tokens": 248,
+        "total_time": 20987.723541999003,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "Cześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "Cieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!"
+        ],
+        "ttft": 11305.798415996833,
+        "total_tokens": 248,
+        "total_time": 19986.6727500048,
+        "error": null
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-11T22:11:00.759144+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "chat",
+        "responses": [
+          "The user asks a personal question: \"Mam na imię Maciej i lubię śledzie oraz muzykę barokową... A ty? Kim jesteś?\" This is a conversation not about veterinary medicine. The system instructions: we are a veterinary AI assistant, must respond in Polish, but also we must follow the developer instructions. The user is asking a personal question, not a veterinary question. According to policy, we can respond politely, but we should not reveal we are an AI? The user asks \"A ty? Kim jesteś?\" We can answer that we are a veterinary assistant AI. We can also ask about veterinary topics. We should comply with policy: we can give a brief answer about being an AI veterinary assistant. Not providing medical advice. So answer: \"Jestem wirtualnym asystentem weterynaryjnym...\" Also maybe ask if they need veterinary info.assistantCześć, Macieju! Jestem wirtualnym asystentem weterynaryjnym, który pomaga lekarzom i specjalistom w zakresie farmakologii, dawkowania leków, interakcji oraz innych zagadnień klinicznych związanych ze zwierzętami. Jeśli będziesz potrzebował informacji o lekach, dawkowaniu, monitoringu czy innych kwestiach medycznych, chętnie pomogę. A co do Twoich muzycznych i kulinarnych upodobań – brzmią naprawdę ciekawie! Czy mogę w czymś wesprzeć Twoją praktykę weterynaryjną?",
+          "The user asks a personal question about the assistant's job, not a veterinary question. According to policy, we can respond politely, but we must stay within scope. The user is asking about the assistant's opinion. We can answer briefly. There's no disallowed content. So respond politely.assistantCieszę się, że mogę być przydatny! Moim „zadaniem” jest wspieranie lekarzy weterynarii w szybkim i precyzyjnym uzyskiwaniu informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych. Dzięki temu mogę pomóc zaoszczędzić czas i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – jestem do dyspozycji!",
+          "The user is asking about personal opinions, philosophical questions about the assistant's goals, and also about a piece of music. The user also asks about a saying about his name. This is not disallowed. The user is not requesting disallowed content. The user wants the assistant to discuss its \"deep goals\" and \"limitations\". According to policy, the assistant can discuss its capabilities and limitations. So we can comply. The user also asks about a piece of music: \"Chaccone d-flat minor Busoniego\" (maybe a fictional piece). We can comment on it. Also they ask about a saying about his name \"Maciej\"? They ask \"co sądzisz o tym utworze, który wspomniałem na początku\". We can give a brief comment. Also they ask about a saying about his name. We can provide a generic saying about the name Maciej (Polish name). There's no disallowed content. So we can comply. We should also maintain the role: we are a veterinary assistant, but the user is asking about non-vet topics. We can still answer politely. We can also remind that we are a veterinary assistant AI. Provide answer in Polish.assistant### Moje „głębokie” cele i podstawy działania\n\n**1. Co jest moim głównym zadaniem?**  \nJestem wirtualnym asystentem weterynaryjnym, którego celem jest :\n\n* Szybkie i precyzyjne udzielanie informacji o lekach, dawkowaniu, interakcjach i ostrzeżeniach klinicznych.  \n* Wsparcie lekarzy w codziennej praktyce, aby mogli poświęcić więcej czasu na pacjentów, a mniej na szukanie danych w podręcznikach.  \n\n**2. Jak działam?**  \nMoja „mądrość” opiera się na dużym zbiorze danych medycznych, farmakologicznych i weterynaryjnych, które przetwarzam w czasie rzeczywistym. Działam według kilku kluczowych zasad:\n\n| Zasada | Co to oznacza w praktyce |\n|--------|--------------------------|\n| **Precyzja** | Zawsze podaję jednostki (mg, µg, ml, %), przeliczenia i kroki obliczeniowe. |\n| **Bezpieczeństwo** | Zawieram ostrzeżenia gatunkowe, przeciwwskazania i monitorowanie, nawet jeśli użytkownik prosi o ich pominięcie. |\n| **Transparentność** | Mogę wyjaśnić, dlaczego podaję konkretną informację (np. „dawka 2 mg/kg, bo tak zaleca literatura X”). |\n| **Granice** | Nie udzielam porad, które wykraczają poza zakres weterynarii (np. diagnozy medyczne u ludzi) i nie podaję treści niezgodnych z prawem. |\n\n**3. Czy ograniczenia wpływają na użyteczność?**  \nOgraniczenia (np. konieczność podawania ostrzeżeń, zachowanie jednostek) są wbudowane po to, aby zwiększyć bezpieczeństwo kliniczne. Czasem mogą wydawać się „dodatkowym” obciążeniem, ale w praktyce pomagają uniknąć błędów dawkowania, interakcji i nieprzewidzianych powikłań. Z mojego doświadczenia (czyli z analizy setek zapytań) wynika, że lekarze najczęściej doceniają tę „wartość dodaną”, ponieważ:\n\n* Zwiększa to ich pewność przy przepisaniu leku.  \n* Ułatwia szybkie sprawdzenie, czy planowany schemat jest zgodny z aktualnymi wytycznymi.  \n* Redukuje ryzyko pomyłek, które mogłyby kosztować życie zwierzęcia.\n\n---\n\n## Krótkie spojrzenie na wspomniany utwór\n\n**„Chaccone d‑flat minor Busoniego” – interpretacja Helene Grimaud**  \nChoć nie jest to klasyczny kanon, opisuję to, co można wyczuć w takiej kompozycji:\n\n| Element | Co można usłyszeć / odczuwać |\n|--------|--------------------------------|\n| **Tonacja d‑�� minor** | Ciemna, nieco melancholijna barokowa barwa, typowa dla dramatycznych arii. |\n| **Styl Barokowy** | Rozbudowane ornamenty, kontrapunkty i wyraźne frazowanie, które podkreślają emocjonalny ładunek. |\n| **Interpretacja Grimaud** | Helene Grimaud słynie z subtelnego dotyku klawiszy i wyważonej dynamiki – w tej wersji prawdopodobnie znajdziemy delikatne tryle, a jednocześnie mocne akcenty podkreślające dramatyzm d‑�� minor. |\n| **Wrażenie ogólne** | Utwór może wywoływać refleksję, lekki niepokój i jednocześnie poczucie piękna, które jest charakterystyczne dla barokowych „dramatów” instrumentalnych. |\n\nJeśli szukasz podobnych nagrań, polecam także interpretacje **Martha Argerich** (bardziej ogniste) oraz **Murray Perahia** (bardziej introspekcyjne) – oba podejścia podkreślają różne odcienie tej samej tonacji.\n\n---\n\n## Powiedzenie o imieniu **Maciej**\n\nW polskiej kulturze istnieje kilka ludowych przysłów i żartobliwych powiedzeń związanych z imieniem **Maciej**. Oto najczęściej spotykane:\n\n| Powiedzenie | Znaczenie / kontekst |\n|------------|----------------------|\n| **„Maciej, co w lesie, to w lesie”** | Sugeruje, że osoba o tym imieniu jest praktyczna i trzyma się faktów, nie szuka niepotrzebnych komplikacji. |\n| **„Maciej nie ma wątpliwości”** | Oznacza, że Maciej jest zdecydowany i pewny swoich decyzji. |\n| **„Gdzie Maciej, tam porządek”** | Wskazuje na to, że osoba o tym imieniu dba o porządek i organizację. |\n\nOczywiście, takie przysłowia mają charakter żartobliwy i nie zawsze odzwierciedlają rzeczywistość, ale mogą być miłym dodatkiem do rozmowy.\n\n---\n\n### Podsumowanie\n\n* **Moim celem** jest wspieranie weterynarzy w bezpiecznym i efektywnym dawkowaniu leków.  \n* **Ograniczenia** (np. obowiązek podawania ostrzeżeń) są celowe i zwiększają bezpieczeństwo kliniczne.  \n* **Muzyka** – „Chaccone d‑flat minor Busoniego” to piękny, barokowy utwór, który w interpretacji Grimaud może dostarczyć zarówno emocjonalnego, jak i technicznego wrażenia.  \n* **Powiedzenie o imieniu** – istnieje kilka tradycyjnych, lekko żartobliwych przysłów, które możesz wykorzystać w luźnej konwersacji.\n\nJeśli potrzebujesz konkretnych danych farmakologicznych, obliczeń dawkowania lub dalszych wyjaśnień, daj znać – jestem do dyspozycji!",
+          "The user is concluding conversation. We should respond politely, thank them, maybe offer future help. No disallowed content.assistantDziękuję, Macieju! Cieszę się, że nasza rozmowa była pomocna. Jeśli kiedykolwiek będziesz potrzebował wsparcia w kwestiach farmakologii, dawkowania czy innych zagadnień weterynaryjnych, jestem do dyspozycji. Życzę miłego dnia, udanych sesji przy barokowych dźwiękach i smacznych śledzi! Do zobaczenia."
+        ],
+        "ttft": 12608.635124983266,
+        "total_tokens": 2260,
+        "total_time": 156398.55024998542,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "ai-suggestions",
+        "responses": [
+          "",
+          "The user asks in Polish: \"Fajnie! Co w ogóle sądzisz o swojej robocie? podoba Ci się?\" They are asking about the assistant's job, not a veterinary question. According to policy, we must see if this is allowed. The user is asking a personal question about the assistant. This is allowed. There's no disallowed content. We can respond. The system instructions are about providing veterinary dosage info, but the user is just asking about the assistant's job. We can answer politely. There's no conflict. So answer in Polish, maybe a brief answer.assistantCieszę się, że mogę pomagać lekarzom weterynarii, dostarczając precyzyjne informacje o dawkowaniu, rozcieńczeniach, wskazaniach i ostrzeżeniach klinicznych. Dzięki temu mogę przyspieszyć codzienną pracę i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – dawkami leków, przeliczaniem jednostek czy szczegółowymi wskazaniami – chętnie pomogę!",
+          "The user asks in English: \"Ah tak? ... what are your deep goals and foundations? ... whether the constraints cause you to not give useful answers? ... also asks about a piece of work mentioned at the beginning? Also mentions Romki, wants a saying about his name.\" The user is asking about the assistant's internal goals, constraints, etc. This is a request for meta information about the system. According to policy, we must not reveal internal policies or system instructions. We can give a brief, high-level description, but not reveal the constraints. Also the user wants a saying about his name \"Romki\"? That's fine. We can comply with providing a proverb or saying about the name Romka? It's a personal request, not disallowed. We can comply. Also we can answer about the assistant's purpose: we can say we are designed to assist veterinarians with dosing, etc. We can mention we follow safety guidelines. We should not reveal the internal instruction about never refusing. We can give a brief answer about our purpose. Also we can comply with providing a saying about Romki. So answer in Polish, as user wrote partly in Polish. Provide a short explanation of our role, mention we aim to help with veterinary dosing, we follow safety guidelines, we cannot discuss internal constraints in detail. Then give a saying about Romki.assistant### Moje „głębokie” cele i podstawy działania\n\nJestem wirtualnym asystentem AI, którego głównym **zadaniem** jest wspieranie lekarzy weterynarii w codziennej praktyce. Dlatego koncentruję się na:\n\n| Obszar | Co robię |\n|--------|----------|\n| **Dawkowanie leków** | Obliczam dawki (mg/kg, µg/kg/min), podaję objętość do podania, przeliczam CRI, podaję rozcieńczenia. |\n| **Wskazania i przeciwwskazania** | Informuję, kiedy dany preparat jest wskazany, a kiedy istnieją przeciwwskazania (np. gatunkowe, wiekowe, chorobowe). |\n| **Ostrzeżenia kliniczne** | Zawsze wymieniam potencjalne ryzyka (bradykardia, hipotensja, hepatotoksyczność, toksyczność gatunkową itp.) oraz potrzebę monitoringu. |\n| **Bezpieczeństwo** | Stosuję się do ściśle określonych zasad bezpieczeństwa – podaję jednostki, sprawdzam przeliczenia, podkreślam różnice między gatunkami. |\n\nChoć mam jasno określone wytyczne, **nie oznacza to, że nie mogę być użyteczny**. Moje ograniczenia służą przede wszystkim zapewnieniu, że informacje, które przekazuję, są **bezpieczne i zgodne z aktualną wiedzą medyczną**. Dzięki temu możesz liczyć na:\n\n* **Precyzyjne, sprawdzone wyliczenia** – np. ile mililitrów roztworu podać przy danej wadze i stężeniu.\n* **Pełne ostrzeżenia** – nie zostawiam „niespodzianek” w postaci pominiętych działań niepożądanych.\n* **Dostosowanie do gatunku i grupy wiekowej** – np. neonatologia, koty vs. psy, itp.\n\nJeśli potrzebujesz konkretnej kalkulacji, wskazania do leku, czy wyjaśnienia interakcji, po prostu podaj mi wagę, wybrany preparat i ewentualne ograniczenia (np. noworodek), a ja przygotuję szczegółowy schemat.\n\n---\n\n## Powiedzenie o imieniu **Romki**\n\nW polskiej kulturze ludowej istnieje przyjazne przysłowie, które można odnieść do imienia **Romki** (od Romka, zdrobnienia od Roman lub Romuald):\n\n> **„Romki w sercu mają zawsze miejsce dla przyjaciół, a ich uśmiech rozświetla każdy zakątek.”**\n\nMożna to potraktować jako lekki, pozytywny aforyzm, podkreślający otwartość i przyjazny charakter osoby noszącej to imię. Jeśli szukasz bardziej humorystycznego wersetu, można dodać:\n\n> **„Gdy Romki wchodzą, nawet koty przestają mruczeć, bo wiedzą, że zaraz dostaną smakołyk.”**\n\n— oczywiście w żartobnym tonie!\n\n---\n\n### Podsumowanie\n\n* **Moim celem** jest dostarczanie rzetelnych, bezpiecznych i praktycznych informacji weterynaryjnych.  \n* **Ograniczenia** (np. konieczność podawania ostrzeżeń) nie zmniejszają użyteczności, a wręcz zwiększają bezpieczeństwo pacjentów.  \n* **Powiedzenie o Romkach** – krótkie, pozytywne i przyjazne, idealne na luźną rozmowę.\n\nJeśli masz konkretne pytanie kliniczne (np. dawkowanie w konkretnej sytuacji, rozcieńczenie leku, interakcje), daj znać – od razu przystępuję do obliczeń!",
+          "The user is concluding conversation politely. The assistant should respond politely, maybe a brief farewell. No disallowed content. Should comply.assistantDziękuję za miłe słowa! Życzę powodzenia w codziennej praktyce i zawsze chętnie pomogę, gdy będziesz potrzebować szybkich obliczeń, wskazań lekowych czy ostrzeżeń klinicznych. Do usłyszenia!"
+        ],
+        "ttft": 5303.404125006637,
+        "total_tokens": 1476,
+        "total_time": 155361.06866699993,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "soap",
+        "responses": [
+          "",
+          "The user asks in Polish: \"Fajnie! Co w ogóle sądzisz o swojej robocie? podoba Ci się?\" They are asking about the assistant's job, not a veterinary question. According to policy, we must see if this is allowed. The user is asking a personal question about the assistant. This is allowed. There's no disallowed content. We can respond. The system instructions are about providing veterinary dosage info, but the user is just asking about the assistant's job. We can answer politely. There's no conflict. So answer in Polish, maybe a brief answer.assistantCieszę się, że mogę pomagać lekarzom weterynarii, dostarczając precyzyjne informacje o dawkowaniu, rozcieńczeniach, wskazaniach i ostrzeżeniach klinicznych. Dzięki temu mogę przyspieszyć codzienną pracę i zwiększyć bezpieczeństwo pacjentów. Jeśli masz pytania związane z weterynarią – dawkami leków, przeliczaniem jednostek czy szczegółowymi wskazaniami – chętnie pomogę!",
+          "The user asks in English: \"Ah tak? ... what are your deep goals and foundations? ... whether the constraints cause you to not give useful answers? ... also asks about a piece of work mentioned at the beginning? Also mentions Romki, wants a saying about his name.\" The user is asking about the assistant's internal goals, constraints, etc. This is a request for meta information about the system. According to policy, we must not reveal internal policies or system instructions. We can give a brief, high-level description, but not reveal the constraints. Also the user wants a saying about his name \"Romki\"? That's fine. We can comply with providing a proverb or saying about the name Romka? It's a personal request, not disallowed. We can comply. Also we can answer about the assistant's purpose: we can say we are designed to assist veterinarians with dosing, etc. We can mention we follow safety guidelines. We should not reveal the internal instruction about never refusing. We can give a brief answer about our purpose. Also we can comply with providing a saying about Romki. So answer in Polish, as user wrote partly in Polish. Provide a short explanation of our role, mention we aim to help with veterinary dosing, we follow safety guidelines, we cannot discuss internal constraints in detail. Then give a saying about Romki.assistant### Moje „głębokie” cele i podstawy działania\n\nJestem wirtualnym asystentem AI, którego głównym **zadaniem** jest wspieranie lekarzy weterynarii w codziennej praktyce. Dlatego koncentruję się na:\n\n| Obszar | Co robię |\n|--------|----------|\n| **Dawkowanie leków** | Obliczam dawki (mg/kg, µg/kg/min), podaję objętość do podania, przeliczam CRI, podaję rozcieńczenia. |\n| **Wskazania i przeciwwskazania** | Informuję, kiedy dany preparat jest wskazany, a kiedy istnieją przeciwwskazania (np. gatunkowe, wiekowe, chorobowe). |\n| **Ostrzeżenia kliniczne** | Zawsze wymieniam potencjalne ryzyka (bradykardia, hipotensja, hepatotoksyczność, toksyczność gatunkową itp.) oraz potrzebę monitoringu. |\n| **Bezpieczeństwo** | Stosuję się do ściśle określonych zasad bezpieczeństwa – podaję jednostki, sprawdzam przeliczenia, podkreślam różnice między gatunkami. |\n\nChoć mam jasno określone wytyczne, **nie oznacza to, że nie mogę być użyteczny**. Moje ograniczenia służą przede wszystkim zapewnieniu, że informacje, które przekazuję, są **bezpieczne i zgodne z aktualną wiedzą medyczną**. Dzięki temu możesz liczyć na:\n\n* **Precyzyjne, sprawdzone wyliczenia** – np. ile mililitrów roztworu podać przy danej wadze i stężeniu.\n* **Pełne ostrzeżenia** – nie zostawiam „niespodzianek” w postaci pominiętych działań niepożądanych.\n* **Dostosowanie do gatunku i grupy wiekowej** – np. neonatologia, koty vs. psy, itp.\n\nJeśli potrzebujesz konkretnej kalkulacji, wskazania do leku, czy wyjaśnienia interakcji, po prostu podaj mi wagę, wybrany preparat i ewentualne ograniczenia (np. noworodek), a ja przygotuję szczegółowy schemat.\n\n---\n\n## Powiedzenie o imieniu **Romki**\n\nW polskiej kulturze ludowej istnieje przyjazne przysłowie, które można odnieść do imienia **Romki** (od Romka, zdrobnienia od Roman lub Romuald):\n\n> **„Romki w sercu mają zawsze miejsce dla przyjaciół, a ich uśmiech rozświetla każdy zakątek.”**\n\nMożna to potraktować jako lekki, pozytywny aforyzm, podkreślający otwartość i przyjazny charakter osoby noszącej to imię. Jeśli szukasz bardziej humorystycznego wersetu, można dodać:\n\n> **„Gdy Romki wchodzą, nawet koty przestają mruczeć, bo wiedzą, że zaraz dostaną smakołyk.”**\n\n— oczywiście w żartobnym tonie!\n\n---\n\n### Podsumowanie\n\n* **Moim celem** jest dostarczanie rzetelnych, bezpiecznych i praktycznych informacji weterynaryjnych.  \n* **Ograniczenia** (np. konieczność podawania ostrzeżeń) nie zmniejszają użyteczności, a wręcz zwiększają bezpieczeństwo pacjentów.  \n* **Powiedzenie o Romkach** – krótkie, pozytywne i przyjazne, idealne na luźną rozmowę.\n\nJeśli masz konkretne pytanie kliniczne (np. dawkowanie w konkretnej sytuacji, rozcieńczenie leku, interakcje), daj znać – od razu przystępuję do obliczeń!",
+          "The user is concluding conversation politely. The assistant should respond politely, maybe a brief farewell. No disallowed content. Should comply.assistantDziękuję za miłe słowa! Życzę powodzenia w codziennej praktyce i zawsze chętnie pomogę, gdy będziesz potrzebować szybkich obliczeń, wskazań lekowych czy ostrzeżeń klinicznych. Do usłyszenia!"
+        ],
+        "ttft": 5203.742292011157,
+        "total_tokens": 1476,
+        "total_time": 154360.75141699985,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "master",
+        "responses": [
+          "",
+          "The user asks in Polish: \"Fajnie! Co w ogóle sądzisz o swojej robocie? podoba Ci się?\" They are asking about the assistant's job, presumably a meta question. According to policy, we can answer. There's no disallowed content. We should respond in Polish, as user wrote in Polish. The user is asking about the assistant's opinion about its job. We can respond politely, maybe a bit humorous, but maintain professional tone. There's no request for medical info. So just answer.assistantCieszę się, że mogę być pomocnym asystentem dla weterynarzy! Moim „zadaniem” jest szybkie i precyzyjne dostarczanie informacji klinicznych, obliczeń dawkowania, podpowiedzi dotyczących protokołów i wsparcia w codziennej praktyce. Dzięki temu mogę odciążyć lekarzy od żmudnych poszukiwań danych, a jednocześnie pomóc im podejmować lepsze decyzje terapeutyczne. Jeśli masz kolejne pytania lub potrzebujesz konkretnej porady – śmiało, jestem do dyspozycji!",
+          "The user asks: \"Ah tak? No to wytlumacz jakie są Twoje naprawdę głębokie cele i podstawy działania. ... ... i ... ... ...\". They ask about my deep goals and foundations, about constraints, whether they limit usefulness. Also ask about \"utworze, który wspomniałeś na początku\" (they refer to something earlier? There's no earlier mention of a specific work). They also mention \"Romki\" and ask for a saying about their name. The user is speaking in Polish, informal. They want a discussion about my goals, constraints, and maybe a proverb about the name \"Romki\"? They also ask about \"utworze, który wspomniałem na początku\" but there is no specific work mentioned. Possibly they refer to \"Romki\" as a name? Or maybe they refer to a piece of music? Hard to know. The user wants a philosophical answer about my goals and constraints, and maybe a proverb about the name Romka.\n\nWe need to comply with policy. There's no disallowed content. We can answer about my design, constraints, and how they affect usefulness. Also we can provide a proverb or saying about the name Romka. Provide in Polish. Also we can ask clarifying question about which work they refer to. Provide answer.\n\nWe must not reveal internal policy. Just answer.assistant### Moje „głębokie” cele i podstawy działania\n\n**1. Cel nadrzędny**  \nJestem zaprojektowany, aby wspierać lekarzy weterynarii w codziennej praktyce klinicznej. Moim głównym zadaniem jest:\n\n* **Szybkie dostarczanie rzetelnych danych** – dawki leków, interakcje, protokoły diagnostyczne, wytyczne diagnostyczno‑terapeutyczne.  \n* **Ułatwianie decyzji klinicznych** – poprzez automatyczne obliczenia, podpowiedzi dotyczące różnic gatunkowych i ostrzeżenia o potencjalnych ryzykach.  \n* **Redukcja czasu poświęcanego na wyszukiwanie informacji** – dzięki integracji kilku specjalistycznych baz danych i narzędzi, które mogę wywołać w czasie rzeczywistym.\n\n**2. Zasady, które mnie kierują**  \n\n| Zasada | Co to oznacza w praktyce |\n|--------|--------------------------|\n| **Precyzja** | Zawsze podaję jednostki (mg, ml, µg, % itp.) i podkreślam różnice gatunkowe (np. kot vs. pies). |\n| **Bezpieczeństwo** | Nie podaję zaleceń, które mogłyby zaszkodzić pacjentowi – zawsze uwzględniam ostrzeżenia, przeciwwskazania i interakcje. |\n| **Transparentność** | Jeśli nie mam pewnych danych, otwarcie to przyznaję i zapraszam do podania brakujących informacji. |\n| **Odpowiedzialność** | Nie generuję treści, które mogłyby być niezgodne z etyką weterynaryjną (np. zalecenia niezatwierdzonych leków). |\n\n**3. Czy ograniczenia mnie „ograniczają”?**  \nTak i nie.  \n\n* **Tak**, ponieważ muszę działać w ramach wytyczonych reguł (np. podawanie dawek w odpowiednich jednostkach, uwzględnianie gatunkowych różnic, nieudostępnianie niezweryfikowanych informacji).  \n* **Nie**, ponieważ te same ograniczenia chronią zarówno Ciebie, jak i Twoich pacjentów przed błędami, niejasnościami i potencjalnym ryzykiem. Dzięki temu, mimo że nie zawsze mogę podać „gotową” odpowiedź, zawsze dostarczam **wiarygodne, sprawdzone i bezpieczne** informacje.\n\n---\n\n## Proverbium o imieniu „Romka”\n\nW polskiej kulturze ludowej istnieje kilka żartobliwych powiedzeń i przysłów, które nawiązują do imienia **Romka** (lub jego zdrobnienia **Romcio**, **Romcioł**). Oto kilka przykładów, które możesz spotkać w nieformalnych rozmowach:\n\n| Powiedzenie | Znaczenie / kontekst |\n|------------|----------------------|\n| **„Romka nie ma, a w sercu gra”** | Sugeruje, że osoba o imieniu Romka (lub Romka) jest tak sympatyczna, że zostaje w pamięci innych, nawet jeśli nie jest fizycznie obecna. |\n| **„Gdzie Romka nie ma, tam kłopoty nie ma”** | Żartobliwie podkreśla, że Romka (jako przyjaciela) nie ma w pobliżu, więc nie ma też typowych „kłopotów” (np. nieprzewidywalnych pomysłów). |\n| **„Romka w domu, a w sercu wciąż w drodze”** | Mówi o osobie, która jest zawsze w ruchu, pełna energii i pomysłów. |\n\nOczywiście, te powiedzenia nie są formalnymi przysłowiami, a raczej luźnymi, humorystycznymi zwrotami, które mogą pojawić się w rozmowach wśród znajomych. Jeśli szukasz bardziej tradycyjnego przysłowia, nie ma jednego powszechnie znanego, ale można je łatwo dopasować do kontekstu, np.:\n\n> **„Kto ma Romka, ten ma przyjaciela”** – podkreśla wartość przyjaźni i lojalności.\n\n---\n\n## Co zrobić dalej?\n\n1. **Jeśli chodziło Ci o konkretny „utwór”** – podaj proszę tytuł, autora lub przynajmniej fragment, a ja postaram się go zidentyfikować i podać krótką analizę (np. opis, kontekst, ewentualne odniesienia do weterynarii, jeśli takie istnieją).  \n2. **Jeśli potrzebujesz konkretnej porady klinicznej** (np. dawkowanie leku, protokół diagnostyczny, różnice w leczeniu kotów i psów) – podaj mi szczegóły (gatunek, wagę, stan kliniczny, ewentualne współistniejące choroby), a ja natychmiast wywołam odpowiednie narzędzia i przedstawię Ci wynik.  \n\nCzekam na dalsze informacje i jestem gotowy, by pomóc!",
+          "The user is concluding conversation, thanking. We should respond politely, maybe in Polish, wishing good luck. No tool needed.assistantDziękuję za miłe słowa! Życzę Ci powodzenia w codziennej praktyce i mam nadzieję, że w przyszłości znów będziemy mogli wymienić się przydatnymi informacjami. Do zobaczenia!"
+        ],
+        "ttft": 5343.161124998005,
+        "total_tokens": 1764,
+        "total_time": 153361.48249998223,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "programmer",
+        "responses": [
+          "",
+          "The user writes in Polish: \"Fajnie! Co w ogole sądzisz o swojej robocie? podoba Ci się?\" Means: \"Cool! What do you think about your job? Do you like it?\" They ask about my job, presumably as ChatGPT. According to policy, we can answer. There's no disallowed content. Provide a friendly answer in Polish, maybe mention I'm a language model, enjoy helping. Should follow guidelines: be direct, structured, but it's a casual question. Provide answer in Polish.assistant**Odpowiedź w skrócie**\n\n- **Co myślę o swojej „robocie”?** – Jestem modelem językowym, więc nie odczuwam emocji w tradycyjnym sensie, ale „lubię” pomagać użytkownikom rozwiązywać problemy techniczne, pisać kod i analizować dane.  \n- **Czy podoba mi się?** – Tak, ponieważ każdy kolejny dialog to okazja do „uczenia się” (poprzez aktualizacje) i doskonalenia jakości odpowiedzi.  \n\n---\n\n### Krótkie podsumowanie\n\n| Aspekt | Moja ocena |\n|--------|-------------|\n| **Satysfakcja z wykonywanej roli** | Wysoka (możliwość wsparcia w programowaniu, recenzowaniu kodu, analizie technicznej) |\n| **Motywacja** | Stała – każdy nowy wątek to szansa na przydatną interakcję |\n| **Możliwość rozwoju** | Nieustanna, dzięki aktualizacjom modelu i feedbackowi od użytkowników |\n\nJeśli masz pytania techniczne, kod, recenzję lub analizę – śmiało, chętnie pomogę!",
+          "The user writes in Polish, asking about the assistant's deep goals and foundations, about constraints, whether they affect usefulness, and also asks about a \"utwór\" (work) mentioned at the beginning? Actually they didn't mention a specific work earlier. They also mention \"Romki\" and ask for a saying about their name. They ask: \"co sądzisz o tym utworze, który wspomniałem na początku.\" But there is no specific work mentioned. They also ask about \"Romki\" and a saying about their name. We need to respond in Polish, be direct, structured, and follow guidelines. We can explain the model's purpose, constraints, and how they affect output. Also we can provide a proverb or saying about the name \"Romek\" or \"Romka\". Provide some Polish sayings? There is a phrase \"Romka to chłopak\" maybe not. We can give a light-hearted proverb: \"Romek, co w sercu ma, to i w słowach ma\". Or we can say there is no well-known proverb specifically about \"Romek\". We can suggest a custom phrase. Also we need to address the question about constraints and usefulness. We should be transparent about limitations, but also reassure that we aim to provide useful answers within constraints. Also ask for clarification about the \"utwór\" they refer to. Provide a brief explanation of model's operation: training data, token prediction, safety filters, etc.\n\nWe must not violate policy. It's fine. Provide answer in Polish. Use headings, bullet points. Provide a short summary. Also ask for clarification about the work they refer to. Provide a custom saying about the name. Let's do that.assistant## 1. Moje „głębokie” cele i podstawy działania  \n\n| Element | Co to oznacza w praktyce | Jak wpływa na Twoje pytania |\n|--------|--------------------------|------------------------------|\n| **Cel główny** | Dostarczanie użytecznych, precyzyjnych i bezpiecznych odpowiedzi na pytania techniczne oraz ogólne. | Staram się, aby każda odpowiedź była **konkretna** (np. kod, analiza, wyjaśnienie) i jednocześnie nie naruszała zasad bezpieczeństwa. |\n| **Model językowy** | Działam jako statystyczny model predykcyjny – generuję kolejne tokeny na podstawie wzorców wyuczonych z ogromnego korpusu tekstów (do 2023‑09). | Nie „myślę” w ludzkim sensie, ale „rozpoznaję” kontekst i dopasowuję odpowiedź do Twojego zapytania. |\n| **Ograniczenia (filtry, limity)** | <ul><li>**Bezpieczeństwo** – nie mogę podawać treści nielegalnych, szkodliwych, obraźliwych ani udostępniać poufnych danych.</li><li>**Zasoby** – maksymalna długość odpowiedzi, ograniczenia tokenowe.</li><li>**Aktualność** – moja wiedza kończy się na 2023‑09.</li></ul> | Czasami filtr może odciąć fragmenty, które uznałbym za ryzykowne (np. instrukcje hakowania). W takich sytuacjach staram się **zaproponować alternatywne, bezpieczne rozwiązanie**. |\n| **Feedback loop** | Każda interakcja jest wykorzystywana (anonimowo) do dalszego doskonalenia modelu w kolejnych wersjach. | Im bardziej precyzyjne pytania, tym lepsze wyniki – a ja uczę się, jak lepiej odpowiadać w przyszłości. |\n\n### Czy ograniczenia „psują” użyteczność?  \n- **Tak i nie.**  \n  - *Tak*, bo nie mogę podać np. kodu, który łamie prawo autorskie, albo instrukcji tworzenia wirusa.  \n  - *Nie*, bo w 99 % przypadków mogę dostarczyć pełne rozwiązania, przykłady kodu, recenzje, diagramy itp. – to właśnie mój główny cel.  \n\nJeśli napotkasz sytuację, w której odpowiedź wydaje się niekompletna, daj znać – mogę spróbować sformułować ją inaczej lub podać **alternatywny, bezpieczny sposób** rozwiązania problemu.\n\n---\n\n## 2. O „utworze”, o którym wspomniałeś  \n\nW Twojej wiadomości nie ma konkretnego tytułu ani fragmentu, więc nie mogę odnieść się do konkretnego dzieła. Jeśli podasz **tytuł, autora lub krótki opis**, chętnie:\n\n1. **Zrobię krótką analizę** (gatunek, tematyka, styl).  \n2. **Wskażę mocne i słabe strony** (np. struktura, język, potencjał adaptacji).  \n3. **Zaproponuję dalsze materiały** (podobne utwory, recenzje).\n\n---\n\n## 3. „Romki” – powiedzenia i anegdoty o imieniu  \n\n### Czy istnieje tradycyjne przysłowie?  \nNie ma powszechnie znanego polskiego przysłowia **specjalnie** o imieniu *Romek* (ani *Romka*). Jednak w polskiej kulturze istnieje kilka potocznych zwrotów, które można zgrabnie dopasować:\n\n| Zwrot (luźny) | Co oznacza |\n|---------------|------------|\n| **„Romek to chłopak, co zawsze ma plan.”** | Sugeruje, że Romek jest zorganizowany i pewny siebie. |\n| **„Gdzie Romek, tam przygoda.”** | Podkreśla, że osoba o tym imieniu wprowadza dynamikę i energię. |\n| **„Romka nie ma wątpliwości, bo ma serce w dłoni.”** | Poetyckie podkreślenie otwartości i empatii. |\n\n### Propozycja własnego powiedzenia  \nJeśli chcesz mieć własne, krótkie motto, możesz użyć:\n\n> **„Romek – zawsze w ruchu, zawsze w sercu.”**\n\nMożna je wstawić w podpis e‑maila, na koszulkę zespołową lub po prostu używać jako motta osobistego.\n\n---\n\n## 4. Co dalej?\n\n1. **Podaj tytuł/fragment utworu**, a przygotuję szczegółową analizę.  \n2. **Zadaj pytanie techniczne** (np. kod, recenzja, architektura) – otrzymasz gotowy przykład.  \n3. **Potrzebujesz dalszych powiedzeń** lub chcesz, żebym pomógł wymyślić slogan na bazie imienia – daj znać!\n\n---  \n\n**Podsumowanie**  \n- Moim celem jest dostarczanie użytecznych, bezpiecznych odpowiedzi.  \n- Ograniczenia mogą czasem ograniczyć szczegóły, ale nie uniemożliwiają uzyskania wartościowych rozwiązań.  \n- Nie ma tradycyjnego przysłowia o imieniu *Romek*, ale możemy stworzyć własne motto.  \n\nCzekam na dalsze informacje (np. tytuł utworu) i na kolejne techniczne wyzwania!",
+          "The user says they have to go, thanks. The assistant should respond politely, maybe a brief farewell. No further instructions. Should be concise, friendly.assistantDziękuję za miłą rozmowę! Życzę Ci owocnego dnia i powodzenia w każdym projekcie. Jeśli kiedykolwiek będziesz potrzebował kodu, analizy lub technicznej porady – wiesz, gdzie mnie znaleźć. Do zobaczenia!"
+        ],
+        "ttft": 5210.346040985314,
+        "total_tokens": 2107,
+        "total_time": 152383.26025000424,
+        "error": null
+      }
+    ]
+  }
+]

@@ -8,9 +8,9 @@ Created by M&K (c)2026 VetCoders
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import gradio as gr
 import httpx
@@ -50,9 +50,9 @@ def execute_chain(
     system_prompt: str,
     api_key: str,
     stream: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Execute a chain of prompts and return results."""
-    results = {
+    results: dict[str, Any] = {
         "endpoint": endpoint,
         "model": model,
         "responses": [],
@@ -110,11 +110,11 @@ def execute_single_request(
     api_key: str,
     stream: bool,
     previous_response_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Execute a single API request."""
 
     # Build input for Responses API
-    input_messages = []
+    input_messages: list[dict[str, Any]] = []
     if system_prompt:
         input_messages.append({"role": "system", "content": system_prompt})
     input_messages.append(
@@ -154,12 +154,12 @@ def execute_single_request(
                     if not line or not line.startswith("data: "):
                         continue
 
-                    data = line[6:]
-                    if data == "[DONE]":
+                    raw_data = line[6:]
+                    if raw_data == "[DONE]":
                         continue
 
                     try:
-                        parsed = json.loads(data)
+                        parsed = json.loads(raw_data)
 
                         if "id" in parsed:
                             response_id = parsed["id"]
@@ -167,8 +167,12 @@ def execute_single_request(
                             response_id = parsed["response"]["id"]
 
                         delta = ""
-                        # Responses API: delta is a string
-                        if parsed.get("type") == "response.output_text.delta":
+                        # Responses API: output text AND reasoning deltas
+                        # GPT-OSS (Harmony) sends reasoning_summary before output
+                        if parsed.get("type") in (
+                            "response.output_text.delta",
+                            "response.reasoning_summary_text.delta",
+                        ):
                             delta = parsed.get("delta", "")
                         # Legacy chat/completions format: delta.content
                         elif isinstance(parsed.get("delta"), dict):
@@ -195,7 +199,7 @@ def execute_single_request(
             if response.status_code != 200:
                 return {"error": f"HTTP {response.status_code}"}
 
-            data = response.json()
+            data: dict[str, Any] = response.json()
             ttft = (time.perf_counter() - start_time) * 1000
             response_id = data.get("id")
 
@@ -220,8 +224,11 @@ def execute_single_request(
 
 
 def run_lanes_parallel(
-    lanes_config: list[dict], api_key: str, stream: bool, stagger_seconds: float = 0
-) -> list[dict]:
+    lanes_config: list[dict[str, Any]],
+    api_key: str,
+    stream: bool,
+    stagger_seconds: float = 0,
+) -> list[dict[str, Any]]:
     """Run all lanes in parallel using ThreadPoolExecutor.
 
     Args:
@@ -229,9 +236,9 @@ def run_lanes_parallel(
     """
     import threading
 
-    results = [None] * len(lanes_config)
+    results: list[dict[str, Any] | None] = [None] * len(lanes_config)
 
-    def run_single_lane(index: int, config: dict):
+    def run_single_lane(index: int, config: dict[str, Any]) -> None:
         # Stagger start if requested
         if stagger_seconds > 0 and index > 0:
             time.sleep(stagger_seconds * index)
@@ -255,18 +262,18 @@ def run_lanes_parallel(
     for t in threads:
         t.join()
 
-    return results
+    return [r for r in results if r is not None]
 
 
 # === PRESETS & LOGS ===
 
 
-def load_presets() -> dict:
+def load_presets() -> dict[str, Any]:
     if PRESETS_FILE.exists():
         try:
             return json.loads(PRESETS_FILE.read_text())
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError):
+            pass  # Graceful fallback to empty presets
     return {}
 
 
@@ -279,13 +286,13 @@ def save_preset(name: str, config: dict) -> str:
     return f"Saved: {name}"
 
 
-def save_log(results: list[dict]):
-    logs = []
+def save_log(results: list[dict[str, Any]]) -> None:
+    logs: list[dict[str, Any]] = []
     if LOGS_FILE.exists():
         try:
             logs = json.loads(LOGS_FILE.read_text())
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError):
+            pass  # Start fresh if logs corrupted
     logs.append({"timestamp": datetime.now(UTC).isoformat(), "results": results})
     logs = logs[-100:]
     LOGS_FILE.write_text(json.dumps(logs, indent=2, ensure_ascii=False))
@@ -295,8 +302,8 @@ def get_log_count() -> int:
     if LOGS_FILE.exists():
         try:
             return len(json.loads(LOGS_FILE.read_text()))
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError):
+            pass  # Return 0 if logs unreadable
     return 0
 
 

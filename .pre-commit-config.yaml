@@ -33,13 +33,6 @@ repos:
         args: [--line-length=88, --check]
         stages: [manual]  # Run manually, ruff-format is primary
 
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        args: [--profile=black, --check-only]
-        stages: [manual]  # Run manually, ruff handles imports
-
   # Mypy - static type checker
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
