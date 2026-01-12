@@ -1,6 +1,6 @@
 """Tests for Harmony parser utilities."""
 
-from mlx_omni_server.utils.harmony_parser import (
+from mlx_batch_server.utils.harmony_parser import (
     HarmonyStreamingParser,
     filter_harmony_tokens,
     is_harmony_model,

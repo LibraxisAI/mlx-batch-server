@@ -4,8 +4,8 @@ import anthropic
 import pytest
 from fastapi.testclient import TestClient
 
-from mlx_omni_server.chat.anthropic.anthropic_schema import MessagesRequest
-from mlx_omni_server.main import app
+from mlx_batch_server.chat.anthropic.anthropic_schema import MessagesRequest
+from mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def anthropic_client(client):
 
     # Teardown logic: runs after the test is finished
     # This clears the global model cache to prevent state pollution between tests
-    import mlx_omni_server.chat.anthropic.router as anthropic_router
+    import mlx_batch_server.chat.anthropic.router as anthropic_router
 
     anthropic_router._cached_model = None
     anthropic_router._cached_anthropic_adapter = None
@@ -68,7 +68,7 @@ class TestAnthropicMessages:
             assert response.stop_reason is not None, "No stop reason in response"
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_basic_text_block(self, anthropic_client):
@@ -99,7 +99,7 @@ class TestAnthropicMessages:
             assert response.stop_reason is not None, "No stop reason in response"
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_conversation(self, anthropic_client):
@@ -128,7 +128,7 @@ class TestAnthropicMessages:
             assert response.content[0].type == "text", "First content block is not text"
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_with_system_prompt(self, anthropic_client):
@@ -149,7 +149,7 @@ class TestAnthropicMessages:
             assert response.content[0].type == "text", "First content block is not text"
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_stream(self, anthropic_client):
@@ -244,13 +244,12 @@ class TestAnthropicMessages:
             logger.info(f"Received {text_deltas_received} text delta events")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_thinking_stream(self, anthropic_client):
         """Test streaming message completion with thinking mode enabled"""
         try:
-
             # Validate streaming response with thinking
             event_count = 0
             thinking_content = ""
@@ -260,8 +259,7 @@ class TestAnthropicMessages:
             message_stop_received = False
             thinking_deltas_received = 0
             text_deltas_received = 0
-            signature_delta_received = False
-
+            _signature_delta_received = False
             with anthropic_client.messages.stream(
                 model=self.thinking_model,
                 max_tokens=self.max_tokens,
@@ -290,7 +288,7 @@ class TestAnthropicMessages:
                             text_content += delta.text
                             text_deltas_received += 1
                         elif delta.type == "signature_delta":
-                            signature_delta_received = True
+                            _signature_delta_received = True
 
                     elif event.type == "message_delta":
                         message_delta_received = True
@@ -324,7 +322,7 @@ class TestAnthropicMessages:
                 logger.info(f"Received {text_deltas_received} text delta events")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_stream_event_order(self, anthropic_client):
@@ -414,7 +412,7 @@ class TestAnthropicMessages:
             logger.info("✅ Event order validation passed")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_stream_thinking_then_text(self, anthropic_client):
@@ -534,7 +532,7 @@ class TestAnthropicMessages:
             ), "Should have either thinking or text content"
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_thinking_mode(self, anthropic_client):
@@ -568,7 +566,7 @@ class TestAnthropicMessages:
             assert has_thinking, "No thinking content block found"
             assert has_text, "No text content block found"
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_error_handling(self, anthropic_client):
@@ -587,7 +585,7 @@ class TestAnthropicMessages:
             logger.info("Error handling validation passed")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_messages_schema_validation(self):
@@ -617,7 +615,7 @@ class TestAnthropicMessages:
             logger.info("Schema validation tests passed")
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise
 
     def test_usage_tracking(self, anthropic_client):
@@ -640,5 +638,5 @@ class TestAnthropicMessages:
             )
 
         except Exception as e:
-            logger.error(f"Test error: {str(e)}")
+            logger.error(f"Test error: {e!s}")
             raise

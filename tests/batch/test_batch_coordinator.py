@@ -5,7 +5,7 @@ Created by M&K (c)2026 VetCoders
 
 import asyncio
 
-from mlx_omni_server.batch.coordinator import (
+from mlx_batch_server.batch.coordinator import (
     BatchRequestCoordinator,
     PendingRequest,
     get_batch_coordinator,

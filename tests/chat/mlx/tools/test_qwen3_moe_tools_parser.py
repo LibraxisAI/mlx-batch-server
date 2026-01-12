@@ -1,6 +1,6 @@
 import unittest
 
-from mlx_omni_server.chat.mlx.tools.qwen3_moe_tools_parser import Qwen3MoeToolParser
+from mlx_batch_server.chat.mlx.tools.qwen3_moe_tools_parser import Qwen3MoeToolParser
 
 
 class TestQwen3MoeToolParser(unittest.TestCase):

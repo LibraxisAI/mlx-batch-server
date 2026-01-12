@@ -8,7 +8,7 @@ Created by M&K (c)2026 VetCoders
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mlx_omni_server.main import create_app
+from mlx_batch_server.main import create_app
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ class TestBatchConfig:
 
     def test_batch_settings_in_config(self):
         """Config should include batch settings."""
-        from mlx_omni_server.core.config import get_settings
+        from mlx_batch_server.core.config import get_settings
 
         settings = get_settings()
 
@@ -67,7 +67,7 @@ class TestBatchConfig:
 
     def test_batch_enabled_by_default(self):
         """Batch inference should be enabled by default."""
-        from mlx_omni_server.core.config import get_settings
+        from mlx_batch_server.core.config import get_settings
 
         settings = get_settings()
         assert settings.enable_batch_inference is True
@@ -78,7 +78,7 @@ class TestBatchCoordinatorCaching:
 
     def test_coordinator_cached_per_model(self):
         """Same model should return same coordinator."""
-        from mlx_omni_server.batch import get_batch_coordinator
+        from mlx_batch_server.batch import get_batch_coordinator
 
         coord1 = get_batch_coordinator("test-model-cache-1")
         coord2 = get_batch_coordinator("test-model-cache-1")
@@ -87,7 +87,7 @@ class TestBatchCoordinatorCaching:
 
     def test_coordinator_unique_per_model(self):
         """Different models should get different coordinators."""
-        from mlx_omni_server.batch import get_batch_coordinator
+        from mlx_batch_server.batch import get_batch_coordinator
 
         coord1 = get_batch_coordinator("test-model-unique-1")
         coord2 = get_batch_coordinator("test-model-unique-2")
@@ -97,7 +97,7 @@ class TestBatchCoordinatorCaching:
     @pytest.mark.asyncio
     async def test_coordinator_stats_tracking(self):
         """Coordinator should track request statistics."""
-        from mlx_omni_server.batch import get_batch_coordinator
+        from mlx_batch_server.batch import get_batch_coordinator
 
         coord = get_batch_coordinator("test-model-stats")
         stats = coord.stats()
@@ -112,7 +112,7 @@ class TestBatchResponsesIntegration:
 
     def test_adapter_has_batch_method(self):
         """ResponsesAdapter should have batch streaming method."""
-        from mlx_omni_server.responses.adapter import ResponsesAdapter
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
 
         adapter = ResponsesAdapter()
 
@@ -122,7 +122,7 @@ class TestBatchResponsesIntegration:
 
     def test_adapter_batch_decision(self):
         """Adapter should check batch setting."""
-        from mlx_omni_server.responses.adapter import ResponsesAdapter
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
 
         adapter = ResponsesAdapter()
         # Default is True (batch enabled)
@@ -134,7 +134,7 @@ class TestBatchGeneratorDataclasses:
 
     def test_batch_stream_chunk_creation(self):
         """BatchStreamChunk should be creatable."""
-        from mlx_omni_server.batch import BatchStreamChunk
+        from mlx_batch_server.batch import BatchStreamChunk
 
         chunk = BatchStreamChunk(
             request_id="test_123",
@@ -150,7 +150,7 @@ class TestBatchGeneratorDataclasses:
 
     def test_batch_request_creation(self):
         """BatchRequest should be creatable."""
-        from mlx_omni_server.batch import BatchRequest
+        from mlx_batch_server.batch import BatchRequest
 
         req = BatchRequest(
             id="req_456",
@@ -163,7 +163,7 @@ class TestBatchGeneratorDataclasses:
 
     def test_batch_generation_stats(self):
         """BatchGenerationStats should have expected fields."""
-        from mlx_omni_server.batch import BatchGenerationStats
+        from mlx_batch_server.batch import BatchGenerationStats
 
         stats = BatchGenerationStats()
 

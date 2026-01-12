@@ -4,8 +4,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from openai import OpenAI
-
-from src.mlx_omni_server.main import app
+from src.mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ def test_speech(openai_client):
         # If further validation of audio content is needed, add more assertions
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -63,7 +62,7 @@ def test_mlx_audio_kokoro_speech(openai_client):
         # If further validation of audio content is needed, add more assertions
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -83,7 +82,7 @@ def test_mlx_audio_dia_speech(openai_client):
         # If further validation of audio content is needed, add more assertions
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -111,5 +110,5 @@ def test_transcription(openai_client):
         assert "MLX" in response.text, "Transcription text is empty"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise

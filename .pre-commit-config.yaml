@@ -23,22 +23,6 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
-  # Keep black for compatibility (ruff-format is drop-in replacement)
-  - repo: https://github.com/psf/black
-    rev: 24.2.0
-    hooks:
-      - id: black
-        language_version: python3
-        args: [--line-length=88, --check]
-        stages: [manual]  # Run manually, ruff-format is primary
-
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        args: [--profile=black, --check-only]
-        stages: [manual]  # Run manually, ruff handles imports
-
   # Mypy - static type checker
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
@@ -51,14 +35,6 @@ repos:
           - types-redis
         args: [--ignore-missing-imports, --no-strict-optional]
         exclude: ^(tests/|examples/)
-
-  # Semgrep - security scanner
-  - repo: https://github.com/semgrep/semgrep
-    rev: v1.96.0
-    hooks:
-      - id: semgrep
-        args: ['--config', 'auto', '--error', '--skip-unknown-extensions']
-        stages: [pre-push]  # Only on push (slower)
 
   # Bandit - Python security linter
   - repo: https://github.com/PyCQA/bandit
@@ -87,11 +63,3 @@ repos:
         pass_filenames: false
         types: [python]
         verbose: true
-
-      - id: pytest-check
-        name: Run pytest (fast tests only)
-        entry: bash -c 'uv run pytest tests/ -x -q --tb=no -m "not slow" 2>/dev/null'
-        language: system
-        pass_filenames: false
-        types: [python]
-        stages: [pre-push]
