@@ -44,28 +44,22 @@ def _normalise_part_dict(part: dict[str, Any]) -> dict[str, Any] | None:
 
     # Image content
     if part_type in _IMAGE_KEYS or "image_url" in part or "image_base64" in part:
-        image_base64 = part.get("image_base64")
-        image_url = part.get("image_url") or part.get("url") or part.get("file_id")
-
-        if isinstance(image_base64, dict):
-            image_base64 = (
-                image_base64.get("data")
-                or image_base64.get("url")
-                or image_base64.get("file_id")
-            )
-        if isinstance(image_url, dict):
-            image_url = image_url.get("url") or image_url.get("file_id")
-
-        if not image_base64 and not image_url:
+        source = (
+            part.get("image_base64")
+            or part.get("image_url")
+            or part.get("url")
+            or part.get("file_id")
+        )
+        if isinstance(source, dict):
+            source = source.get("url") or source.get("file_id")
+        if not source:
             return None
 
         normalised: dict[str, Any] = {"type": "input_image"}
-        if image_base64:
-            normalised["image_base64"] = image_base64
-        elif isinstance(image_url, str) and image_url.startswith("data:"):
-            normalised["image_base64"] = image_url
+        if isinstance(source, str) and source.startswith("data:"):
+            normalised["image_base64"] = source
         else:
-            normalised["image_url"] = image_url
+            normalised["image_url"] = source
 
         if "detail" in part:
             normalised["detail"] = part["detail"]

@@ -1,6 +1,6 @@
 # Harmony Format Support
 
-MLX Omni Server includes a streaming parser for OpenAI's GPT-OSS models that
+MLX Batch Server includes a streaming parser for OpenAI's GPT-OSS models that
 use the Harmony response format.
 
 ## What is Harmony?

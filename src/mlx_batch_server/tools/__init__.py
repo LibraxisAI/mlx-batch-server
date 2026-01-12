@@ -1,10 +1,10 @@
 """
-Mlx batch Server - Tool Registry and Execution.
+MLX Omni Server - Tool Registry and Execution.
 
 Provides hosted tool support for the Responses API, similar to OpenAI's
 web_search, code_interpreter, etc.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Created by M&K (c)2026 The LibraxisAI Team
 """
 
 from .registry import (

@@ -24,7 +24,7 @@ def _create_jieba_compat() -> types.ModuleType:
     This is a full reimplementation of jieba/_compat.py without pkg_resources.
     """
     compat = types.ModuleType("jieba._compat")
-    compat.__file__ = "<patched by mlx_omni_server>"
+    compat.__file__ = "<patched by mlx_batch_server>"
 
     # jieba/__init__.py does "from ._compat import *" and expects these modules
     compat.os = os

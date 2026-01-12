@@ -9,7 +9,7 @@ cl.instrument_openai()
 # Configure client to use local server
 client = AsyncOpenAI(
     # base_url="http://localhost:11434/v1",  # Point to ollama server
-    base_url="http://localhost:10240/v1",  # Point to mlx batch server
+    base_url="http://localhost:10240/v1",  # Point to mlx omni server
     api_key="mlx-batch-server",  # API key is not required for local server
 )
 

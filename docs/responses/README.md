@@ -1,6 +1,6 @@
 # Responses API
 
-MLX Omni Server implements OpenAI's `/v1/responses` API endpoint with full
+MLX Batch Server implements OpenAI's `/v1/responses` API endpoint with full
 SSE streaming support. This directory contains documentation for the
 Responses API subsystem.
 
