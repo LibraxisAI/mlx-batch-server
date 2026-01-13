@@ -139,6 +139,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH110", "PTH123"]
 "examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
+"playground/*" = ["PLR0912", "PLR0915", "PLC0415", "SIM105"]  # Testing tool, complexity OK
 "examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
 # Lazy imports are intentional in these modules for performance
 "src/mlx_batch_server/batch/coordinator.py" = ["PLC0415"]

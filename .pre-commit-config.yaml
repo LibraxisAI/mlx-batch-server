@@ -50,7 +50,7 @@ repos:
     hooks:
       - id: loctree-deadexports
         name: Check for dead exports
-        entry: bash -c 'if command -v loct &>/dev/null; then loct deadexports 2>/dev/null || true; else echo "loct not installed, skipping"; fi'
+        entry: bash -c 'if command -v loct &>/dev/null; then loct deadexports || true; else echo "loct not installed, skipping"; fi'
         language: system
         pass_filenames: false
         types: [python]
@@ -58,7 +58,7 @@ repos:
 
       - id: loctree-twins
         name: Check for duplicate definitions
-        entry: bash -c 'if command -v loct &>/dev/null; then loct twins 2>/dev/null || true; else echo "loct not installed, skipping"; fi'
+        entry: bash -c 'if command -v loct &>/dev/null; then loct twins || true; else echo "loct not installed, skipping"; fi'
         language: system
         pass_filenames: false
         types: [python]
