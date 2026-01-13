@@ -10,7 +10,7 @@
 #   make check      - Run all checks (lint + test)
 #   make clean      - Clean build artifacts
 
-.PHONY: install dev run stop restart logs test lint format check clean help benchmark
+.PHONY: install dev run stop restart logs test lint format check clean help benchmark list ps status
 .DEFAULT_GOAL := help
 
 # === Configuration ===
@@ -174,6 +174,15 @@ ps: ## List loaded models (in memory)
 		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); models=d.get('data',[]); \
 		print('\n'.join(f'  \033[32m●\033[0m {m[\"id\"]}' for m in models)) if models else print('  (none loaded)')" 2>/dev/null || \
 		echo "Server not running"
+
+list: ## List all models in HuggingFace cache (local disk)
+	@echo "=== HuggingFace Cache (local models) ==="
+	@LOADED=$$(curl -s $(SERVER_URL)/v1/models/loaded 2>/dev/null | $(PYTHON) -c "import sys,json; d=json.load(sys.stdin); print(' '.join(m['id'] for m in d.get('data',[])))" 2>/dev/null || echo ""); \
+	hf cache ls 2>/dev/null | grep "^model/" | \
+		$(PYTHON) -c "import sys; loaded='$$LOADED'.split(); \
+[print(f'  \033[32m● loaded\033[0m  {p[6:]:50} {s:>8}') if p[6:] in loaded else print(f'  \033[90m○ cached\033[0m  {p[6:]:50} {s:>8}') \
+for line in sys.stdin if (parts := line.strip().split()) and len(parts) >= 2 and (p := parts[0]) and (s := parts[1])]" 2>/dev/null || \
+		echo "  (hf CLI not available - install: cargo install hf-cli)"
 
 status: ## Server status with loaded models
 	@echo "=== MLX Batch Server Status ==="
