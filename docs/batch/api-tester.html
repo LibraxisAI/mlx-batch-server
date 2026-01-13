@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -485,7 +485,7 @@
     <div class="global-config">
         <div class="field" style="flex: 1;">
             <label>API Key</label>
-            <input type="password" id="globalApiKey" value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9">
+            <input type="password" id="globalApiKey" value="" placeholder="your-api-key-here">
         </div>
         <div class="field">
             <label>Mode</label>
@@ -533,7 +533,7 @@
         </button>
         <div style="flex: 1;"></div>
         <button class="btn btn-primary" id="runBtn" onclick="runAllLanes()">
-            RUN KURWA!
+            RUN ALL
         </button>
     </div>
 
@@ -552,7 +552,7 @@
 
         // Endpoint presets
         const ENDPOINTS = {
-            'mlx-omni': 'http://localhost:10240/v1/responses',
+            'mlx-batch': 'http://localhost:10240/v1/responses',
             'api-router': 'http://localhost:8088/v1/responses',
             'remote': 'https://api.libraxis.cloud/v1/responses'
         };
@@ -904,7 +904,7 @@
                         <label>Endpoint</label>
                         <input type="text" id="${laneId}-endpoint" value="${ENDPOINTS['remote']}" placeholder="http://...">
                         <div class="endpoint-presets">
-                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-omni')">mlx-omni</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-batch')">mlx-batch</span>
                             <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'api-router')">api-router</span>
                             <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'remote')">remote</span>
                         </div>
@@ -1053,7 +1053,7 @@
             updateLogCount();
 
             btn.disabled = false;
-            btn.textContent = 'RUN KURWA!';
+            btn.textContent = 'RUN ALL';
         }
 
         function updateLogCount() {
