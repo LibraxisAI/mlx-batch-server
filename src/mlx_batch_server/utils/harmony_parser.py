@@ -467,8 +467,9 @@ def render_harmony_prompt(conversation: Conversation) -> str:
 # Regex for streaming token filter
 # Only <|channel|> should consume following word (channel name)
 # Other markers (<|message|>, <|call|>, etc.) should NOT eat content
+# NOTE: |return|assistant added to fix streaming token leaks (2026-01-11)
 _HARMONY_TOKEN_RE = re.compile(
-    r"<\|channel\|>(?:\w+)?|<\|(?:message|call|end|start|constrain)\|>"
+    r"<\|channel\|>(?:\w+)?|<\|(?:message|call|end|start|constrain|return|assistant)\|>"
 )
 
 # Regex patterns for streaming channel detection
@@ -551,7 +552,9 @@ class HarmonyStreamingParser:
             self._awaiting_channel_name = True
 
         # Strip all Harmony tokens for clean output
-        clean_text = _HARMONY_TOKEN_RE.sub("", text).strip()
+        # IMPORTANT: Don't strip() - tokens include leading spaces like " The" " user"
+        # Stripping would cause "".join() to produce "Theuserasks" instead of "The user asks"
+        clean_text = _HARMONY_TOKEN_RE.sub("", text)
 
         # Determine event type based on current channel
         event_type: str | None = None
@@ -581,7 +584,7 @@ def filter_harmony_tokens(text: str) -> str:
     """
     Strip Harmony special tokens from streaming delta for user display.
 
-    Removes: <|channel|>name, <|message|>, <|call|>, <|end|>, <|start|>, <|constrain|>
+    Removes: <|channel|>name, <|message|>, <|call|>, <|end|>, <|start|>, <|constrain|>, <|return|>, <|assistant|>
     Used during streaming to show clean text while accumulating raw for final parse.
 
     Args:

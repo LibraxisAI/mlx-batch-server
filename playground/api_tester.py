@@ -6,13 +6,8 @@ Multi-lane parallel comparison tool for API endpoints
 Created by M&K (c)2026 VetCoders
 """
 
-import argparse
-import contextlib
 import json
-import sys
 import time
-import warnings
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,7 +18,7 @@ import httpx
 # === CONSTANTS ===
 
 ENDPOINTS = {
-    "mlx-omni": "http://localhost:10240/v1/responses",
+    "mlx-batch": "http://localhost:10240/v1/responses",
     "api-router": "http://localhost:8088/v1/responses",
     "remote": "https://api.libraxis.cloud/v1/responses",
 }
@@ -107,7 +102,7 @@ def execute_chain(
     return results
 
 
-def execute_single_request(  # noqa: PLR0912, PLR0915
+def execute_single_request(
     endpoint: str,
     model: str,
     prompt: str,
@@ -134,10 +129,10 @@ def execute_single_request(  # noqa: PLR0912, PLR0915
     if previous_response_id:
         body["previous_response_id"] = previous_response_id
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["x-api-key"] = api_key
     if stream:
         headers["Accept"] = "text/event-stream"
 
@@ -159,12 +154,12 @@ def execute_single_request(  # noqa: PLR0912, PLR0915
                     if not line or not line.startswith("data: "):
                         continue
 
-                    sse_data = line[6:]
-                    if sse_data == "[DONE]":
+                    raw_data = line[6:]
+                    if raw_data == "[DONE]":
                         continue
 
                     try:
-                        parsed = json.loads(sse_data)
+                        parsed = json.loads(raw_data)
 
                         if "id" in parsed:
                             response_id = parsed["id"]
@@ -172,10 +167,18 @@ def execute_single_request(  # noqa: PLR0912, PLR0915
                             response_id = parsed["response"]["id"]
 
                         delta = ""
-                        if parsed.get("type") == "response.output_text.delta":
+                        # Responses API: output text AND reasoning deltas
+                        # GPT-OSS (Harmony) sends reasoning_summary before output
+                        if parsed.get("type") in (
+                            "response.output_text.delta",
+                            "response.reasoning_summary_text.delta",
+                        ):
                             delta = parsed.get("delta", "")
-                        elif parsed.get("delta", {}).get("text"):
-                            delta = parsed["delta"]["text"]
+                        # Legacy chat/completions format: delta.content
+                        elif isinstance(parsed.get("delta"), dict):
+                            delta = parsed["delta"].get("text") or parsed["delta"].get(
+                                "content", ""
+                            )
                         elif (
                             parsed.get("choices", [{}])[0]
                             .get("delta", {})
@@ -196,12 +199,12 @@ def execute_single_request(  # noqa: PLR0912, PLR0915
             if response.status_code != 200:
                 return {"error": f"HTTP {response.status_code}"}
 
-            resp_data: dict[str, Any] = response.json()
+            data: dict[str, Any] = response.json()
             ttft = (time.perf_counter() - start_time) * 1000
-            response_id = resp_data.get("id")
+            response_id = data.get("id")
 
-            if "output" in resp_data:
-                for item in resp_data["output"]:
+            if "output" in data:
+                for item in data["output"]:
                     if item.get("type") == "message" and item.get("content"):
                         for c in item["content"]:
                             if c.get("type") == "output_text":
@@ -221,12 +224,26 @@ def execute_single_request(  # noqa: PLR0912, PLR0915
 
 
 def run_lanes_parallel(
-    lanes_config: list[dict[str, Any]], api_key: str, stream: bool
+    lanes_config: list[dict[str, Any]],
+    api_key: str,
+    stream: bool,
+    stagger_seconds: float = 0,
 ) -> list[dict[str, Any]]:
-    """Run all lanes in parallel using ThreadPoolExecutor."""
+    """Run all lanes in parallel using ThreadPoolExecutor.
 
-    def run_single_lane(config: dict[str, Any]) -> dict[str, Any]:
-        return execute_chain(
+    Args:
+        stagger_seconds: Delay between starting each worker (0 = all at once)
+    """
+    import threading
+
+    results: list[dict[str, Any] | None] = [None] * len(lanes_config)
+
+    def run_single_lane(index: int, config: dict[str, Any]) -> None:
+        # Stagger start if requested
+        if stagger_seconds > 0 and index > 0:
+            time.sleep(stagger_seconds * index)
+
+        result = execute_chain(
             endpoint=config["endpoint"],
             model=config["model"],
             prompts=config["prompts"],
@@ -234,11 +251,18 @@ def run_lanes_parallel(
             api_key=api_key,
             stream=stream,
         )
+        results[index] = result
 
-    with ThreadPoolExecutor(max_workers=MAX_LANES) as executor:
-        results = list(executor.map(run_single_lane, lanes_config))
+    threads = []
+    for i, config in enumerate(lanes_config):
+        t = threading.Thread(target=run_single_lane, args=(i, config))
+        threads.append(t)
+        t.start()
 
-    return results
+    for t in threads:
+        t.join()
+
+    return [r for r in results if r is not None]
 
 
 # === PRESETS & LOGS ===
@@ -246,12 +270,14 @@ def run_lanes_parallel(
 
 def load_presets() -> dict[str, Any]:
     if PRESETS_FILE.exists():
-        with contextlib.suppress(Exception):
+        try:
             return json.loads(PRESETS_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass  # Graceful fallback to empty presets
     return {}
 
 
-def save_preset(name: str, config: dict[str, Any]) -> str:
+def save_preset(name: str, config: dict) -> str:
     if not name or not name.strip():
         return "Error: Name required"
     presets = load_presets()
@@ -263,8 +289,10 @@ def save_preset(name: str, config: dict[str, Any]) -> str:
 def save_log(results: list[dict[str, Any]]) -> None:
     logs: list[dict[str, Any]] = []
     if LOGS_FILE.exists():
-        with contextlib.suppress(Exception):
+        try:
             logs = json.loads(LOGS_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass  # Start fresh if logs corrupted
     logs.append({"timestamp": datetime.now(UTC).isoformat(), "results": results})
     logs = logs[-100:]
     LOGS_FILE.write_text(json.dumps(logs, indent=2, ensure_ascii=False))
@@ -272,15 +300,17 @@ def save_log(results: list[dict[str, Any]]) -> None:
 
 def get_log_count() -> int:
     if LOGS_FILE.exists():
-        with contextlib.suppress(Exception):
+        try:
             return len(json.loads(LOGS_FILE.read_text()))
+        except (OSError, json.JSONDecodeError):
+            pass  # Return 0 if logs unreadable
     return 0
 
 
 # === GRADIO UI ===
 
 
-def create_app():  # noqa: PLR0915
+def create_app():
     """Create the Gradio app with dynamic lanes."""
 
     with gr.Blocks(
@@ -350,7 +380,7 @@ def create_app():  # noqa: PLR0915
         for i, default_prompt in enumerate(CANONICAL_CHAIN):
             prompt_boxes.append(
                 gr.Textbox(
-                    label=f"Step {i+1}",
+                    label=f"Step {i + 1}",
                     value=default_prompt,
                     lines=2,
                     visible=(i < 4),
@@ -378,7 +408,7 @@ def create_app():  # noqa: PLR0915
         # We'll create MAX_LANES components but show/hide based on num_lanes
         for i in range(MAX_LANES):
             with gr.Group(visible=(i < 2)) as lane_group:
-                gr.Markdown(f"#### Lane {i+1}")
+                gr.Markdown(f"#### Lane {i + 1}")
                 with gr.Row():
                     endpoint = gr.Dropdown(
                         label="Endpoint",
@@ -514,7 +544,7 @@ def create_app():  # noqa: PLR0915
                     # Join all responses with step markers
                     output_text = ""
                     for j, resp in enumerate(r["responses"]):
-                        output_text += f"═══ Step {j+1} ═══\n{resp}\n\n"
+                        output_text += f"═══ Step {j + 1} ═══\n{resp}\n\n"
 
                     final_outputs.append(output_text.strip())
 
@@ -525,7 +555,7 @@ def create_app():  # noqa: PLR0915
                         if r["total_time"] > 0
                         else 0
                     )
-                    total = f"{r['total_time']/1000:.2f}s" if r["total_time"] else "-"
+                    total = f"{r['total_time'] / 1000:.2f}s" if r["total_time"] else "-"
                     stats_text = f"TTFT: {ttft} | tok/s: {tps:.1f} | Total: {total}"
                     if r.get("error"):
                         stats_text += f" | ❌ {r['error']}"
@@ -574,6 +604,11 @@ def create_app():  # noqa: PLR0915
 # === CLI BENCHMARK ===
 
 
+# Canonical model aliases for true parallel batch testing
+# All resolve to same underlying model but create separate streams
+MODEL_ALIASES = ["chat", "ai-suggestions", "soap", "master", "programmer"]
+
+
 def run_cli_benchmark(
     endpoint: str,
     model: str,
@@ -583,31 +618,59 @@ def run_cli_benchmark(
     system: str = "",
     api_key: str = "",
     stream: bool = True,
+    rotate_models: bool = False,
+    stagger_seconds: float = 0,
 ) -> None:
-    """Run benchmark from CLI with multiple parallel workers."""
+    """Run benchmark from CLI with multiple parallel workers.
+
+    Args:
+        rotate_models: If True, each worker gets a different model alias
+        stagger_seconds: Delay between starting each worker (0 = all at once)
+                      from MODEL_ALIASES for true parallel batch testing.
+    """
+    import sys
+
     prompts = prompts or CANONICAL_CHAIN[:chain_length]
+
+    # Determine models for each worker
+    if rotate_models:
+        worker_models = [MODEL_ALIASES[i % len(MODEL_ALIASES)] for i in range(workers)]
+        model_display = f"rotating: {', '.join(MODEL_ALIASES[: min(workers, 5)])}"
+    else:
+        worker_models = [model] * workers
+        model_display = model
 
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║  LibraxisAI API Benchmark                                    ║")
     print("╠══════════════════════════════════════════════════════════════╣")
     print(f"║  Endpoint: {endpoint[:50]:<50} ║")
-    print(f"║  Model:    {model[:50]:<50} ║")
+    print(f"║  Model:    {model_display[:50]:<50} ║")
     print(f"║  Workers:  {workers:<50} ║")
     print(f"║  Chain:    {len(prompts)} prompts{' ':<42} ║")
     print(f"║  Stream:   {stream!s:<50} ║")
+    stagger_display = f"{stagger_seconds}s" if stagger_seconds > 0 else "none"
+    print(f"║  Stagger:  {stagger_display:<50} ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print()
 
-    # Build configs for all workers
+    # Build configs for all workers - each with potentially different model
     configs = [
-        {"endpoint": endpoint, "model": model, "prompts": prompts, "system": system}
-        for _ in range(workers)
+        {
+            "endpoint": endpoint,
+            "model": worker_models[i],
+            "prompts": prompts,
+            "system": system,
+        }
+        for i in range(workers)
     ]
 
-    print(f"Running {workers} worker(s) in parallel...")
+    if stagger_seconds > 0:
+        print(f"Running {workers} worker(s) with {stagger_seconds}s stagger...")
+    else:
+        print(f"Running {workers} worker(s) in parallel...")
     start = time.perf_counter()
 
-    results = run_lanes_parallel(configs, api_key, stream)
+    results = run_lanes_parallel(configs, api_key, stream, stagger_seconds)
 
     total_time = time.perf_counter() - start
 
@@ -625,10 +688,12 @@ def run_cli_benchmark(
         status = "✓" if not r.get("error") else "✗"
         ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
         tps = r["total_tokens"] / (r["total_time"] / 1000) if r["total_time"] > 0 else 0
-        lane_time = f"{r['total_time']/1000:.2f}s" if r["total_time"] else "-"
+        lane_time = f"{r['total_time'] / 1000:.2f}s" if r["total_time"] else "-"
+        model_name = worker_models[i] if rotate_models else ""
+        model_suffix = f" [{model_name}]" if model_name else ""
 
         print(
-            f"Worker {i+1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}"
+            f"Worker {i + 1}: {status} | TTFT: {ttft:>8} | tok/s: {tps:>6.1f} | Time: {lane_time:>8}{model_suffix}"
         )
 
         if r.get("error"):
@@ -642,8 +707,8 @@ def run_cli_benchmark(
     print("═" * 64)
     print(f"Total wall time: {total_time:.2f}s")
     print(f"Total tokens:    {total_tokens}")
-    print(f"Avg TTFT:        {total_ttft/max(workers-errors, 1):.0f}ms")
-    print(f"Aggregate tok/s: {total_tokens/total_time:.1f}")
+    print(f"Avg TTFT:        {total_ttft / max(workers - errors, 1):.0f}ms")
+    print(f"Aggregate tok/s: {total_tokens / total_time:.1f}")
     print(f"Errors:          {errors}/{workers}")
     print()
 
@@ -658,6 +723,8 @@ def run_cli_benchmark(
 
 
 def main():
+    import argparse
+
     parser = argparse.ArgumentParser(
         description="LibraxisAI API Tester - Gradio UI or CLI benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -679,7 +746,7 @@ Examples:
         "--cli", action="store_true", help="Run CLI benchmark instead of Gradio UI"
     )
     parser.add_argument(
-        "-e", "--endpoint", default=ENDPOINTS["mlx-omni"], help="API endpoint URL"
+        "-e", "--endpoint", default=ENDPOINTS["mlx-batch"], help="API endpoint URL"
     )
     parser.add_argument("-m", "--model", default="chat", help="Model name")
     parser.add_argument(
@@ -692,6 +759,18 @@ Examples:
     parser.add_argument("-s", "--system", default="", help="System prompt")
     parser.add_argument("-k", "--api-key", default="", help="API key")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
+    parser.add_argument(
+        "-r",
+        "--rotate-models",
+        action="store_true",
+        help="Rotate through model aliases (chat, ai-suggestions, soap, master, programmer)",
+    )
+    parser.add_argument(
+        "--stagger",
+        type=float,
+        default=1.0,
+        help="Delay between starting each worker in seconds (default: 1s)",
+    )
     parser.add_argument("--port", type=int, default=7860, help="Gradio server port")
 
     args = parser.parse_args()
@@ -706,8 +785,12 @@ Examples:
             system=args.system,
             api_key=args.api_key,
             stream=not args.no_stream,
+            rotate_models=args.rotate_models,
+            stagger_seconds=args.stagger,
         )
     else:
+        import warnings
+
         warnings.filterwarnings("ignore", message=".*will be removed in Gradio 6.0.*")
         warnings.filterwarnings("ignore", message=".*will be changed.*in Gradio 6.0.*")
 

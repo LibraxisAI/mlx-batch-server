@@ -12,6 +12,7 @@ Created by M&K (c)2026 The LibraxisAI Team
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -50,6 +51,9 @@ from .schema import (
 
 if TYPE_CHECKING:
     from ..chat.mlx.chat_generator import ChatGenerator
+
+# ChatML special tokens to filter from non-Harmony model outputs
+_CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
 
 
 class ResponsesAdapter:
@@ -457,10 +461,10 @@ class ResponsesAdapter:
             # Get adapter
             adapter = self._get_openai_adapter(model_id)
 
-            # Generate IDs
-            response_id = f"resp_{uuid.uuid4().hex[:6]}"
-            reasoning_item_id = f"rs_{uuid.uuid4().hex[:6]}"
-            message_item_id = f"msg_{uuid.uuid4().hex[:6]}"
+            # Generate IDs (full 32-char hex for proper uniqueness)
+            response_id = f"resp_{uuid.uuid4().hex}"
+            reasoning_item_id = f"rs_{uuid.uuid4().hex}"
+            message_item_id = f"msg_{uuid.uuid4().hex}"
 
             # Resolve model alias to check Harmony format (chat -> gpt-oss-120b)
             settings = get_settings()
@@ -622,6 +626,11 @@ class ResponsesAdapter:
                         )
                 else:
                     # Non-Harmony model: simple streaming
+                    # Filter ChatML special tokens (<|im_end|>, <|im_start|>)
+                    clean_content = _CHATML_SPECIAL_TOKENS_RE.sub("", raw_content)
+                    if not clean_content:
+                        continue  # Skip empty chunks after filtering
+
                     if not message_item_emitted:
                         yield make_event(
                             "response.output_item.added",
@@ -646,13 +655,13 @@ class ResponsesAdapter:
                         )
                         message_item_emitted = True
 
-                    output_text_parts.append(raw_content)
+                    output_text_parts.append(clean_content)
                     yield make_event(
                         "response.output_text.delta",
                         {
                             "output_index": 0,
                             "content_index": 0,
-                            "delta": raw_content,
+                            "delta": clean_content,
                         },
                     )
 

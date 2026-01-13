@@ -552,7 +552,7 @@
 
         // Endpoint presets
         const ENDPOINTS = {
-            'mlx-omni': 'http://localhost:10240/v1/responses',
+            'mlx-batch': 'http://localhost:10240/v1/responses',
             'api-router': 'http://localhost:8088/v1/responses',
             'remote': 'https://api.libraxis.cloud/v1/responses'
         };
@@ -904,7 +904,7 @@
                         <label>Endpoint</label>
                         <input type="text" id="${laneId}-endpoint" value="${ENDPOINTS['remote']}" placeholder="http://...">
                         <div class="endpoint-presets">
-                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-omni')">mlx-omni</span>
+                            <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'mlx-batch')">mlx-batch</span>
                             <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'api-router')">api-router</span>
                             <span class="endpoint-preset" onclick="setEndpoint('${laneId}', 'remote')">remote</span>
                         </div>

@@ -47,6 +47,27 @@ async def list_models(include_details: bool = False) -> ModelList:
     return get_models_service().list_models(include_details)
 
 
+@router.get("/models/loaded")
+@router.get("/v1/models/loaded")
+async def list_loaded_models() -> dict:
+    """
+    List only models currently loaded in memory.
+
+    Unlike /v1/models which lists all cached models on disk,
+    this endpoint shows only models actively loaded in wrapper_cache.
+    """
+    from ....chat.mlx.wrapper_cache import wrapper_cache
+
+    loaded_models = wrapper_cache.get_loaded_models()
+    cache_info = wrapper_cache.get_cache_info()
+
+    return {
+        "object": "list",
+        "data": [{"id": model_id, "loaded": True} for model_id in loaded_models],
+        "cache_info": cache_info,
+    }
+
+
 @router.get("/models/{model_id:path}", response_model=Model)
 @router.get("/v1/models/{model_id:path}", response_model=Model)
 async def get_model(model_id: str, include_details: bool = False) -> Model:
@@ -111,3 +132,24 @@ async def unload_model(
         return ModelUnloadResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/health")
+async def health_check() -> dict:
+    """
+    Health check endpoint.
+
+    Returns server status and basic info about loaded models.
+    """
+    from ....chat.mlx.wrapper_cache import wrapper_cache
+
+    loaded_models = wrapper_cache.get_loaded_models()
+    cache_info = wrapper_cache.get_cache_info()
+
+    return {
+        "status": "healthy",
+        "loaded_models_count": len(loaded_models),
+        "loaded_models": loaded_models,
+        "cache_max_size": cache_info.get("max_size", 1),
+        "cache_ttl_seconds": cache_info.get("ttl_seconds", 600),
+    }

@@ -163,6 +163,10 @@ class BatchChatGenerator:
         self._request_to_uid: dict[str, int] = {}
         self._active_requests: set[str] = set()
 
+        # Delta decoding state (for proper space handling with SentencePiece)
+        self._request_tokens: dict[str, list[int]] = {}
+        self._request_text: dict[str, str] = {}
+
         # Statistics
         self._stats = BatchGenerationStats()
         self._start_time: float | None = None
@@ -335,6 +339,10 @@ class BatchChatGenerator:
     def _process_response(self, response) -> BatchStreamChunk | None:
         """Process a single response from BatchGenerator.
 
+        Uses delta decoding to preserve spaces for SentencePiece tokenizers.
+        Instead of decoding each token individually (which loses spaces),
+        we decode all tokens together and emit the difference.
+
         Args:
             response: Response from BatchGenerator.next()
 
@@ -346,8 +354,22 @@ class BatchChatGenerator:
             logger.warning(f"Unknown UID in batch response: {response.uid}")
             return None
 
-        # Decode token and build logprobs
-        token_text = self.tokenizer.decode([response.token])
+        # Delta decoding: decode all tokens together to preserve spaces
+        # Initialize tracking state for new requests
+        if request_id not in self._request_tokens:
+            self._request_tokens[request_id] = []
+            self._request_text[request_id] = ""
+
+        # Append token and decode full sequence
+        self._request_tokens[request_id].append(response.token)
+        full_text = self.tokenizer.decode(self._request_tokens[request_id])
+
+        # Calculate delta (new text since last decode)
+        prev_text = self._request_text[request_id]
+        token_text = full_text[len(prev_text) :]
+        self._request_text[request_id] = full_text
+
+        # Build logprobs if available
         logprobs = None
         if response.logprobs is not None:
             logprobs = {
@@ -355,11 +377,14 @@ class BatchChatGenerator:
                 "logprob": float(response.logprobs[response.token]),
             }
 
-        # Track completion
+        # Track completion and cleanup delta state
         if response.finish_reason is not None:
             self._uid_to_request.pop(response.uid, None)
             self._request_to_uid.pop(request_id, None)
             self._active_requests.discard(request_id)
+            # Clean up delta decoding state
+            self._request_tokens.pop(request_id, None)
+            self._request_text.pop(request_id, None)
             self._stats.completed_requests += 1
             self._stats.active_requests = len(self._active_requests)
             logger.debug(f"Request {request_id} completed: {response.finish_reason}")
@@ -444,6 +469,19 @@ class BatchChatGenerator:
 
                 await asyncio.sleep(0)
 
+        except AttributeError as e:
+            # MambaCache doesn't have extract() method required by batch generation
+            if "extract" in str(e):
+                model_name = getattr(self.model, "model_id", "unknown")
+                error_msg = (
+                    f"Model '{model_name}' uses MambaCache which doesn't support "
+                    f"batch mode. Hybrid Mamba-Transformer models (like Nemotron) "
+                    f"require single-request mode. Original error: {e}"
+                )
+                logger.error(error_msg)
+                raise RuntimeError(error_msg) from e
+            logger.error(f"Error in batch streaming: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error in batch streaming: {e}")
             raise
