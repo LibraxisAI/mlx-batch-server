@@ -181,5 +181,38 @@ def patch_jieba() -> bool:
     return True
 
 
+def patch_mlx_lm_logging() -> bool:
+    """
+    Patch mlx_lm.utils to add missing 'logging' import.
+
+    mlx-lm has a bug where it uses 'logging.error()' without importing logging.
+    This patch imports mlx_lm.utils and injects the logging module.
+
+    Returns:
+        True if patched, False if patch failed.
+    """
+    try:
+        # Import mlx_lm.utils to patch it
+        # This is safe - mlx_lm is a required dependency
+        import mlx_lm.utils as mlx_utils
+
+        # Check if logging is already in the module's namespace
+        if hasattr(mlx_utils, "logging"):
+            return False
+
+        # Inject logging into mlx_lm.utils namespace
+        mlx_utils.logging = logging
+        return True
+    except ImportError:
+        # mlx-lm not installed - skip patching
+        return False
+    except Exception as e:
+        # Log but don't crash - this is just a compatibility fix
+        print(f"Warning: Failed to patch mlx_lm.utils: {e}")
+        return False
+
+
 # Auto-patch when this module is imported
-_patched = patch_jieba()
+_patched_jieba = patch_jieba()
+# Patch mlx-lm missing logging import (bug in mlx-lm)
+_patched_mlx_lm = patch_mlx_lm_logging()

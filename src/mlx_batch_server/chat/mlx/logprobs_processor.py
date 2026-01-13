@@ -50,7 +50,7 @@ class LogprobsProcessor:
             top_probs = mx.clip(current_logprobs[top_indices], a_min=-100, a_max=None)
 
             for idx, logprob in zip(
-                top_indices.tolist(), top_probs.tolist(), strict=False
+                top_indices.tolist(), top_probs.tolist(), strict=True
             ):
                 token = self.tokenizer.decode([idx])
                 token_bytes = token.encode("utf-8")

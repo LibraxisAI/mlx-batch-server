@@ -169,16 +169,25 @@ unload: ## Unload current model
 	@curl -s -X POST $(SERVER_URL)/v1/models/unload | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
 
-ps: ## List loaded models
-	@curl -s $(SERVER_URL)/v1/models | $(PYTHON) -m json.tool 2>/dev/null || \
+ps: ## List loaded models (in memory)
+	@curl -s $(SERVER_URL)/v1/models/loaded 2>/dev/null | \
+		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); models=d.get('data',[]); \
+		print('\n'.join(f'  \033[32m●\033[0m {m[\"id\"]}' for m in models)) if models else print('  (none loaded)')" 2>/dev/null || \
 		echo "Server not running"
 
-status: ## Server status
+status: ## Server status with loaded models
 	@echo "=== MLX Batch Server Status ==="
-	@curl -s $(SERVER_URL)/health 2>/dev/null && echo "Server: UP" || echo "Server: DOWN"
+	@curl -s $(SERVER_URL)/health 2>/dev/null | \
+		$(PYTHON) -c "import sys,json; h=json.load(sys.stdin); \
+		print(f'Server: \033[32mUP\033[0m ({h[\"loaded_models_count\"]} models loaded)')" 2>/dev/null || \
+		echo "Server: \033[31mDOWN\033[0m"
 	@echo ""
-	@echo "Loaded models:"
-	@curl -s $(SERVER_URL)/v1/models 2>/dev/null | $(PYTHON) -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(f'  - {m[\"id\"]}' for m in d.get('data',[])))" 2>/dev/null || echo "  (none)"
+	@echo "Available models (disk cache):"
+	@LOADED=$$(curl -s $(SERVER_URL)/v1/models/loaded 2>/dev/null | $(PYTHON) -c "import sys,json; d=json.load(sys.stdin); print(' '.join(m['id'] for m in d.get('data',[])))" 2>/dev/null); \
+	curl -s $(SERVER_URL)/v1/models 2>/dev/null | \
+		$(PYTHON) -c "import sys,json; loaded='$$LOADED'.split(); d=json.load(sys.stdin); \
+		[print(f'  \033[32m● loaded\033[0m  {m[\"id\"]}') if m['id'] in loaded else print(f'  \033[90m○ cached\033[0m  {m[\"id\"]}') for m in d.get('data',[])]" 2>/dev/null || \
+		echo "  (server not running)"
 
 batch-stats: ## Show batch coordinator stats
 	@curl -s $(SERVER_URL)/v1/batch/stats | $(PYTHON) -m json.tool 2>/dev/null || \
