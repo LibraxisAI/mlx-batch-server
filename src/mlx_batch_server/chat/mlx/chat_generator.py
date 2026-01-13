@@ -442,8 +442,10 @@ class ChatGenerator:
             if enable_prompt_cache and self.prompt_cache.cache:
                 mlx_kwargs["prompt_cache"] = self.prompt_cache.cache
 
-            # Stream generation
+            # Stream generation with delta decoding
+            # Delta decoding preserves spaces for SentencePiece tokenizers
             generated_tokens = []
+            decoded_text = ""  # Track full decoded text for delta calculation
 
             for response in stream_generate(
                 model=self.model.model,
@@ -457,6 +459,13 @@ class ChatGenerator:
 
                 generated_tokens.append(response.token)
 
+                # Delta decoding: decode all tokens together to preserve spaces
+                # SentencePiece tokenizers encode spaces as prefix (▁), which is lost
+                # when decoding individual tokens
+                full_decoded = self.tokenizer.decode(generated_tokens)
+                delta_text = full_decoded[len(decoded_text) :]
+                decoded_text = full_decoded
+
                 # Record first token time if this is the first token
                 if first_token_time is None:
                     first_token_time = time.perf_counter() - request_start_time
@@ -468,9 +477,8 @@ class ChatGenerator:
                         response, top_logprobs
                     )
 
-                parse_result = self.chat_template.stream_parse_chat_result(
-                    response.text
-                )
+                # Use delta_text instead of response.text for parsing
+                parse_result = self.chat_template.stream_parse_chat_result(delta_text)
 
                 # Create StreamContent based on parse result
                 chunk_index = len(generated_tokens)
@@ -484,7 +492,7 @@ class ChatGenerator:
                     )
                 else:
                     content = StreamContent(
-                        text_delta=parse_result.content or response.text,
+                        text_delta=parse_result.content or delta_text,
                         token=response.token,
                         chunk_index=chunk_index,
                     )
