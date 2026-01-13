@@ -137,7 +137,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH110", "PTH123"]
+"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "RUF059", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
 "examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
 "playground/*" = ["PLR0912", "PLR0915", "PLC0415", "SIM105"]  # Testing tool, complexity OK
 "examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
@@ -148,6 +148,7 @@ ignore = [
 "src/mlx_batch_server/chat/mlx/tools/llama3.py" = ["PLC0415"]
 "src/mlx_batch_server/chat/mlx/tools/chat_template.py" = ["E402", "PLC0415", "PLR0912", "RUF003"]
 "src/mlx_batch_server/chat/openai/openai_adapter.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/chat/openai/models/models.py" = ["PLC0415"]  # Lazy imports for wrapper_cache
 # Complex parsing/conversion functions - refactoring would reduce readability
 "src/mlx_batch_server/chat/mlx/tools/glm45_tools_parser.py" = ["PLR0911"]
 "src/mlx_batch_server/chat/mlx/tools/qwen3_moe_tools_parser.py" = ["PLR0911"]
