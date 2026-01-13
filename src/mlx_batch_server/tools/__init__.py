@@ -1,5 +1,5 @@
 """
-MLX Omni Server - Tool Registry and Execution.
+Mlx batch Server - Tool Registry and Execution.
 
 Provides hosted tool support for the Responses API, similar to OpenAI's
 web_search, code_interpreter, etc.

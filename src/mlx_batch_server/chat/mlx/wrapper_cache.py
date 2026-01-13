@@ -3,6 +3,8 @@
 This module provides a unified caching system for ChatGenerator instances
 to avoid expensive model reloading when the same model configuration is used
 across different API endpoints.
+
+Supports pinned models that are NEVER evicted (always available).
 """
 
 import threading
@@ -10,6 +12,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from ...core.config import get_settings
 from ...utils.logger import logger
 from .chat_generator import ChatGenerator
 
@@ -39,15 +42,19 @@ class MLXWrapperCache:
     """
 
     def __init__(
-        self, max_size: int = 3, ttl_seconds: int = 300, cleanup_interval: int = 5
+        self,
+        max_size: int = 1,
+        ttl_seconds: int = 600,
+        cleanup_interval: int = 5,
+        pinned_models: list[str] | None = None,
     ):
-        """Initialize cache with LRU eviction and TTL support.
+        """Initialize cache with LRU eviction, TTL support, and pinned models.
 
         Args:
-            max_size: Maximum number of models to cache (default: 3)
-            ttl_seconds: Time to live in seconds, after which unused models
-                        are evicted from cache (default: 300 seconds = 5 minutes)
-            cleanup_interval: Interval in seconds for background cleanup (default: 5 seconds)
+            max_size: Maximum number of NON-PINNED models to cache (default: 1)
+            ttl_seconds: TTL for non-pinned models (default: 600s = 10 min)
+            cleanup_interval: Background cleanup interval in seconds (default: 5)
+            pinned_models: List of model IDs that are NEVER evicted (always available)
         """
         self._cache: OrderedDict[WrapperCacheKey, ChatGenerator] = OrderedDict()
         self._access_times: dict[WrapperCacheKey, float] = {}
@@ -55,8 +62,14 @@ class MLXWrapperCache:
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
         self._cleanup_interval = cleanup_interval
+        self._pinned_models: set[str] = set(pinned_models or [])
         self._stop_event = threading.Event()
         self._cleanup_thread = None
+
+        logger.info(
+            f"MLXWrapperCache initialized: max_size={max_size}, ttl={ttl_seconds}s, "
+            f"pinned={list(self._pinned_models)}"
+        )
 
         # Start background cleanup thread if TTL is enabled
         if self._ttl_seconds > 0:
@@ -65,9 +78,14 @@ class MLXWrapperCache:
             )
             self._cleanup_thread.start()
 
+    def _is_pinned(self, key: WrapperCacheKey) -> bool:
+        """Check if a model is pinned (should never be evicted)."""
+        return key.model_id in self._pinned_models
+
     def _evict_expired_items(self) -> None:
         """Evict items that have exceeded their TTL.
 
+        PINNED models are NEVER evicted regardless of TTL.
         This method should be called while holding the lock.
         """
         if self._ttl_seconds <= 0:
@@ -77,6 +95,9 @@ class MLXWrapperCache:
         expired_keys = []
 
         for key, access_time in self._access_times.items():
+            # Skip pinned models - they never expire
+            if self._is_pinned(key):
+                continue
             if current_time - access_time > self._ttl_seconds:
                 expired_keys.append(key)
 
@@ -88,25 +109,30 @@ class MLXWrapperCache:
             )
 
     def _evict_lru_if_needed(self) -> None:
-        """Evict least recently used item if cache is at capacity.
+        """Evict least recently used NON-PINNED item if cache is at capacity.
 
+        PINNED models don't count against max_size and are NEVER evicted.
         This method should be called while holding the lock.
         """
-        if len(self._cache) >= self._max_size and self._max_size > 0:
-            # Find the least recently used key
-            lru_key = min(
-                self._access_times.keys(), key=lambda k: self._access_times[k]
-            )
+        if self._max_size <= 0:
+            return
+
+        # Count only non-pinned models against max_size
+        non_pinned_count = sum(1 for k in self._cache if not self._is_pinned(k))
+
+        if non_pinned_count >= self._max_size:
+            # Find the least recently used NON-PINNED key
+            non_pinned_keys = [k for k in self._access_times if not self._is_pinned(k)]
+            if not non_pinned_keys:
+                return  # Only pinned models in cache, nothing to evict
+
+            lru_key = min(non_pinned_keys, key=lambda k: self._access_times[k])
 
             # Remove from cache and access times
             self._cache.pop(lru_key, None)
             self._access_times.pop(lru_key, None)
 
             logger.info(f"Evicted LRU model from cache: {lru_key}")
-
-            # Optional: Clean up the evicted wrapper's resources
-            # This could include clearing VRAM, etc., but ChatGenerator
-            # doesn't currently expose cleanup methods
 
     def _update_access_time(self, key: WrapperCacheKey) -> None:
         """Update access time for LRU tracking.
@@ -355,5 +381,15 @@ class MLXWrapperCache:
 
 
 # Global cache instance - shared across all API endpoints
-# Default to 3 models with 5-minute TTL as suggested by user requirements
-wrapper_cache = MLXWrapperCache(max_size=3, ttl_seconds=300)
+# Reads configuration from environment via Settings
+def _create_wrapper_cache() -> MLXWrapperCache:
+    """Create cache instance with settings from environment."""
+    settings = get_settings()
+    return MLXWrapperCache(
+        max_size=settings.model_cache_max_size,
+        ttl_seconds=settings.model_cache_ttl,
+        pinned_models=settings.get_pinned_models(),
+    )
+
+
+wrapper_cache = _create_wrapper_cache()
