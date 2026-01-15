@@ -143,6 +143,30 @@ class ImagesService:
         # Cache loaded generator instances
         self._generator_cache: dict[str, MFluxImageGenerator] = {}
 
+    def load_model(self, model_name: str) -> bool:
+        """Preload an image generation model. Returns True if it was already loaded."""
+        generator = self._get_generator(model_name=model_name)
+        already_loaded = generator._flux is not None
+        # Use an empty params dict to satisfy _get_flux internals.
+        generator._get_flux({})
+        return already_loaded
+
+    def unload_model(self, model_name: str) -> bool:
+        """Unload a specific image model. Returns True if it was loaded."""
+        generator = self._generator_cache.pop(model_name, None)
+        if generator is None:
+            return False
+        generator._flux = None
+        return True
+
+    def clear_models(self) -> list[str]:
+        """Unload all image models and return the unloaded model IDs."""
+        unloaded = list(self._generator_cache.keys())
+        for generator in self._generator_cache.values():
+            generator._flux = None
+        self._generator_cache.clear()
+        return unloaded
+
     def _get_generator(self, model_name: str) -> MFluxImageGenerator:
         """Get or create image generator instance"""
         if model_name not in self._generator_cache:
@@ -205,3 +229,14 @@ class ImagesService:
                     self._cleanup_image(output_path)
 
         return generated_images
+
+
+_images_service: ImagesService | None = None
+
+
+def get_images_service() -> ImagesService:
+    """Return a shared images service instance."""
+    global _images_service
+    if _images_service is None:
+        _images_service = ImagesService()
+    return _images_service
