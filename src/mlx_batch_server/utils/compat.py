@@ -313,6 +313,58 @@ def patch_transformers_video_processor_mapping() -> bool:
     return patched
 
 
+def patch_transformers_video_processor_loader() -> bool:
+    """
+    Allow AutoVideoProcessor to fail gracefully when torchvision is missing.
+
+    For image-only VLM requests we can skip the video processor entirely.
+    """
+    try:
+        import importlib
+
+        auto_module = importlib.import_module(
+            "transformers.models.auto.video_processing_auto"
+        )
+        processing_utils = importlib.import_module("transformers.processing_utils")
+        AutoVideoProcessor = auto_module.AutoVideoProcessor
+        ProcessorMixin = processing_utils.ProcessorMixin
+    except Exception:
+        return False
+
+    patched = False
+
+    if not hasattr(AutoVideoProcessor, "_mlx_batch_server_patched"):
+        original = AutoVideoProcessor.from_pretrained
+
+        def _from_pretrained(cls, *args, **kwargs):
+            try:
+                return original.__func__(cls, *args, **kwargs)
+            except ImportError as exc:
+                if "torchvision" in str(exc).lower():
+                    return None
+                raise
+
+        AutoVideoProcessor.from_pretrained = classmethod(_from_pretrained)
+        AutoVideoProcessor._mlx_batch_server_patched = True
+        patched = True
+
+    if not hasattr(ProcessorMixin, "_mlx_batch_server_video_none_ok"):
+        original_check = ProcessorMixin.check_argument_for_proper_class
+
+        def _check_argument_for_proper_class(self, argument_name, argument):
+            if argument_name == "video_processor" and argument is None:
+                return None
+            return original_check(self, argument_name, argument)
+
+        ProcessorMixin.check_argument_for_proper_class = (
+            _check_argument_for_proper_class
+        )
+        ProcessorMixin._mlx_batch_server_video_none_ok = True
+        patched = True
+
+    return patched
+
+
 # Auto-patch when this module is imported
 _patched_jieba_regex = patch_jieba_regex_warnings()
 _patched_jieba = patch_jieba()
@@ -320,3 +372,4 @@ _patched_jieba = patch_jieba()
 _patched_mlx_lm = patch_mlx_lm_logging()
 # Patch transformers AutoVideoProcessor None mapping
 _patched_transformers_video = patch_transformers_video_processor_mapping()
+_patched_transformers_video_loader = patch_transformers_video_processor_loader()
