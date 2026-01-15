@@ -16,6 +16,24 @@ from transformers import AutoProcessor
 
 from ..utils.logger import logger
 
+try:
+    from mlx_vlm import load as load_vlm
+    from mlx_vlm.utils import get_model_path
+except Exception as exc:
+    load_vlm = None
+    get_model_path = None
+    _mlx_vlm_import_error = exc
+else:
+    _mlx_vlm_import_error = None
+
+try:
+    import fitz
+except Exception as exc:
+    fitz = None
+    _fitz_import_error = exc
+else:
+    _fitz_import_error = None
+
 IMAGE_PAD_TOKEN = 151655
 
 
@@ -53,13 +71,10 @@ class Qwen3VLEmbedder:
         if self._loaded:
             return
 
-        try:
-            from mlx_vlm import load as load_vlm
-            from mlx_vlm.utils import get_model_path
-        except Exception as e:
+        if load_vlm is None or get_model_path is None:
             raise RuntimeError(
                 "mlx-vlm is required for qwen3_vl visual embeddings."
-            ) from e
+            ) from _mlx_vlm_import_error
 
         model_path = get_model_path(self.model_id)
         self._has_vision = self._detect_vision_assets(model_path)
@@ -79,9 +94,17 @@ class Qwen3VLEmbedder:
             processor_id, trust_remote_code=True
         )
 
-        self._image_token_id = (
-            getattr(self.model.config, "image_token_id", None) or IMAGE_PAD_TOKEN
-        )
+        image_token_id = getattr(self.model.config, "image_token_id", None)
+        if image_token_id is None:
+            for source in self._processor_sources():
+                if source is None:
+                    continue
+                image_token_id = getattr(source, "image_token_id", None) or getattr(
+                    source, "image_token_index", None
+                )
+                if image_token_id is not None:
+                    break
+        self._image_token_id = image_token_id or IMAGE_PAD_TOKEN
 
         if self.projection_path:
             self._load_projection(self.projection_path)
@@ -136,7 +159,7 @@ class Qwen3VLEmbedder:
         return embeddings / norm
 
     def _build_position_ids(self, batch_size: int, seq_len: int) -> mx.array:
-        position_ids = mx.arange(seq_len).reshape(1, -1)
+        position_ids = mx.array(np.arange(seq_len, dtype=np.int32)).reshape(1, -1)
         position_ids = mx.broadcast_to(position_ids, (batch_size, seq_len))
         return mx.broadcast_to(position_ids[None, ...], (3, batch_size, seq_len))
 
@@ -144,6 +167,10 @@ class Qwen3VLEmbedder:
     def _to_numpy(value):
         if isinstance(value, np.ndarray):
             return value
+        if type(value).__module__ == "mlx.core" and type(value).__name__ == "array":
+            if value.dtype == mx.bfloat16:
+                return np.array(value.astype(mx.float32))
+            return np.array(value)
         if hasattr(value, "numpy"):
             return value.numpy()
         return np.array(value)
@@ -201,14 +228,113 @@ class Qwen3VLEmbedder:
                 last_error = e
         raise RuntimeError(f"Tokenizer failed for text: {last_error}") from last_error
 
+    def _processor_sources(self):
+        return (
+            self.tomoro_processor,
+            getattr(self.tomoro_processor, "tokenizer", None),
+            self.processor,
+            getattr(self.processor, "tokenizer", None),
+        )
+
+    def _find_image_token_text(self) -> str | None:
+        for source in self._processor_sources():
+            if source is None:
+                continue
+            image_token = getattr(source, "image_token", None)
+            if image_token:
+                return image_token
+        return None
+
+    def _prepare_image_inputs(
+        self, pil_image: Image.Image
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        inputs = self._processor_call(text="", images=[pil_image])
+        input_ids = self._to_numpy(inputs["input_ids"])
+        if input_ids.size == 0:
+            image_token = self._find_image_token_text()
+            inputs = self._processor_call(
+                text=image_token or "<|image_pad|>", images=[pil_image]
+            )
+            input_ids = self._to_numpy(inputs["input_ids"])
+
+        if input_ids.size == 0:
+            raise RuntimeError(
+                "Processor returned empty input_ids for image embedding."
+            )
+
+        input_ids = input_ids.astype(np.int64, copy=False)
+        pixel_values = self._to_numpy(inputs["pixel_values"])
+        image_grid_thw = self._to_numpy(inputs["image_grid_thw"]).astype(
+            np.int64, copy=False
+        )
+        return input_ids, pixel_values, image_grid_thw
+
+    @staticmethod
+    def _extract_vision_hidden(vision_out: Any) -> Any:
+        if isinstance(vision_out, tuple):
+            return vision_out[0]
+        if hasattr(vision_out, "last_hidden_state"):
+            return vision_out.last_hidden_state
+        if hasattr(vision_out, "hidden_states"):
+            return vision_out.hidden_states
+        return vision_out
+
+    def _image_mask_positions(
+        self, input_ids: np.ndarray
+    ) -> tuple[np.ndarray, list[int]]:
+        image_mask = (input_ids == self._image_token_id)[0]
+        image_positions = np.where(image_mask)[0].tolist()
+        return image_mask, image_positions
+
+    def _vision_embeddings(
+        self, pixel_values: np.ndarray, image_grid_thw: np.ndarray
+    ) -> np.ndarray:
+        vision_tower = self._get_vision_tower()
+        vision_out = vision_tower(
+            mx.array(pixel_values), mx.array(image_grid_thw, dtype=mx.int64)
+        )
+        hidden_states = self._extract_vision_hidden(vision_out)
+        return self._to_numpy(hidden_states)
+
+    def _combine_text_vision_embeddings(
+        self, input_ids: np.ndarray, vision_np: np.ndarray, image_positions: list[int]
+    ) -> tuple[Any, mx.array]:
+        inner_model = self._get_language_model()
+        embed_tokens = self._get_child(inner_model, "embed_tokens")
+        if embed_tokens is None:
+            raise RuntimeError("embed_tokens missing in qwen3_vl language model")
+
+        input_ids_mx = mx.array(input_ids, dtype=mx.int64)
+        text_emb = embed_tokens(input_ids_mx)
+        text_emb_np = self._to_numpy(text_emb)[0]
+
+        for i, pos in enumerate(image_positions):
+            if i < vision_np.shape[0]:
+                text_emb_np[pos] = vision_np[i]
+
+        combined_embeddings = mx.array(text_emb_np).reshape(
+            1, -1, text_emb_np.shape[-1]
+        )
+        return inner_model, combined_embeddings
+
+    def _select_image_hidden(
+        self, hidden_states: mx.array, image_mask: np.ndarray
+    ) -> mx.array:
+        hidden_states_np = self._to_numpy(hidden_states)
+        return mx.array(hidden_states_np[0][image_mask])
+
     def _decode_image(self, image: str | Path | Image.Image) -> Image.Image:
         if isinstance(image, Image.Image):
             return image.convert("RGB")
 
         if isinstance(image, Path | str):
             path = Path(image)
-            if path.exists():
-                return Image.open(str(path)).convert("RGB")
+            try:
+                if path.exists():
+                    return Image.open(str(path)).convert("RGB")
+            except OSError:
+                # Likely a long base64 string, fall through to base64 handling.
+                pass
 
         if isinstance(image, str):
             data = image
@@ -229,7 +355,8 @@ class Qwen3VLEmbedder:
             tokenizer = self.processor
 
         inputs = self._tokenize_text(tokenizer, text)
-        input_ids = mx.array(self._to_numpy(inputs["input_ids"]))
+        input_ids = self._to_numpy(inputs["input_ids"]).astype(np.int64, copy=False)
+        input_ids = mx.array(input_ids, dtype=mx.int64)
         batch_size, seq_len = input_ids.shape
 
         inner_model = self._get_language_model()
@@ -263,42 +390,11 @@ class Qwen3VLEmbedder:
             )
 
         pil_image = self._decode_image(image)
-
-        inputs = self._processor_call(text="", images=[pil_image])
-        input_ids = self._to_numpy(inputs["input_ids"])
-        pixel_values = self._to_numpy(inputs["pixel_values"])
-        image_grid_thw = self._to_numpy(inputs["image_grid_thw"])
-
-        input_ids_mx = mx.array(input_ids)
-        image_mask = (input_ids == self._image_token_id)[0]
-        image_positions = np.where(image_mask)[0].tolist()
-
-        vision_tower = self._get_vision_tower()
-        vision_out = vision_tower(mx.array(pixel_values), mx.array(image_grid_thw))
-        if isinstance(vision_out, tuple):
-            hidden_states_vision = vision_out[0]
-        elif hasattr(vision_out, "last_hidden_state"):
-            hidden_states_vision = vision_out.last_hidden_state
-        elif hasattr(vision_out, "hidden_states"):
-            hidden_states_vision = vision_out.hidden_states
-        else:
-            hidden_states_vision = vision_out
-
-        inner_model = self._get_language_model()
-        embed_tokens = self._get_child(inner_model, "embed_tokens")
-        if embed_tokens is None:
-            raise RuntimeError("embed_tokens missing in qwen3_vl language model")
-
-        text_emb = embed_tokens(input_ids_mx)
-        text_emb_np = np.array(text_emb[0])
-        vision_np = np.array(hidden_states_vision)
-
-        for i, pos in enumerate(image_positions):
-            if i < vision_np.shape[0]:
-                text_emb_np[pos] = vision_np[i]
-
-        combined_embeddings = mx.array(text_emb_np).reshape(
-            1, -1, text_emb_np.shape[-1]
+        input_ids, pixel_values, image_grid_thw = self._prepare_image_inputs(pil_image)
+        image_mask, image_positions = self._image_mask_positions(input_ids)
+        vision_np = self._vision_embeddings(pixel_values, image_grid_thw)
+        inner_model, combined_embeddings = self._combine_text_vision_embeddings(
+            input_ids, vision_np, image_positions
         )
         batch_size, seq_len, _ = combined_embeddings.shape
         position_ids = self._build_position_ids(batch_size, seq_len)
@@ -306,8 +402,7 @@ class Qwen3VLEmbedder:
         hidden_states = self._run_language_layers(
             inner_model, combined_embeddings, position_ids
         )
-
-        image_hidden_states = mx.array(np.array(hidden_states[0])[image_mask])
+        image_hidden_states = self._select_image_hidden(hidden_states, image_mask)
         embeddings = self._project_and_normalize(image_hidden_states)
         mx.eval(embeddings)
         mx.clear_cache()
@@ -324,10 +419,10 @@ class Qwen3VLEmbedder:
         dpi: int = 150,
         max_pages: int | None = None,
     ) -> list[EmbeddingResult]:
-        try:
-            import fitz
-        except ImportError as e:
-            raise ImportError("PyMuPDF required: pip install pymupdf") from e
+        if fitz is None:
+            raise ImportError("PyMuPDF required: pip install pymupdf") from (
+                _fitz_import_error
+            )
 
         doc = fitz.open(str(pdf_path))
         num_pages = min(len(doc), max_pages) if max_pages else len(doc)
@@ -354,7 +449,7 @@ class Qwen3VLEmbedder:
     def to_numpy(emb: mx.array | EmbeddingResult) -> np.ndarray:
         if isinstance(emb, EmbeddingResult):
             emb = emb.embeddings
-        return np.array(emb)
+        return Qwen3VLEmbedder._to_numpy(emb)
 
     def log_summary(self) -> None:
         logger.info(
