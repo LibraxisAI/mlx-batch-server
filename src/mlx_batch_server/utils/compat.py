@@ -272,8 +272,51 @@ def patch_mlx_lm_logging() -> bool:
         return False
 
 
+def patch_transformers_video_processor_mapping() -> bool:
+    """
+    Patch transformers video processor mapping to avoid NoneType iteration.
+
+    Transformers 5.0.0rc1 can set VIDEO_PROCESSOR_MAPPING_NAMES values to None
+    when torchvision is unavailable, which breaks AutoVideoProcessor resolution.
+    """
+    try:
+        import importlib
+
+        module = importlib.import_module(
+            "transformers.models.auto.video_processing_auto"
+        )
+    except Exception:
+        return False
+
+    mapping = getattr(module, "VIDEO_PROCESSOR_MAPPING_NAMES", None)
+    patched = False
+
+    if mapping is None:
+        module.VIDEO_PROCESSOR_MAPPING_NAMES = {}
+        patched = True
+    else:
+        for key, value in list(mapping.items()):
+            if value is None:
+                mapping[key] = ()
+                patched = True
+
+    if (
+        patched
+        and hasattr(module, "_LazyAutoMapping")
+        and hasattr(module, "CONFIG_MAPPING_NAMES")
+    ):
+        module.VIDEO_PROCESSOR_MAPPING = module._LazyAutoMapping(
+            module.CONFIG_MAPPING_NAMES,
+            module.VIDEO_PROCESSOR_MAPPING_NAMES,
+        )
+
+    return patched
+
+
 # Auto-patch when this module is imported
 _patched_jieba_regex = patch_jieba_regex_warnings()
 _patched_jieba = patch_jieba()
 # Patch mlx-lm missing logging import (bug in mlx-lm)
 _patched_mlx_lm = patch_mlx_lm_logging()
+# Patch transformers AutoVideoProcessor None mapping
+_patched_transformers_video = patch_transformers_video_processor_mapping()
