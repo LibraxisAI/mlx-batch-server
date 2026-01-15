@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException
 
-from .embeddings_service import EmbeddingsService
+from .embeddings_service import get_embeddings_service
 from .schema import EmbeddingRequest, EmbeddingResponse
 
 router = APIRouter(tags=["embeddings"])
-embeddings_service = EmbeddingsService()
+embeddings_service = get_embeddings_service()
 
 
 @router.post("/embeddings", response_model=EmbeddingResponse)

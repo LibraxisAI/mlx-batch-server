@@ -2,7 +2,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from .images_service import ImagesService
+from .images_service import get_images_service
 from .schema import ImageGenerationRequest, ImageGenerationResponse
 
 router = APIRouter(tags=["images"])
@@ -15,7 +15,7 @@ async def create_image(request: ImageGenerationRequest) -> ImageGenerationRespon
     Creates an image given a prompt.
     """
     try:
-        service = ImagesService()
+        service = get_images_service()
 
         # Generate images
         images = service.generate_images(request)

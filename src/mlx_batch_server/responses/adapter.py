@@ -11,12 +11,17 @@ Created by M&K (c)2026 The LibraxisAI Team
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
+
+from PIL import Image
 
 from ..batch import BatchStreamChunk, get_batch_coordinator
 from ..chat.mlx.wrapper_cache import wrapper_cache
@@ -36,6 +41,7 @@ from ..utils.harmony_parser import (
 )
 from ..utils.logger import logger
 from .normalizer import (
+    collect_system_preamble,
     has_media_content,
     normalise_responses_payload,
     responses_to_chat_messages,
@@ -55,6 +61,9 @@ if TYPE_CHECKING:
 # ChatML special tokens to filter from non-Harmony model outputs
 _CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
 
+_VLM_CACHE: dict[str, tuple[Any, Any]] = {}
+_VLM_LOCK = threading.Lock()
+
 
 class ResponsesAdapter:
     """
@@ -63,7 +72,7 @@ class ResponsesAdapter:
     Supports:
     - Local MLX models via ChatGenerator
     - External providers via multi-provider routing
-    - Vision models via Ollama routing
+    - Vision models via mlx-vlm
     - Hosted tool execution (web_search, code_interpreter)
     """
 
@@ -89,6 +98,292 @@ class ResponsesAdapter:
         """Check if batch inference is enabled."""
         settings = get_settings()
         return settings.enable_batch_inference
+
+    def _get_vlm_backend(self, model_id: str) -> tuple[Any, Any]:
+        """Load or reuse a vision-language model via mlx-vlm."""
+        with _VLM_LOCK:
+            cached = _VLM_CACHE.get(model_id)
+        if cached:
+            return cached
+
+        try:
+            from mlx_vlm import load as load_vlm
+        except Exception as exc:
+            raise RuntimeError("mlx-vlm is required for vision responses") from exc
+
+        model, processor = load_vlm(model_id)
+        with _VLM_LOCK:
+            _VLM_CACHE.setdefault(model_id, (model, processor))
+            return _VLM_CACHE[model_id]
+
+    def _decode_base64_image(self, data: str) -> Image.Image:
+        """Decode a base64 or data URL image into a PIL image."""
+        if data.startswith("data:"):
+            if "," not in data:
+                raise ValueError("Invalid data URL for image")
+            _, data = data.split(",", 1)
+
+        data = data.strip()
+        if not data:
+            raise ValueError("Empty base64 image data")
+
+        missing = len(data) % 4
+        if missing:
+            data += "=" * (4 - missing)
+
+        image_bytes = base64.b64decode(data)
+        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+    def _content_has_image(self, content: Any) -> bool:
+        if isinstance(content, dict):
+            return content.get("type") == "input_image"
+        if isinstance(content, list):
+            return any(
+                isinstance(part, dict) and part.get("type") == "input_image"
+                for part in content
+            )
+        return False
+
+    def _has_image_content(self, normalised_body: dict[str, Any]) -> bool:
+        for turn in normalised_body.get("input", []):
+            if not isinstance(turn, dict):
+                continue
+            if self._content_has_image(turn.get("content")):
+                return True
+        return False
+
+    def _extract_text_content(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            if content.get("type") in (
+                "input_text",
+                "output_text",
+                "text",
+                "reasoning_text",
+            ):
+                text_value = content.get("text")
+                return str(text_value) if text_value is not None else ""
+            text_value = content.get("text")
+            return str(text_value) if text_value is not None else ""
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    if part:
+                        parts.append(part)
+                    continue
+                if isinstance(part, dict):
+                    if (
+                        part.get("type")
+                        in (
+                            "input_text",
+                            "output_text",
+                            "text",
+                            "reasoning_text",
+                        )
+                        or "text" in part
+                    ):
+                        text_value = part.get("text")
+                        if text_value is not None:
+                            parts.append(str(text_value))
+                    continue
+                if part is not None:
+                    parts.append(str(part))
+            return "\n".join(parts)
+        return str(content)
+
+    def _build_vlm_messages(
+        self, normalised_body: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+
+        preamble = collect_system_preamble(normalised_body)
+        if preamble:
+            messages.append({"role": "system", "content": "\n\n".join(preamble)})
+
+        for turn in normalised_body.get("input", []):
+            if not isinstance(turn, dict):
+                continue
+
+            role = str(turn.get("role", "user")).lower()
+            if role not in {"system", "user", "assistant", "tool", "developer"}:
+                role = "user"
+
+            content = turn.get("content")
+            text = self._extract_text_content(content)
+
+            if text or (role == "user" and self._content_has_image(content)):
+                messages.append({"role": role, "content": text})
+
+        if not messages:
+            messages.append({"role": "user", "content": ""})
+
+        return messages
+
+    def _extract_image_inputs(self, normalised_body: dict[str, Any]) -> list[Any]:
+        images: list[Any] = []
+        for turn in normalised_body.get("input", []):
+            if not isinstance(turn, dict):
+                continue
+
+            content = turn.get("content", [])
+            if isinstance(content, dict):
+                content = [content]
+            if not isinstance(content, list):
+                continue
+
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "input_image":
+                    continue
+
+                if part.get("image_base64"):
+                    images.append(self._decode_base64_image(str(part["image_base64"])))
+                    continue
+
+                source = part.get("image_url")
+                if isinstance(source, str) and source.startswith("data:"):
+                    images.append(self._decode_base64_image(source))
+                elif source:
+                    images.append(source)
+
+        return images
+
+    def _vlm_generation_kwargs(self, normalised_body: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        max_tokens = normalised_body.get("max_output_tokens") or normalised_body.get(
+            "max_tokens"
+        )
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+
+        temperature = normalised_body.get("temperature")
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        top_p = normalised_body.get("top_p")
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+
+        return kwargs
+
+    def _build_vlm_prompt(
+        self,
+        apply_chat_template,
+        model,
+        processor,
+        normalised_body: dict[str, Any],
+        images: list[Any],
+    ) -> str:
+        messages = self._build_vlm_messages(normalised_body)
+        return apply_chat_template(
+            processor,
+            model.config,
+            messages,
+            add_generation_prompt=True,
+            num_images=len(images),
+        )
+
+    def _vision_start_events(
+        self, make_event, response_obj: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        return [
+            make_event("response.created", {"response": response_obj.copy()}),
+            make_event("response.in_progress", {"response": response_obj.copy()}),
+        ]
+
+    def _vision_message_start_events(
+        self, make_event, message_item_id: str
+    ) -> list[dict[str, Any]]:
+        return [
+            make_event(
+                "response.output_item.added",
+                {
+                    "output_index": 0,
+                    "item": {
+                        "id": message_item_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                },
+            ),
+            make_event(
+                "response.content_part.added",
+                {
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": ""},
+                },
+            ),
+        ]
+
+    def _vision_finalize_events(
+        self,
+        make_event,
+        response_id: str,
+        response_model: str,
+        message_item_id: str,
+        final_text: str,
+    ) -> list[dict[str, Any]]:
+        return [
+            make_event(
+                "response.output_text.done",
+                {
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": final_text,
+                },
+            ),
+            make_event(
+                "response.content_part.done",
+                {
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": final_text},
+                },
+            ),
+            make_event(
+                "response.output_item.done",
+                {
+                    "output_index": 0,
+                    "item": {
+                        "id": message_item_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": final_text}],
+                    },
+                },
+            ),
+            make_event(
+                "response.completed",
+                {
+                    "response": {
+                        "id": response_id,
+                        "object": "response",
+                        "status": "completed",
+                        "model": response_model,
+                        "output": [
+                            {
+                                "id": message_item_id,
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [
+                                    {"type": "output_text", "text": final_text}
+                                ],
+                            }
+                        ],
+                    }
+                },
+            ),
+        ]
 
     async def _stream_batch_tokens(
         self,
@@ -168,12 +463,17 @@ class ResponsesAdapter:
             normalised = normalise_responses_payload(body)
 
             # Check for media content
-            if has_media_content(normalised):
+            if self._has_image_content(normalised):
                 # Route to vision model
                 return await self._generate_vision(model_id, normalised, request_model)
-            else:
-                # Text-only path
-                return await self._generate_text(model_id, normalised, request_model)
+
+            if has_media_content(normalised):
+                logger.warning(
+                    "Media content detected without images; falling back to text-only"
+                )
+
+            # Text-only path
+            return await self._generate_text(model_id, normalised, request_model)
 
         except Exception as e:
             logger.error(f"Responses generation failed: {e}", exc_info=True)
@@ -350,29 +650,173 @@ class ResponsesAdapter:
         request_model: str | None = None,
     ) -> ResponseResponse:
         """
-        Generate response for vision/multimodal content.
-
-        Currently routes to Ollama for vision models.
-        Can be extended to support other vision providers.
+        Generate response for vision/multimodal content via mlx-vlm.
         """
-        # For now, fall back to text extraction
-        # Vision routing will be added in future iteration
-        logger.warning(
-            f"Vision content detected but vision routing not yet implemented. "
-            f"Falling back to text-only processing for model {model_id}"
+        response_model = request_model or model_id
+
+        images = self._extract_image_inputs(normalised_body)
+        if not images:
+            logger.warning(
+                "Vision content detected but no images found; falling back to text-only"
+            )
+            return await self._generate_text(model_id, normalised_body, request_model)
+
+        try:
+            from mlx_vlm import apply_chat_template
+            from mlx_vlm.generate import generate as vlm_generate
+        except Exception as exc:
+            raise RuntimeError("mlx-vlm is required for vision responses") from exc
+
+        model, processor = self._get_vlm_backend(model_id)
+        prompt = self._build_vlm_prompt(
+            apply_chat_template,
+            model,
+            processor,
+            normalised_body,
+            images,
+        )
+        kwargs = self._vlm_generation_kwargs(normalised_body)
+
+        result = vlm_generate(
+            model,
+            processor,
+            prompt,
+            image=images,
+            **kwargs,
         )
 
-        # Extract text from multimodal content
-        text_only_body = dict(normalised_body)
-        for turn in text_only_body.get("input", []):
-            if isinstance(turn, dict):
-                turn["content"] = [
-                    p
-                    for p in turn.get("content", [])
-                    if isinstance(p, dict) and p.get("type") == "input_text"
-                ]
+        content_text = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
+        output_items = build_text_output(content_text)
 
-        return await self._generate_text(model_id, text_only_body, request_model)
+        return ResponseResponse(
+            id=f"resp_{uuid.uuid4().hex}",
+            created_at=int(time.time()),
+            model=response_model,
+            status=ResponseStatus.COMPLETED,
+            output=output_items,
+            usage=ResponseUsage(
+                input_tokens=result.prompt_tokens,
+                output_tokens=result.generation_tokens,
+                total_tokens=result.total_tokens,
+            ),
+            _provider="mlx-batch-server",
+        )
+
+    async def _generate_vision_stream(
+        self,
+        model_id: str,
+        normalised_body: dict[str, Any],
+        request_model: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        response_model = request_model or model_id
+        response_id = f"resp_{uuid.uuid4().hex}"
+        message_item_id = f"msg_{uuid.uuid4().hex}"
+
+        seq_num = 0
+
+        def make_event(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+            nonlocal seq_num
+            event = {"type": event_type, "sequence_number": seq_num, **data}
+            seq_num += 1
+            return event
+
+        response_obj = {
+            "id": response_id,
+            "object": "response",
+            "status": "in_progress",
+            "model": response_model,
+            "output": [],
+        }
+        for event in self._vision_start_events(make_event, response_obj):
+            yield event
+
+        images = self._extract_image_inputs(normalised_body)
+        if not images:
+            yield make_event(
+                "error",
+                {
+                    "error": {
+                        "message": "Vision request missing images",
+                        "code": "invalid_request_error",
+                    }
+                },
+            )
+            return
+
+        try:
+            from mlx_vlm import apply_chat_template
+            from mlx_vlm.generate import stream_generate as vlm_stream_generate
+        except Exception as exc:
+            yield make_event(
+                "error",
+                {
+                    "error": {
+                        "message": f"mlx-vlm is required for vision responses: {exc}",
+                        "code": "internal_error",
+                    }
+                },
+            )
+            return
+
+        model, processor = self._get_vlm_backend(model_id)
+        prompt = self._build_vlm_prompt(
+            apply_chat_template,
+            model,
+            processor,
+            normalised_body,
+            images,
+        )
+        kwargs = self._vlm_generation_kwargs(normalised_body)
+
+        output_text_parts: list[str] = []
+        message_item_emitted = False
+
+        for result in vlm_stream_generate(
+            model,
+            processor,
+            prompt,
+            image=images,
+            **kwargs,
+        ):
+            delta = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
+            if not delta:
+                continue
+
+            if not message_item_emitted:
+                for event in self._vision_message_start_events(
+                    make_event,
+                    message_item_id,
+                ):
+                    yield event
+                message_item_emitted = True
+
+            output_text_parts.append(delta)
+            yield make_event(
+                "response.output_text.delta",
+                {
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": delta,
+                },
+            )
+
+        final_text = "".join(output_text_parts)
+
+        if not message_item_emitted:
+            for event in self._vision_message_start_events(
+                make_event,
+                message_item_id,
+            ):
+                yield event
+
+        for event in self._vision_finalize_events(
+            make_event,
+            response_id,
+            response_model,
+            message_item_id,
+            final_text,
+        ):
+            yield event
 
     async def generate_stream(  # noqa: PLR0912, PLR0915
         self,
@@ -419,6 +863,20 @@ class ResponsesAdapter:
             # Normalize request
             body = request.model_dump(exclude_none=True)
             normalised = normalise_responses_payload(body)
+
+            if self._has_image_content(normalised):
+                async for event in self._generate_vision_stream(
+                    model_id,
+                    normalised,
+                    request_model,
+                ):
+                    yield event
+                return
+
+            if has_media_content(normalised):
+                logger.warning(
+                    "Media content detected without images; streaming text-only"
+                )
 
             # Convert to chat messages
             messages = responses_to_chat_messages(normalised)

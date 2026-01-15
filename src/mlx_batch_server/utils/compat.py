@@ -10,10 +10,12 @@ Created by M&K (c)2026 The LibraxisAI Team
 from __future__ import annotations
 
 import importlib.resources
+import importlib.util
 import logging
 import os
 import sys
 import types
+from pathlib import Path
 
 
 def _create_jieba_compat() -> types.ModuleType:
@@ -181,6 +183,64 @@ def patch_jieba() -> bool:
     return True
 
 
+def _patch_jieba_regex_file(path: Path, replacements: dict[str, str]) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    updated = text
+    for old, new in replacements.items():
+        if old in updated:
+            updated = updated.replace(old, new)
+
+    if updated == text:
+        return False
+
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except OSError:
+        return False
+
+    return True
+
+
+def patch_jieba_regex_warnings() -> bool:
+    """
+    Patch jieba regex literals to avoid Python 3.12 SyntaxWarning.
+
+    This updates the installed jieba source files in-place, replacing a few
+    regex string literals with raw strings to avoid invalid escape warnings.
+    """
+    try:
+        spec = importlib.util.find_spec("jieba")
+    except Exception:
+        return False
+
+    if not spec or not spec.origin:
+        return False
+
+    base_path = Path(spec.origin).parent
+    patched = False
+
+    patched |= _patch_jieba_regex_file(
+        base_path / "__init__.py",
+        {
+            're_han_default = re.compile("([\\u4E00-\\u9FD5a-zA-Z0-9+#&\\._%\\-]+)", re.U)': 're_han_default = re.compile(r"([\\u4E00-\\u9FD5a-zA-Z0-9+#&\\._%\\-]+)", re.U)',
+            're_skip_default = re.compile("(\\r\\n|\\s)", re.U)': 're_skip_default = re.compile(r"(\\r\\n|\\s)", re.U)',
+        },
+    )
+
+    patched |= _patch_jieba_regex_file(
+        base_path / "finalseg" / "__init__.py",
+        {
+            're_skip = re.compile("([a-zA-Z0-9]+(?:\\.\\d+)?%?)")': 're_skip = re.compile(r"([a-zA-Z0-9]+(?:\\.\\d+)?%?)")',
+        },
+    )
+
+    return patched
+
+
 def patch_mlx_lm_logging() -> bool:
     """
     Patch mlx_lm.utils to add missing 'logging' import.
@@ -213,6 +273,7 @@ def patch_mlx_lm_logging() -> bool:
 
 
 # Auto-patch when this module is imported
+_patched_jieba_regex = patch_jieba_regex_warnings()
 _patched_jieba = patch_jieba()
 # Patch mlx-lm missing logging import (bug in mlx-lm)
 _patched_mlx_lm = patch_mlx_lm_logging()
