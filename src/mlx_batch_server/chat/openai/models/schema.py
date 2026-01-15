@@ -54,6 +54,13 @@ class ModelLoadRequest(BaseModel):
     model: str = Field(
         ..., description="Model ID to load (HuggingFace ID or local path)"
     )
+    task: str | None = Field(
+        default=None,
+        description=(
+            "Optional task hint (llm, embeddings, visual, images, stt, tts). "
+            "If omitted, the server will attempt to auto-detect."
+        ),
+    )
     adapter_path: str | None = Field(
         default=None, description="Optional path to LoRA adapter"
     )
@@ -67,6 +74,7 @@ class ModelLoadResponse(BaseModel):
 
     id: str = Field(..., description="The loaded model ID")
     object: str = Field(default="model", description="Object type")
+    task: str | None = Field(default=None, description="Resolved task for the model")
     status: str = Field(..., description="Load status: 'loaded' or 'already_loaded'")
     message: str = Field(..., description="Human-readable status message")
     cache_info: dict[str, Any] | None = Field(
@@ -81,11 +89,19 @@ class ModelUnloadRequest(BaseModel):
         default=None,
         description="Model ID to unload. If not provided, unloads all models.",
     )
+    task: str | None = Field(
+        default=None,
+        description=(
+            "Optional task hint (llm, embeddings, visual, images, stt, tts). "
+            "If omitted, the server will attempt to auto-detect."
+        ),
+    )
 
 
 class ModelUnloadResponse(BaseModel):
     """Response for model unload operation."""
 
+    task: str | None = Field(default=None, description="Resolved task for unload")
     status: str = Field(..., description="Unload status")
     message: str = Field(..., description="Human-readable status message")
     unloaded_models: list[str] = Field(
