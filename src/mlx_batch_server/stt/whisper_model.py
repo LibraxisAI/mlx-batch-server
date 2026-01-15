@@ -133,3 +133,31 @@ class STTService:
             if "audio_path" in locals():
                 Path(audio_path).unlink(missing_ok=True)
             raise e
+
+
+def preload_whisper_model(model_id: str) -> bool:
+    """Preload a Whisper model into the global cache. Returns True if already loaded."""
+    import mlx.core as mx
+    from mlx_whisper.transcribe import ModelHolder
+
+    already_loaded = (
+        ModelHolder.model is not None and ModelHolder.model_path == model_id
+    )
+    ModelHolder.get_model(model_id, mx.float16)
+    return already_loaded
+
+
+def unload_whisper_model(model_id: str | None = None) -> list[str]:
+    """Unload Whisper model(s). Returns unloaded model IDs."""
+    from mlx_whisper.transcribe import ModelHolder
+
+    if ModelHolder.model is None:
+        return []
+
+    if model_id is None or ModelHolder.model_path == model_id:
+        unloaded = [ModelHolder.model_path] if ModelHolder.model_path else []
+        ModelHolder.model = None
+        ModelHolder.model_path = None
+        return unloaded
+
+    return []
