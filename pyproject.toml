@@ -52,7 +52,9 @@ dependencies = [
     # embeddings
     "mlx-embeddings>=0.0.3",
     "openai-harmony>=0.0.8",
-    "mlx-vlm>=0.3.9",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+    "mlx-vlm @file:///Users/polyversai/Libraxis/mlx-vlm-local",
 ]
 
 [project.urls]
@@ -66,7 +68,7 @@ mlx-batch-server = "mlx_batch_server.main:start"
 dev = [
     "pytest>=8.3.3,<9",
     "httpx>=0.27.2,<0.28",
-    "gradio>=5.0.0",  # playground API tester
+    "gradio>=5.0.0", # playground API tester
     "pre-commit>=4.0.1,<5",
     "weave>=0.51.46,<0.60",
     "openai>=1.97.0",
@@ -77,6 +79,7 @@ dev = [
     "bandit[toml]>=1.7.0",
     # for en_core_web_sm models
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "mlx-vlm @file:///Users/polyversai/Libraxis/mlx-vlm-local",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -91,6 +94,9 @@ include = ["src/mlx_batch_server"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.uv]
 prerelease = "allow"
