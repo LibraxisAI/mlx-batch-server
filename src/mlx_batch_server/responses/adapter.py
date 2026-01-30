@@ -144,6 +144,16 @@ class ResponsesAdapter:
             )
         return False
 
+    def _content_has_video(self, content: Any) -> bool:
+        if isinstance(content, dict):
+            return content.get("type") == "input_video"
+        if isinstance(content, list):
+            return any(
+                isinstance(part, dict) and part.get("type") == "input_video"
+                for part in content
+            )
+        return False
+
     def _has_image_content(self, normalised_body: dict[str, Any]) -> bool:
         for turn in normalised_body.get("input", []):
             if not isinstance(turn, dict):
@@ -151,6 +161,19 @@ class ResponsesAdapter:
             if self._content_has_image(turn.get("content")):
                 return True
         return False
+
+    def _has_video_content(self, normalised_body: dict[str, Any]) -> bool:
+        for turn in normalised_body.get("input", []):
+            if not isinstance(turn, dict):
+                continue
+            if self._content_has_video(turn.get("content")):
+                return True
+        return False
+
+    def _has_vision_content(self, normalised_body: dict[str, Any]) -> bool:
+        return self._has_image_content(normalised_body) or self._has_video_content(
+            normalised_body
+        )
 
     def _extract_text_content(self, content: Any) -> str:
         if content is None:
@@ -253,13 +276,42 @@ class ResponsesAdapter:
 
         return images
 
+    def _extract_video_inputs(self, normalised_body: dict[str, Any]) -> list[str]:
+        """Extract video source paths/URLs from normalised request body."""
+        videos: list[str] = []
+        for turn in normalised_body.get("input", []):
+            if not isinstance(turn, dict):
+                continue
+
+            content = turn.get("content", [])
+            if isinstance(content, dict):
+                content = [content]
+            if not isinstance(content, list):
+                continue
+
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "input_video":
+                    continue
+
+                source = part.get("video_url")
+                if source:
+                    videos.append(str(source))
+
+        return videos
+
+    _VLM_DEFAULT_MAX_TOKENS = 4096
+
     def _vlm_generation_kwargs(self, normalised_body: dict[str, Any]) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
         max_tokens = normalised_body.get("max_output_tokens") or normalised_body.get(
             "max_tokens"
         )
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+        # mlx-vlm defaults to 256 tokens which is too low for most use cases
+        kwargs["max_tokens"] = (
+            max_tokens if max_tokens is not None else self._VLM_DEFAULT_MAX_TOKENS
+        )
 
         temperature = normalised_body.get("temperature")
         if temperature is not None:
@@ -462,9 +514,8 @@ class ResponsesAdapter:
             body = request.model_dump(exclude_none=True)
             normalised = normalise_responses_payload(body)
 
-            # Check for media content
-            if self._has_image_content(normalised):
-                # Route to vision model
+            # Check for media content (images or video)
+            if self._has_vision_content(normalised):
                 return await self._generate_vision(model_id, normalised, request_model)
 
             if has_media_content(normalised):
@@ -651,13 +702,19 @@ class ResponsesAdapter:
     ) -> ResponseResponse:
         """
         Generate response for vision/multimodal content via mlx-vlm.
+
+        Supports both image and video inputs.  Video uses a separate pipeline
+        that processes frames through the processor and passes ``video_grid_thw``
+        to the generate function.
         """
         response_model = request_model or model_id
 
         images = self._extract_image_inputs(normalised_body)
-        if not images:
+        videos = self._extract_video_inputs(normalised_body)
+
+        if not images and not videos:
             logger.warning(
-                "Vision content detected but no images found; falling back to text-only"
+                "Vision content detected but no media found; falling back to text-only"
             )
             return await self._generate_text(model_id, normalised_body, request_model)
 
@@ -668,22 +725,46 @@ class ResponsesAdapter:
             raise RuntimeError("mlx-vlm is required for vision responses") from exc
 
         model, processor = self._get_vlm_backend(model_id)
-        prompt = self._build_vlm_prompt(
-            apply_chat_template,
-            model,
-            processor,
-            normalised_body,
-            images,
-        )
-        kwargs = self._vlm_generation_kwargs(normalised_body)
+        gen_kwargs = self._vlm_generation_kwargs(normalised_body)
 
-        result = vlm_generate(
-            model,
-            processor,
-            prompt,
-            image=images,
-            **kwargs,
-        )
+        if videos:
+            # --- Video path: use mlx-vlm video pipeline ---
+            from mlx_batch_server.utils.video_loader import (
+                build_video_prompt_and_inputs,
+            )
+
+            text_prompt = self._extract_text_content(
+                normalised_body.get("input", [{}])[-1].get("content")
+            )
+            video_data = build_video_prompt_and_inputs(
+                videos, text_prompt or "Describe this video.", processor, model.config
+            )
+
+            result = vlm_generate(
+                model,
+                processor,
+                video_data["prompt"],
+                image=images or None,
+                **{k: v for k, v in video_data.items() if k not in ("prompt",)},
+                **gen_kwargs,
+            )
+        else:
+            # --- Image-only path (existing) ---
+            prompt = self._build_vlm_prompt(
+                apply_chat_template,
+                model,
+                processor,
+                normalised_body,
+                images,
+            )
+
+            result = vlm_generate(
+                model,
+                processor,
+                prompt,
+                image=images,
+                **gen_kwargs,
+            )
 
         content_text = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
         output_items = build_text_output(content_text)
@@ -731,12 +812,14 @@ class ResponsesAdapter:
             yield event
 
         images = self._extract_image_inputs(normalised_body)
-        if not images:
+        videos = self._extract_video_inputs(normalised_body)
+
+        if not images and not videos:
             yield make_event(
                 "error",
                 {
                     "error": {
-                        "message": "Vision request missing images",
+                        "message": "Vision request missing images or videos",
                         "code": "invalid_request_error",
                     }
                 },
@@ -759,14 +842,29 @@ class ResponsesAdapter:
             return
 
         model, processor = self._get_vlm_backend(model_id)
-        prompt = self._build_vlm_prompt(
-            apply_chat_template,
-            model,
-            processor,
-            normalised_body,
-            images,
-        )
         kwargs = self._vlm_generation_kwargs(normalised_body)
+
+        if videos:
+            from mlx_batch_server.utils.video_loader import (
+                build_video_prompt_and_inputs,
+            )
+
+            text_prompt = self._extract_text_content(
+                normalised_body.get("input", [{}])[-1].get("content")
+            )
+            video_data = build_video_prompt_and_inputs(
+                videos, text_prompt or "Describe this video.", processor, model.config
+            )
+            prompt = video_data.pop("prompt")
+            kwargs.update(video_data)
+        else:
+            prompt = self._build_vlm_prompt(
+                apply_chat_template,
+                model,
+                processor,
+                normalised_body,
+                images,
+            )
 
         output_text_parts: list[str] = []
         message_item_emitted = False
@@ -775,7 +873,7 @@ class ResponsesAdapter:
             model,
             processor,
             prompt,
-            image=images,
+            image=images or None,
             **kwargs,
         ):
             delta = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
@@ -864,7 +962,7 @@ class ResponsesAdapter:
             body = request.model_dump(exclude_none=True)
             normalised = normalise_responses_payload(body)
 
-            if self._has_image_content(normalised):
+            if self._has_vision_content(normalised):
                 async for event in self._generate_vision_stream(
                     model_id,
                     normalised,
