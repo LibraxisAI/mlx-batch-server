@@ -1,6 +1,6 @@
 """Tests for BatchRequestCoordinator.
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 """
 
 import asyncio

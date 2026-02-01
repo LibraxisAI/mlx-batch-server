@@ -15,7 +15,7 @@ Target metrics:
 - <500ms time-to-first-token per user
 - <150MB overhead per concurrent request
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 Co-Authored-By: [Maciej](void@div0.space) & [Klaudiusz](the1st@whoai.am)
 """
 

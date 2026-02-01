@@ -11,7 +11,7 @@ Architecture:
 - Background worker runs the batch generation loop
 - Automatic batch collection with configurable window
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 Co-Authored-By: [Maciej](void@div0.space) & [Klaudiusz](the1st@whoai.am)
 """
 

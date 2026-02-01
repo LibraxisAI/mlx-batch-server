@@ -7,7 +7,7 @@ Supports:
 - Async tool execution
 - Result formatting for LLM context
 
-Created by M&K (c)2026 The LibraxisAI Team
+Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
 """
 
 from __future__ import annotations

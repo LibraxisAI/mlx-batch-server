@@ -2,7 +2,7 @@
 
 Provides endpoints for batch processing statistics and control.
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 """
 
 from fastapi import APIRouter

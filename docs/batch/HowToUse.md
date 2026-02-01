@@ -171,4 +171,4 @@ watch -n 1 'curl -s http://localhost:10240/v1/batch/stats | jq'
 ```
 
 ---
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders

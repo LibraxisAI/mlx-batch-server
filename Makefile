@@ -11,7 +11,7 @@
 #   make clean      - Clean build artifacts
 
 .PHONY: install dev run stop restart logs test lint format check clean help benchmark \
-	benchmark-cli benchmark-quick setup install-dev install-hooks lint-fix format-check \
+	benchmark-cli benchmark-quick benchmark-build setup install-dev install-hooks lint-fix format-check \
 	security pre-commit pre-push test-fast test-cov test-responses loctree twins build \
 	docker-build docker-run load unload list ps status batch-stats embeddings reranker \
 	vision stt tts
@@ -95,8 +95,11 @@ BENCH_WORKERS ?= 10
 BENCH_ENDPOINT ?= http://localhost:$(PORT)/v1/responses
 BENCH_MODEL ?= chat
 
-benchmark: ## Run API tester (Gradio UI on http://localhost:7860)
+benchmark: benchmark-build ## Run API tester (Gradio UI on http://localhost:7860)
 	$(PYTHON) playground/api_tester.py --port $(BENCH_PORT)
+
+benchmark-build: ## Build HTML tester static assets
+	$(PYTHON) playground/build_static.py
 
 benchmark-cli: ## Run CLI benchmark (BENCH_WORKERS=10 BENCH_MODEL=chat)
 	$(PYTHON) playground/api_tester.py --cli -w $(BENCH_WORKERS) -e $(BENCH_ENDPOINT) -m $(BENCH_MODEL)
