@@ -6,7 +6,7 @@ with support for both local MLX models and external providers.
 
 Includes hosted tool execution (web_search, code_interpreter).
 
-Created by M&K (c)2026 The LibraxisAI Team
+Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
 """
 
 from __future__ import annotations

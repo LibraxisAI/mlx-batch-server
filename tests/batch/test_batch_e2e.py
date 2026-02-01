@@ -2,7 +2,7 @@
 
 Tests the full pipeline from /v1/responses endpoint through batch coordinator.
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 """
 
 import pytest

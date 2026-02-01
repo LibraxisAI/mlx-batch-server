@@ -106,4 +106,4 @@ curl http://localhost:10240/v1/responses \
 Refer to `HowToUse.md` for more examples and `harmony.md` for GPT-OSS model support.
 
 ---
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders

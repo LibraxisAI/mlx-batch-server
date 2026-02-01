@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="pl">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +21,11 @@
             --gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
@@ -101,7 +106,7 @@
             text-transform: none;
         }
 
-        .mode-toggle input:checked + span {
+        .mode-toggle input:checked+span {
             color: var(--accent);
         }
 
@@ -237,7 +242,9 @@
             letter-spacing: 0.05em;
         }
 
-        .field input, .field select, .field textarea {
+        .field input,
+        .field select,
+        .field textarea {
             padding: 0.5rem 0.75rem;
             background: var(--bg);
             border: 1px solid var(--border);
@@ -247,7 +254,9 @@
             font-family: inherit;
         }
 
-        .field input:focus, .field select:focus, .field textarea:focus {
+        .field input:focus,
+        .field select:focus,
+        .field textarea:focus {
             outline: none;
             border-color: var(--accent);
         }
@@ -264,6 +273,111 @@
 
         .field-row .field {
             flex: 1;
+        }
+
+        .media-section {
+            border: 1px dashed var(--border);
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            background: rgba(99, 102, 241, 0.04);
+        }
+
+        .media-section summary {
+            cursor: pointer;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .media-section[open] summary {
+            color: var(--accent);
+        }
+
+        .media-grid {
+            margin-top: 0.5rem;
+            display: grid;
+            gap: 0.5rem;
+        }
+
+        .output-item-body.hidden {
+            display: none;
+        }
+
+        .output-diff {
+            padding: 0.75rem;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            display: none;
+        }
+
+        .diff-summary {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            margin-bottom: 0.5rem;
+        }
+
+        .diff-table-wrap {
+            max-height: 220px;
+            overflow: auto;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+
+        .diff-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .diff-table th,
+        .diff-table td {
+            border-bottom: 1px solid var(--border);
+            padding: 0.35rem 0.5rem;
+            vertical-align: top;
+        }
+
+        .diff-table th {
+            position: sticky;
+            top: 0;
+            background: var(--surface-hover);
+            z-index: 2;
+        }
+
+        .diff-row.same td {
+            background: transparent;
+        }
+
+        .diff-row.changed td {
+            background: rgba(245, 158, 11, 0.08);
+        }
+
+        .diff-row.added td {
+            background: rgba(34, 197, 94, 0.08);
+        }
+
+        .diff-row.removed td {
+            background: rgba(239, 68, 68, 0.08);
+        }
+
+        .diff-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            font-size: 0.7rem;
+            padding: 0.2rem 0.45rem;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .diff-btn:hover:not(:disabled) {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .diff-btn:disabled {
+            opacity: 0.5;
+            cursor: default;
         }
 
         /* Prompts Section */
@@ -337,14 +451,14 @@
             justify-content: space-between;
             align-items: center;
             padding: 0.5rem 0.75rem;
-            background: rgba(255,255,255,0.02);
+            background: rgba(255, 255, 255, 0.02);
             border-bottom: 1px solid var(--border);
             font-size: 0.75rem;
             cursor: pointer;
         }
 
         .output-item-header:hover {
-            background: rgba(255,255,255,0.04);
+            background: rgba(255, 255, 255, 0.04);
         }
 
         .output-step {
@@ -370,12 +484,24 @@
             animation: pulse 1s infinite;
         }
 
-        .status-dot.success { background: var(--success); }
-        .status-dot.error { background: var(--error); }
+        .status-dot.success {
+            background: var(--success);
+        }
+
+        .status-dot.error {
+            background: var(--error);
+        }
 
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.4;
+            }
         }
 
         .output-item-body {
@@ -448,10 +574,267 @@
         }
 
         /* Scrollbar */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: var(--bg); }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-dim);
+        }
+
+        /* Response Preview Modal */
+        .preview-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 2rem;
+        }
+
+        .preview-modal.active {
+            display: block;
+        }
+
+        .preview-content {
+            max-width: 900px;
+            margin: 0 auto;
+            background: var(--surface);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .preview-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(168, 85, 247, 0.1) 100%);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .preview-header h2 {
+            font-size: 1.25rem;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .preview-close {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0.5rem;
+        }
+
+        .preview-close:hover {
+            color: var(--error);
+        }
+
+        .preview-body {
+            padding: 1.5rem;
+        }
+
+        .preview-step {
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background: var(--bg);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .preview-step-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.875rem;
+        }
+
+        .preview-step-num {
+            background: var(--accent);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .preview-prompt {
+            background: rgba(99, 102, 241, 0.1);
+            border-left: 3px solid var(--accent);
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.75rem;
+            border-radius: 0 8px 8px 0;
+            font-size: 0.875rem;
+            color: var(--text-dim);
+        }
+
+        .preview-response {
+            line-height: 1.7;
+            font-size: 0.9375rem;
+        }
+
+        .preview-response h1, .preview-response h2, .preview-response h3 {
+            color: var(--accent-hover);
+            margin: 1rem 0 0.5rem;
+        }
+
+        .preview-response p {
+            margin: 0.5rem 0;
+        }
+
+        .preview-response ul, .preview-response ol {
+            margin: 0.5rem 0;
+            padding-left: 1.5rem;
+        }
+
+        .preview-response li {
+            margin: 0.25rem 0;
+        }
+
+        .preview-response code {
+            background: var(--surface-hover);
+            padding: 0.125rem 0.375rem;
+            border-radius: 4px;
+            font-family: 'SF Mono', monospace;
+            font-size: 0.875em;
+        }
+
+        .preview-response pre {
+            background: var(--surface-hover);
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 0.75rem 0;
+        }
+
+        .preview-response pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .preview-response table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0.75rem 0;
+        }
+
+        .preview-response th, .preview-response td {
+            border: 1px solid var(--border);
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+        }
+
+        .preview-response th {
+            background: var(--surface-hover);
+        }
+
+        .preview-response blockquote {
+            border-left: 3px solid var(--accent);
+            padding-left: 1rem;
+            margin: 0.75rem 0;
+            color: var(--text-dim);
+            font-style: italic;
+        }
+
+        .preview-response strong {
+            color: var(--accent-hover);
+        }
+
+        /* Reasoning section - collapsible with distinct styling */
+        .preview-reasoning {
+            margin: 0.75rem 0;
+            border: 1px solid rgba(147, 51, 234, 0.3);
+            border-radius: 8px;
+            background: rgba(147, 51, 234, 0.05);
+        }
+
+        .preview-reasoning summary {
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            font-weight: 500;
+            color: #a855f7;
+            user-select: none;
+        }
+
+        .preview-reasoning summary:hover {
+            background: rgba(147, 51, 234, 0.1);
+        }
+
+        .preview-reasoning-content {
+            padding: 0 1rem 1rem;
+            font-size: 0.875rem;
+            color: var(--text-dim);
+            line-height: 1.6;
+            border-top: 1px solid rgba(147, 51, 234, 0.2);
+            margin-top: 0;
+        }
+
+        .preview-output-label {
+            font-weight: 500;
+            color: var(--accent);
+            margin: 1rem 0 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .preview-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            padding: 1rem 1.5rem;
+            background: rgba(99, 102, 241, 0.05);
+            border-top: 1px solid var(--border);
+        }
+
+        .preview-stat {
+            text-align: center;
+        }
+
+        .preview-stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+            font-family: 'SF Mono', monospace;
+        }
+
+        .preview-stat-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+
+        /* View Response Button */
+        .btn-view-response {
+            width: 100%;
+            margin-top: 0.5rem;
+            background: var(--surface-hover);
+            border: 1px dashed var(--border);
+            color: var(--text-dim);
+            justify-content: center;
+        }
+
+        .btn-view-response:hover {
+            border-style: solid;
+            border-color: var(--accent);
+            color: var(--accent);
+        }
 
         /* Endpoint presets */
         .endpoint-presets {
@@ -476,6 +859,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="header">
         <h1>LibraxisAI API Tester</h1>
@@ -485,7 +869,8 @@
     <div class="global-config">
         <div class="field" style="flex: 1;">
             <label>API Key</label>
-            <input type="password" id="globalApiKey" value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9">
+            <input type="password" id="globalApiKey"
+                value="">
         </div>
         <div class="field">
             <label>Mode</label>
@@ -500,26 +885,15 @@
                 </label>
             </div>
         </div>
-        <div class="field">
-            <label>Output</label>
-            <div class="mode-toggle">
-                <label title="Show raw SSE events as-is">
-                    <input type="radio" name="outputMode" value="raw" checked>
-                    <span>RAW</span>
-                </label>
-                <label title="Parse and show only text content">
-                    <input type="radio" name="outputMode" value="parsed">
-                    <span>Parsed</span>
-                </label>
-            </div>
-        </div>
     </div>
 
     <div class="toolbar">
         <button class="btn btn-secondary" onclick="addLane()">+ Add Lane</button>
         <button class="btn btn-secondary" onclick="clearAllOutputs()">Clear Outputs</button>
-        <div style="display: flex; align-items: center; gap: 0.25rem; background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; border: 1px solid var(--border);">
-            <select id="presetSelect" style="background: var(--bg); border: none; color: var(--text); padding: 0.4rem; border-radius: 4px; min-width: 120px;">
+        <div
+            style="display: flex; align-items: center; gap: 0.25rem; background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; border: 1px solid var(--border);">
+            <select id="presetSelect"
+                style="background: var(--bg); border: none; color: var(--text); padding: 0.4rem; border-radius: 4px; min-width: 120px;">
                 <option value="">-- Presets --</option>
             </select>
             <button class="btn btn-secondary" onclick="loadPreset()" style="padding: 0.4rem 0.6rem;">Load</button>
@@ -529,7 +903,8 @@
         <button class="btn btn-secondary" onclick="exportResults()">Export JSON</button>
         <button class="btn btn-secondary" onclick="copyResultsToClipboard()">Copy</button>
         <button class="btn btn-secondary" onclick="exportAllLogs()" title="Export all saved test logs">
-            Logs <span id="logCount" style="background: var(--accent); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">0</span>
+            Logs <span id="logCount"
+                style="background: var(--accent); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">0</span>
         </button>
         <div style="flex: 1;"></div>
         <button class="btn btn-primary" id="runBtn" onclick="runAllLanes()">
@@ -545,6 +920,22 @@
         Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
     </div>
 
+    <!-- Response Preview Modal -->
+    <div class="preview-modal" id="previewModal" onclick="if(event.target === this) closePreview()">
+        <div class="preview-content">
+            <div class="preview-header">
+                <h2 id="previewTitle">Response Preview</h2>
+                <button class="preview-close" onclick="closePreview()">&times;</button>
+            </div>
+            <div class="preview-body" id="previewBody">
+                <!-- Steps will be rendered here -->
+            </div>
+            <div class="preview-stats" id="previewStats">
+                <!-- Stats will be rendered here -->
+            </div>
+        </div>
+    </div>
+
     <script>
         // State
         let laneCounter = 0;
@@ -552,50 +943,10 @@
 
         // Endpoint presets
         const ENDPOINTS = {
-            'mlx-batch': 'http://localhost:10240/v1/responses',
+            'mlx-batch': 'http://localhost:8100/v1/responses',
             'api-router': 'http://localhost:8088/v1/responses',
             'remote': 'https://api.libraxis.cloud/v1/responses'
         };
-
-        // History management for Endpoint and Model fields
-        const HISTORY_KEY = 'api-tester-history';
-        const MAX_HISTORY = 10;
-
-        function getHistory() {
-            try {
-                return JSON.parse(localStorage.getItem(HISTORY_KEY)) || { endpoints: [], models: [] };
-            } catch {
-                return { endpoints: [], models: [] };
-            }
-        }
-
-        function saveToHistory(type, value) {
-            if (!value || !value.trim()) return;
-            const history = getHistory();
-            const list = history[type] || [];
-            // Remove if exists, add to front
-            const idx = list.indexOf(value);
-            if (idx > -1) list.splice(idx, 1);
-            list.unshift(value);
-            // Keep max items
-            history[type] = list.slice(0, MAX_HISTORY);
-            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-            updateHistoryDatalist(type);
-        }
-
-        function updateHistoryDatalist(type) {
-            const datalist = document.getElementById(`${type}-history`);
-            if (!datalist) return;
-            const history = getHistory();
-            const items = history[type] || [];
-            datalist.innerHTML = items.map(v => `<option value="${escapeHtml(v)}">`).join('');
-        }
-
-        function escapeHtml(str) {
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
-        }
 
         // Results storage for export
         const testResults = new Map();
@@ -611,14 +962,17 @@
             };
 
             lanes.forEach((_, laneId) => {
-                const laneData = {
-                    id: laneId,
-                    config: {
-                        endpoint: document.getElementById(`${laneId}-endpoint`).value,
-                        model: document.getElementById(`${laneId}-model`).value,
-                        chainLength: document.getElementById(`${laneId}-chain`).value,
-                        systemPrompt: document.getElementById(`${laneId}-system`).value
-                    },
+            const laneData = {
+                id: laneId,
+                config: {
+                    endpoint: document.getElementById(`${laneId}-endpoint`).value,
+                    model: document.getElementById(`${laneId}-model`).value,
+                    chainLength: document.getElementById(`${laneId}-chain`).value,
+                    systemPrompt: document.getElementById(`${laneId}-system`).value,
+                    imageUrl: document.getElementById(`${laneId}-image`)?.value || '',
+                    videoUrl: document.getElementById(`${laneId}-video`)?.value || '',
+                    audioUrl: document.getElementById(`${laneId}-audio`)?.value || ''
+                },
                     prompts: [],
                     responses: [],
                     stats: {
@@ -650,7 +1004,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `api-test-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+            a.download = `api-test-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
             a.click();
             URL.revokeObjectURL(url);
         }
@@ -668,8 +1022,8 @@
                 text += `Stats: TTFT=${lane.stats.ttft} | tok/s=${lane.stats.tps} | Total=${lane.stats.total}\n\n`;
 
                 lane.prompts.forEach((prompt, i) => {
-                    text += `[Prompt ${i+1}]: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n`;
-                    text += `[Response ${i+1}]: ${(lane.responses[i] || '').slice(0, 200)}${(lane.responses[i] || '').length > 200 ? '...' : ''}\n\n`;
+                    text += `[Prompt ${i + 1}]: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n`;
+                    text += `[Response ${i + 1}]: ${(lane.responses[i] || '').slice(0, 200)}${(lane.responses[i] || '').length > 200 ? '...' : ''}\n\n`;
                 });
                 text += '\n';
             });
@@ -709,7 +1063,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `api-test-logs-${new Date().toISOString().slice(0,10)}.json`;
+            a.download = `api-test-logs-${new Date().toISOString().slice(0, 10)}.json`;
             a.click();
             URL.revokeObjectURL(url);
 
@@ -760,6 +1114,9 @@
                     model: document.getElementById(`${laneId}-model`)?.value || 'chat',
                     chain: chainCount,
                     systemPrompt: document.getElementById(`${laneId}-system`)?.value || '',
+                    imageUrl: document.getElementById(`${laneId}-image`)?.value || '',
+                    videoUrl: document.getElementById(`${laneId}-video`)?.value || '',
+                    audioUrl: document.getElementById(`${laneId}-audio`)?.value || '',
                     prompts: []
                 };
 
@@ -816,6 +1173,9 @@
                 const modelEl = document.getElementById(`${laneId}-model`);
                 const chainEl = document.getElementById(`${laneId}-chain`);
                 const systemEl = document.getElementById(`${laneId}-system`);
+                const imageEl = document.getElementById(`${laneId}-image`);
+                const videoEl = document.getElementById(`${laneId}-video`);
+                const audioEl = document.getElementById(`${laneId}-audio`);
 
                 if (endpointEl) endpointEl.value = laneData.endpoint;
                 if (modelEl) modelEl.value = laneData.model;
@@ -824,6 +1184,9 @@
                     updatePrompts(laneId);
                 }
                 if (systemEl) systemEl.value = laneData.systemPrompt;
+                if (imageEl) imageEl.value = laneData.imageUrl || '';
+                if (videoEl) videoEl.value = laneData.videoUrl || '';
+                if (audioEl) audioEl.value = laneData.audioUrl || '';
 
                 // Set prompts (after updatePrompts created the fields)
                 setTimeout(() => {
@@ -923,6 +1286,23 @@
                         <label>System Prompt (optional)</label>
                         <textarea id="${laneId}-system" placeholder="Jesteś pomocnym asystentem..."></textarea>
                     </div>
+                    <details class="media-section">
+                        <summary>Multimodal inputs (optional)</summary>
+                        <div class="media-grid">
+                            <div class="field">
+                                <label>Image URL / Path</label>
+                                <input type="text" id="${laneId}-image" placeholder="https://... or /path/to/image.png">
+                            </div>
+                            <div class="field">
+                                <label>Video URL / Path</label>
+                                <input type="text" id="${laneId}-video" placeholder="https://... or /path/to/video.mp4">
+                            </div>
+                            <div class="field">
+                                <label>Audio URL / Path</label>
+                                <input type="text" id="${laneId}-audio" placeholder="https://... or /path/to/audio.wav">
+                            </div>
+                        </div>
+                    </details>
                 </div>
 
                 <div class="prompts-section" id="${laneId}-prompts">
@@ -970,6 +1350,9 @@
             const sourceModel = document.getElementById(`${laneId}-model`).value;
             const sourceChain = document.getElementById(`${laneId}-chain`).value;
             const sourceSystem = document.getElementById(`${laneId}-system`).value;
+            const sourceImage = document.getElementById(`${laneId}-image`)?.value || '';
+            const sourceVideo = document.getElementById(`${laneId}-video`)?.value || '';
+            const sourceAudio = document.getElementById(`${laneId}-audio`)?.value || '';
 
             addLane();
             const newLaneId = `lane-${laneCounter}`;
@@ -978,6 +1361,12 @@
             document.getElementById(`${newLaneId}-model`).value = sourceModel;
             document.getElementById(`${newLaneId}-chain`).value = sourceChain;
             document.getElementById(`${newLaneId}-system`).value = sourceSystem;
+            const imageEl = document.getElementById(`${newLaneId}-image`);
+            const videoEl = document.getElementById(`${newLaneId}-video`);
+            const audioEl = document.getElementById(`${newLaneId}-audio`);
+            if (imageEl) imageEl.value = sourceImage;
+            if (videoEl) videoEl.value = sourceVideo;
+            if (audioEl) audioEl.value = sourceAudio;
 
             // Copy prompts
             updatePrompts(newLaneId);
@@ -1067,6 +1456,9 @@
             const model = document.getElementById(`${laneId}-model`).value;
             const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
             const systemPrompt = document.getElementById(`${laneId}-system`).value;
+            const imageUrl = document.getElementById(`${laneId}-image`)?.value?.trim() || '';
+            const videoUrl = document.getElementById(`${laneId}-video`)?.value?.trim() || '';
+            const audioUrl = document.getElementById(`${laneId}-audio`)?.value?.trim() || '';
             const apiKey = document.getElementById('globalApiKey').value;
             const isStream = document.querySelector('input[name="streamMode"]:checked').value === 'true';
 
@@ -1092,13 +1484,19 @@
                     <div class="output-item-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
                         <span class="output-step">Step ${step}</span>
                         <div class="output-status">
+                            <button class="diff-btn" id="${laneId}-diff-btn-${step}" onclick="event.stopPropagation(); toggleDiff('${laneId}', ${step});">Diff</button>
                             <span class="stream-preview" id="${laneId}-preview-${step}"></span>
                             <span class="status-dot running" id="${laneId}-dot-${step}"></span>
                         </div>
                     </div>
                     <div class="output-item-body" id="${laneId}-output-${step}"></div>
+                    <div class="output-diff" id="${laneId}-diff-${step}"></div>
                 `;
                 outputSection.appendChild(outputItem);
+                const diffBtn = document.getElementById(`${laneId}-diff-btn-${step}`);
+                if (diffBtn && laneId === 'lane-1') {
+                    diffBtn.disabled = true;
+                }
 
                 try {
                     const result = await executeRequest({
@@ -1106,6 +1504,9 @@
                         model,
                         prompt,
                         systemPrompt,
+                        imageUrl,
+                        videoUrl,
+                        audioUrl,
                         apiKey,
                         isStream,
                         previousResponseId,
@@ -1134,7 +1535,7 @@
             }
         }
 
-        async function executeRequest({ endpoint, model, prompt, systemPrompt, apiKey, isStream, previousResponseId, laneId, step }) {
+        async function executeRequest({ endpoint, model, prompt, systemPrompt, imageUrl, videoUrl, audioUrl, apiKey, isStream, previousResponseId, laneId, step }) {
             const outputEl = document.getElementById(`${laneId}-output-${step}`);
             const previewEl = document.getElementById(`${laneId}-preview-${step}`);
 
@@ -1150,9 +1551,16 @@
                 if (systemPrompt) {
                     input.push({ role: 'system', content: systemPrompt });
                 }
+                const contentParts = [];
+                if (imageUrl) contentParts.push({ type: 'input_image', image_url: imageUrl });
+                if (videoUrl) contentParts.push({ type: 'input_video', video_url: videoUrl });
+                if (audioUrl) contentParts.push({ type: 'input_audio', audio_url: audioUrl });
+                if (prompt && prompt.trim()) {
+                    contentParts.push({ type: 'input_text', text: prompt });
+                }
                 input.push({
                     role: 'user',
-                    content: [{ type: 'input_text', text: prompt }]
+                    content: contentParts.length ? contentParts : [{ type: 'input_text', text: '' }]
                 });
 
                 body = { model, input, stream: isStream };
@@ -1182,6 +1590,8 @@
             let ttft = null;
             let tokens = 0;
             let fullText = '';
+            let reasoningText = '';
+            let outputText = '';
             let responseId = null;
 
             const response = await fetch(endpoint, {
@@ -1193,10 +1603,6 @@
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
-
-            // Check output mode
-            const isRawMode = document.querySelector('input[name="outputMode"]:checked')?.value === 'raw';
-            let rawEvents = [];
 
             if (isStream) {
                 const reader = response.body.getReader();
@@ -1210,17 +1616,6 @@
                     const lines = chunk.split('\n');
 
                     for (const line of lines) {
-                        // RAW MODE: Show everything including event: lines
-                        if (isRawMode && line.trim()) {
-                            rawEvents.push(line);
-                            outputEl.innerHTML = '<pre style="white-space: pre-wrap; font-size: 0.75rem; font-family: monospace;">' +
-                                rawEvents.map(e => escapeHtml(e)).join('\n') + '</pre>';
-                            if (ttft === null) {
-                                ttft = Math.round(performance.now() - startTime);
-                            }
-                            tokens++;
-                        }
-
                         if (!line.startsWith('data: ')) continue;
 
                         const data = line.slice(6);
@@ -1231,40 +1626,49 @@
 
                             // Extract response ID
                             if (parsed.id) responseId = parsed.id;
-                            if (parsed.response?.id) responseId = parsed.response.id;
 
-                            // PARSED MODE: Extract text delta only
-                            if (!isRawMode) {
-                                let delta = '';
-                                if (parsed.type === 'response.output_text.delta') {
-                                    delta = parsed.delta || '';
-                                } else if (parsed.delta?.text) {
-                                    delta = parsed.delta.text;
-                                } else if (parsed.choices?.[0]?.delta?.content) {
-                                    delta = parsed.choices[0].delta.content;
+                            // Extract text delta - track reasoning and output separately
+                            // GPT-OSS (Harmony) sends reasoning_summary before output
+                            let delta = '';
+                            let isReasoning = false;
+
+                            if (parsed.type === 'response.reasoning_summary_text.delta') {
+                                delta = parsed.delta || '';
+                                isReasoning = true;
+                            } else if (parsed.type === 'response.output_text.delta') {
+                                delta = parsed.delta || '';
+                            } else if (parsed.delta?.text) {
+                                delta = parsed.delta.text;
+                            } else if (parsed.choices?.[0]?.delta?.content) {
+                                delta = parsed.choices[0].delta.content;
+                            }
+
+                            if (delta) {
+                                if (ttft === null) {
+                                    ttft = Math.round(performance.now() - startTime);
+                                }
+                                tokens++;
+                                fullText += delta;
+
+                                // Track reasoning vs output separately
+                                if (isReasoning) {
+                                    reasoningText += delta;
+                                } else {
+                                    outputText += delta;
                                 }
 
-                                if (delta) {
-                                    if (ttft === null) {
-                                        ttft = Math.round(performance.now() - startTime);
-                                    }
-                                    tokens++;
-                                    fullText += delta;
-                                    outputEl.textContent = fullText;
+                                outputEl.textContent = fullText;
+                                // Store separated data for preview
+                                outputEl.dataset.reasoning = reasoningText;
+                                outputEl.dataset.output = outputText;
 
-                                    // Update preview (last 30 chars)
-                                    previewEl.textContent = fullText.slice(-30);
-                                }
+                                // Update preview (last 30 chars of output, or reasoning if no output yet)
+                                previewEl.textContent = (outputText || reasoningText).slice(-30);
                             }
                         } catch (e) {
                             // Skip non-JSON lines
                         }
                     }
-                }
-
-                // RAW mode: store full text from raw events
-                if (isRawMode) {
-                    fullText = rawEvents.join('\n');
                 }
             } else {
                 // Non-streaming response
@@ -1302,6 +1706,274 @@
                 text: fullText
             };
         }
+
+        function getOutputText(laneId, step) {
+            const el = document.getElementById(`${laneId}-output-${step}`);
+            return el ? (el.textContent || '') : '';
+        }
+
+        function buildLineDiff(baseText, currentText) {
+            const baseLines = (baseText || '').split('\n');
+            const curLines = (currentText || '').split('\n');
+            const max = Math.max(baseLines.length, curLines.length);
+
+            let same = 0;
+            let changed = 0;
+            let added = 0;
+            let removed = 0;
+            const rows = [];
+
+            for (let i = 0; i < max; i++) {
+                const baseLine = baseLines[i] ?? '';
+                const curLine = curLines[i] ?? '';
+                let status = 'same';
+                if (!baseLine && curLine) {
+                    status = 'added';
+                    added += 1;
+                } else if (baseLine && !curLine) {
+                    status = 'removed';
+                    removed += 1;
+                } else if (baseLine !== curLine) {
+                    status = 'changed';
+                    changed += 1;
+                } else {
+                    same += 1;
+                }
+                rows.push({ idx: i + 1, status, baseLine, curLine });
+            }
+
+            return { rows, counts: { same, changed, added, removed } };
+        }
+
+        function renderDiffTable(diff) {
+            const summary = `same: ${diff.counts.same} · changed: ${diff.counts.changed} · added: ${diff.counts.added} · removed: ${diff.counts.removed}`;
+            const rowsHtml = diff.rows.map(r => `
+                <tr class="diff-row ${r.status}">
+                    <td style="width:32px;">${r.idx}</td>
+                    <td>${escapeHtml(r.baseLine)}</td>
+                    <td>${escapeHtml(r.curLine)}</td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="diff-summary">${summary}</div>
+                <div class="diff-table-wrap">
+                    <table class="diff-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Lane 1</th>
+                                <th>Current</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rowsHtml}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            return (text || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        function toggleDiff(laneId, step) {
+            if (laneId === 'lane-1') return;
+            const diffEl = document.getElementById(`${laneId}-diff-${step}`);
+            const outputEl = document.getElementById(`${laneId}-output-${step}`);
+            const btn = document.getElementById(`${laneId}-diff-btn-${step}`);
+            if (!diffEl || !outputEl) return;
+
+            const showing = diffEl.style.display === 'block';
+            if (showing) {
+                diffEl.style.display = 'none';
+                outputEl.classList.remove('hidden');
+                if (btn) btn.textContent = 'Diff';
+                return;
+            }
+
+            const base = getOutputText('lane-1', step);
+            const current = getOutputText(laneId, step);
+            const diff = buildLineDiff(base, current);
+            diffEl.innerHTML = renderDiffTable(diff);
+            diffEl.style.display = 'block';
+            outputEl.classList.add('hidden');
+            if (btn) btn.textContent = 'Text';
+        }
+
+        // === PREVIEW MODAL FUNCTIONS ===
+
+        function simpleMarkdown(text) {
+            if (!text) return '';
+
+            // Escape HTML first
+            let html = text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+
+            // Code blocks (```...```)
+            html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+
+            // Inline code (`...`)
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+            // Headers
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+            // Bold and italic
+            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+            // Blockquotes
+            html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+
+            // Lists
+            html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>');
+
+            // Wrap consecutive li in ul
+            html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+
+            // Tables (simple markdown tables)
+            const tableRegex = /\|(.+)\|\n\|[-| ]+\|\n((?:\|.+\|\n?)+)/g;
+            html = html.replace(tableRegex, (match, headerRow, bodyRows) => {
+                const headers = headerRow.split('|').filter(h => h.trim()).map(h => `<th>${h.trim()}</th>`).join('');
+                const rows = bodyRows.trim().split('\n').map(row => {
+                    const cells = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+                    return `<tr>${cells}</tr>`;
+                }).join('');
+                return `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
+            });
+
+            // Paragraphs (double newlines)
+            html = html.replace(/\n\n/g, '</p><p>');
+            html = '<p>' + html + '</p>';
+
+            // Clean up empty paragraphs
+            html = html.replace(/<p>\s*<\/p>/g, '');
+            html = html.replace(/<p>(<h[123]>)/g, '$1');
+            html = html.replace(/(<\/h[123]>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<pre>)/g, '$1');
+            html = html.replace(/(<\/pre>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<ul>)/g, '$1');
+            html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<table>)/g, '$1');
+            html = html.replace(/(<\/table>)<\/p>/g, '$1');
+            html = html.replace(/<p>(<blockquote>)/g, '$1');
+            html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+
+            return html;
+        }
+
+        function openPreview(laneId) {
+            const model = document.getElementById(`${laneId}-model`).value;
+            const endpoint = document.getElementById(`${laneId}-endpoint`).value;
+            const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
+
+            document.getElementById('previewTitle').textContent = `${model.toUpperCase()} - Response Preview`;
+
+            const bodyEl = document.getElementById('previewBody');
+            bodyEl.innerHTML = '';
+
+            let totalTokens = 0;
+            let hasContent = false;
+
+            for (let i = 1; i <= chainCount; i++) {
+                const promptEl = document.getElementById(`${laneId}-prompt-${i}`);
+                const outputEl = document.getElementById(`${laneId}-output-${i}`);
+
+                if (!outputEl || !outputEl.textContent) continue;
+                hasContent = true;
+
+                const prompt = promptEl?.value || '';
+                const reasoning = outputEl.dataset.reasoning || '';
+                const output = outputEl.dataset.output || outputEl.textContent || '';
+                const fullResponse = outputEl.textContent || '';
+                totalTokens += fullResponse.split(/\s+/).length;
+
+                const stepDiv = document.createElement('div');
+                stepDiv.className = 'preview-step';
+
+                // Build HTML with separate reasoning and output sections
+                let contentHtml = `
+                    <div class="preview-step-header">
+                        <span class="preview-step-num">Step ${i}</span>
+                        <span style="color: var(--text-dim);">${fullResponse.length} chars</span>
+                    </div>
+                    <div class="preview-prompt">${prompt.slice(0, 150)}${prompt.length > 150 ? '...' : ''}</div>
+                `;
+
+                // Show reasoning if present (collapsible)
+                if (reasoning) {
+                    contentHtml += `
+                        <details class="preview-reasoning" open>
+                            <summary>🧠 Reasoning (${reasoning.length} chars)</summary>
+                            <div class="preview-reasoning-content">${simpleMarkdown(reasoning)}</div>
+                        </details>
+                    `;
+                }
+
+                // Show output (main response)
+                if (output) {
+                    contentHtml += `
+                        <div class="preview-output-label">💬 Response</div>
+                        <div class="preview-response">${simpleMarkdown(output)}</div>
+                    `;
+                }
+
+                stepDiv.innerHTML = contentHtml;
+                bodyEl.appendChild(stepDiv);
+            }
+
+            if (!hasContent) {
+                bodyEl.innerHTML = '<p style="text-align: center; color: var(--text-dim); padding: 2rem;">No responses yet. Run the test first!</p>';
+            }
+
+            // Stats
+            const ttft = document.getElementById(`${laneId}-ttft`)?.textContent || '-';
+            const tps = document.getElementById(`${laneId}-tps`)?.textContent || '-';
+            const total = document.getElementById(`${laneId}-total`)?.textContent || '-';
+
+            document.getElementById('previewStats').innerHTML = `
+                <div class="preview-stat">
+                    <div class="preview-stat-value">${model}</div>
+                    <div class="preview-stat-label">Model</div>
+                </div>
+                <div class="preview-stat">
+                    <div class="preview-stat-value">${ttft}</div>
+                    <div class="preview-stat-label">TTFT</div>
+                </div>
+                <div class="preview-stat">
+                    <div class="preview-stat-value">${tps}</div>
+                    <div class="preview-stat-label">tok/s</div>
+                </div>
+                <div class="preview-stat">
+                    <div class="preview-stat-value">${total}</div>
+                    <div class="preview-stat-label">Total Time</div>
+                </div>
+            `;
+
+            document.getElementById('previewModal').classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closePreview() {
+            document.getElementById('previewModal').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closePreview();
+        });
     </script>
 </body>
+
 </html>
