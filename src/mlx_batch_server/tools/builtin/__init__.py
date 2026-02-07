@@ -1,5 +1,5 @@
 """
-Built-in hosted tools for Mlx batch Server.
+Built-in hosted tools for MLX Batch Server.
 
 These tools are executed server-side when the model generates tool calls.
 
