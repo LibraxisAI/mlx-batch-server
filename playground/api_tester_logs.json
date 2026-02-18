@@ -1,0 +1,301 @@
+[
+  {
+    "timestamp": "2026-02-16T17:46:56.377219+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "http://localhost:8088/v1/responses",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 384.82491695322096,
+        "total_tokens": 0,
+        "total_time": 803.1368749216199,
+        "error": null
+      },
+      {
+        "endpoint": "https://api.libraxis.cloud/v1/responses",
+        "model": "http://localhost:10240/v1/responses",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 269.4622909184545,
+        "error": "HTTP 401"
+      },
+      {
+        "endpoint": "http://localhost:8088/v1/responses",
+        "model": "https://api.libraxis.cloud/v1/responses",
+        "responses": [
+          "❌ Error: HTTP 401"
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 231.29637516103685,
+        "error": "HTTP 401"
+      },
+      {
+        "endpoint": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "❌ Exception: Request URL is missing an 'http://' or 'https://' protocol."
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 227.69079194404185,
+        "error": "Request URL is missing an 'http://' or 'https://' protocol."
+      },
+      {
+        "endpoint": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "❌ Exception: Request URL is missing an 'http://' or 'https://' protocol."
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 227.2979998961091,
+        "error": "Request URL is missing an 'http://' or 'https://' protocol."
+      },
+      {
+        "endpoint": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4/Qwen3-VL-235B-A22B-Instruct-mlx-nvfp4",
+        "responses": [
+          "❌ Exception: Request URL is missing an 'http://' or 'https://' protocol."
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 225.18500010482967,
+        "error": "Request URL is missing an 'http://' or 'https://' protocol."
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-16T17:47:39.162838+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "http://localhost:10240/v1/responses",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 615.8042917959392,
+        "total_tokens": 0,
+        "total_time": 1848.9402499981225,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "http://localhost:10240/v1/responses",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 615.6300830189139,
+        "total_tokens": 0,
+        "total_time": 1848.8086250144988,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "http://localhost:10240/v1/responses",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 366.02158402092755,
+        "total_tokens": 0,
+        "total_time": 1485.1532918401062,
+        "error": null
+      },
+      {
+        "endpoint": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "❌ Exception: Request URL is missing an 'http://' or 'https://' protocol."
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 242.95366695150733,
+        "error": "Request URL is missing an 'http://' or 'https://' protocol."
+      },
+      {
+        "endpoint": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "responses": [
+          "❌ Exception: Request URL is missing an 'http://' or 'https://' protocol."
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 246.25566601753235,
+        "error": "Request URL is missing an 'http://' or 'https://' protocol."
+      },
+      {
+        "endpoint": "libraxisai/gpt-oss-120b-mlx-mxfp4",
+        "model": "libraxisai/gpt-oss-120b-mlx-mxfp4/Qwen3-VL-235B-A22B-Instruct-mlx-nvfp4",
+        "responses": [
+          "❌ Exception: Request URL is missing an 'http://' or 'https://' protocol."
+        ],
+        "ttft": null,
+        "total_tokens": 0,
+        "total_time": 238.6231671553105,
+        "error": "Request URL is missing an 'http://' or 'https://' protocol."
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-16T17:49:05.470377+00:00",
+    "results": [
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 695.0949591118842,
+        "total_tokens": 0,
+        "total_time": 4775.698250159621,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 906.3646669965237,
+        "total_tokens": 0,
+        "total_time": 10308.783916058019,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 1668.2983341161162,
+        "total_tokens": 0,
+        "total_time": 13934.751416090876,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 1770.611000014469,
+        "total_tokens": 0,
+        "total_time": 15365.561333019286,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2559.3872079625726,
+        "total_tokens": 0,
+        "total_time": 16162.676999811083,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3328.917874954641,
+        "total_tokens": 0,
+        "total_time": 16954.560374841094,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 2329.0319580119103,
+        "total_tokens": 0,
+        "total_time": 15954.555541975424,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4308.999875094742,
+        "total_tokens": 0,
+        "total_time": 16049.845167202875,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 3309.073291020468,
+        "total_tokens": 0,
+        "total_time": 15049.786082934588,
+        "error": null
+      },
+      {
+        "endpoint": "http://localhost:10240/v1/responses",
+        "model": "libraxisai/gpt-oss-120b-mlx-mfxp4",
+        "responses": [
+          "",
+          "",
+          "",
+          ""
+        ],
+        "ttft": 4614.722624886781,
+        "total_tokens": 0,
+        "total_time": 14716.110332868993,
+        "error": null
+      }
+    ]
+  }
+]

@@ -18,7 +18,8 @@
 .DEFAULT_GOAL := help
 
 # === Configuration ===
-PYTHON := uv run python
+VENV_PYTHON := .venv/bin/python
+PYTHON := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),uv run python)
 PORT ?= 10240
 HOST ?= 0.0.0.0
 LOG_LEVEL ?= info

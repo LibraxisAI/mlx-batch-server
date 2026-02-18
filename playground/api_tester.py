@@ -44,6 +44,25 @@ LOGS_FILE = Path(__file__).parent / "api_tester_logs.json"
 
 MAX_LANES = 6  # Maximum number of parallel lanes
 
+APP_THEME = gr.themes.Base(
+    primary_hue="indigo",
+    secondary_hue="purple",
+    neutral_hue="zinc",
+)
+
+APP_CSS = """
+    .header { text-align: center; padding: 1rem; }
+    .header h1 {
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2rem;
+    }
+    .lane-box { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; }
+    .stats-box { font-family: monospace; background: #1a1a2e; padding: 0.5rem; border-radius: 4px; }
+    .run-btn { font-size: 1.2rem !important; font-weight: bold !important; }
+"""
+
 
 def _load_html_tester() -> tuple[str, str]:
     """Load the standalone HTML tester and wrap it in an iframe."""
@@ -334,26 +353,7 @@ def get_log_count() -> int:
 def create_app() -> tuple[gr.Blocks, str]:
     """Create the Gradio app with dynamic lanes."""
 
-    with gr.Blocks(
-        title="LibraxisAI API Tester",
-        theme=gr.themes.Base(
-            primary_hue="indigo",
-            secondary_hue="purple",
-            neutral_hue="zinc",
-        ),
-        css="""
-        .header { text-align: center; padding: 1rem; }
-        .header h1 {
-            background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            font-size: 2rem;
-        }
-        .lane-box { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; }
-        .stats-box { font-family: monospace; background: #1a1a2e; padding: 0.5rem; border-radius: 4px; }
-        .run-btn { font-size: 1.2rem !important; font-weight: bold !important; }
-        """,
-    ) as app:
+    with gr.Blocks(title="LibraxisAI API Tester") as app:
         # Header
         gr.HTML("""
             <div class="header">
@@ -463,7 +463,7 @@ def create_app() -> tuple[gr.Blocks, str]:
                             lines=8,
                             max_lines=15,
                             interactive=False,
-                            show_copy_button=True,
+                            buttons=["copy"],
                         )
                         stats = gr.Textbox(
                             label="Stats",
@@ -838,6 +838,8 @@ Examples:
             share=False,
             show_error=True,
             allowed_paths=allowed or None,
+            theme=APP_THEME,
+            css=APP_CSS,
         )
 
 
