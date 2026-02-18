@@ -184,3 +184,5 @@ mlx-batch-server.log
 !.ai-context/share/
 !.ai-context/share/summary.md
 !.ai-context/share/timeline.md
+/.ai-context
+playground/api_tester_logs.json

@@ -1424,14 +1424,52 @@
             });
         }
 
+        const RUN_ALL_MODE_KEY = 'api-tester-run-mode';
+        const RUN_ALL_MODES = {
+            // Production-like spread: randomized start offsets reduce synchronized bursts.
+            prod_scatter: { label: 'prod-scatter', shiftMs: 120, jitterMs: 260 },
+            // Synthetic benchmark mode: all lanes start together.
+            strict_batch: { label: 'strict-batch', shiftMs: 0, jitterMs: 0 },
+        };
+        const RUN_ALL_MAX_DELAY_MS = 2500;
+
+        function getRunAllMode() {
+            const fromUrl = new URLSearchParams(window.location.search).get('run_mode');
+            if (fromUrl && RUN_ALL_MODES[fromUrl]) {
+                localStorage.setItem(RUN_ALL_MODE_KEY, fromUrl);
+                return fromUrl;
+            }
+            const stored = localStorage.getItem(RUN_ALL_MODE_KEY);
+            return RUN_ALL_MODES[stored] ? stored : 'prod_scatter';
+        }
+
+        function getRunAllDelayMs(index, modeName) {
+            const mode = RUN_ALL_MODES[modeName] || RUN_ALL_MODES.prod_scatter;
+            if (mode.shiftMs === 0 && mode.jitterMs === 0) return 0;
+            const jitter = mode.jitterMs > 0 ? Math.floor(Math.random() * mode.jitterMs) : 0;
+            return Math.min(index * mode.shiftMs + jitter, RUN_ALL_MAX_DELAY_MS);
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
         async function runAllLanes() {
             const btn = document.getElementById('runBtn');
+            const modeName = getRunAllMode();
+            const mode = RUN_ALL_MODES[modeName] || RUN_ALL_MODES.prod_scatter;
             btn.disabled = true;
-            btn.textContent = 'RUNNING...';
+            btn.textContent = `RUNNING... (${mode.label})`;
 
             const promises = [];
-            lanes.forEach((_, laneId) => {
-                promises.push(runLane(laneId));
+            Array.from(lanes.keys()).forEach((laneId, index) => {
+                promises.push((async () => {
+                    const delayMs = getRunAllDelayMs(index, modeName);
+                    if (delayMs > 0) {
+                        await sleep(delayMs);
+                    }
+                    return runLane(laneId);
+                })());
             });
 
             await Promise.all(promises);
