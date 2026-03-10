@@ -10,11 +10,26 @@ Supports pinned models that are NEVER evicted (always available).
 import threading
 import time
 from collections import OrderedDict
+from contextlib import suppress
 from dataclasses import dataclass
 
 from ...core.config import get_settings
 from ...utils.logger import logger
+from ...utils.memory import force_mlx_cleanup
 from .chat_generator import ChatGenerator
+
+
+def _normalize_model_id(model_id: str) -> str:
+    """Normalize model IDs for stable cache keys."""
+    normalized = model_id.strip()
+    if (
+        "/" in normalized
+        and not normalized.startswith("/")
+        and not normalized.startswith(".")
+        and not normalized.startswith("~")
+    ):
+        return normalized.lower()
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -62,7 +77,9 @@ class MLXWrapperCache:
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
         self._cleanup_interval = cleanup_interval
-        self._pinned_models: set[str] = set(pinned_models or [])
+        self._pinned_models: set[str] = {
+            _normalize_model_id(model_id) for model_id in (pinned_models or [])
+        }
         self._stop_event = threading.Event()
         self._cleanup_thread = None
 
@@ -81,6 +98,24 @@ class MLXWrapperCache:
     def _is_pinned(self, key: WrapperCacheKey) -> bool:
         """Check if a model is pinned (should never be evicted)."""
         return key.model_id in self._pinned_models
+
+    def _release_memory(
+        self, wrapper: ChatGenerator | None, key: WrapperCacheKey
+    ) -> None:
+        """Release MLX memory after cache eviction or unload."""
+        if wrapper is None:
+            return
+
+        model_id = key.model_id
+        try:
+            with suppress(Exception):
+                wrapper._prompt_cache = None
+                wrapper.model = None
+
+            del wrapper
+            force_mlx_cleanup(f"wrapper:{model_id}", passes=3)
+        except Exception as e:
+            logger.warning(f"Error releasing memory for {model_id}: {e}")
 
     def _evict_expired_items(self) -> None:
         """Evict items that have exceeded their TTL.
@@ -102,11 +137,12 @@ class MLXWrapperCache:
                 expired_keys.append(key)
 
         for key in expired_keys:
-            self._cache.pop(key, None)
+            wrapper = self._cache.pop(key, None)
             self._access_times.pop(key, None)
             logger.info(
                 f"Evicted expired model from cache (TTL={self._ttl_seconds}s): {key}"
             )
+            self._release_memory(wrapper, key)
 
     def _evict_lru_if_needed(self) -> None:
         """Evict least recently used NON-PINNED item if cache is at capacity.
@@ -129,10 +165,11 @@ class MLXWrapperCache:
             lru_key = min(non_pinned_keys, key=lambda k: self._access_times[k])
 
             # Remove from cache and access times
-            self._cache.pop(lru_key, None)
+            wrapper = self._cache.pop(lru_key, None)
             self._access_times.pop(lru_key, None)
 
             logger.info(f"Evicted LRU model from cache: {lru_key}")
+            self._release_memory(wrapper, lru_key)
 
     def _update_access_time(self, key: WrapperCacheKey) -> None:
         """Update access time for LRU tracking.
@@ -181,8 +218,9 @@ class MLXWrapperCache:
             This method is thread-safe and will only create one wrapper instance
             per unique parameter combination, even under concurrent access.
         """
+        normalized_model_id = _normalize_model_id(model_id)
         key = WrapperCacheKey(
-            model_id=model_id,
+            model_id=normalized_model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
         )
@@ -217,21 +255,24 @@ class MLXWrapperCache:
             logger.info(f"Creating new ChatGenerator for: {key}")
             try:
                 wrapper = ChatGenerator.create(
-                    model_id=model_id,
+                    model_id=normalized_model_id,
                     adapter_path=adapter_path,
                     draft_model_id=draft_model_id,
                 )
 
-                # Only cache if max_size > 0
-                if self._max_size > 0:
+                # Pinned models must remain tracked even in max_size=0
+                # deployments. Non-pinned models respect max_size.
+                if self._is_pinned(key) or self._max_size > 0:
                     self._cache[key] = wrapper
                     self._update_access_time(key)
                     logger.info(
-                        f"Successfully cached ChatGenerator: {key} (cache size: {len(self._cache)}/{self._max_size})"
+                        f"Cached ChatGenerator: {key} "
+                        f"(size={len(self._cache)}, max_non_pinned={self._max_size}, "
+                        f"pinned={self._is_pinned(key)})"
                     )
                 else:
-                    logger.info(
-                        f"Created ChatGenerator but not cached (max_size=0): {key}"
+                    logger.warning(
+                        f"ChatGenerator created but NOT cached (non-pinned, max_size=0): {key}"
                     )
 
                 return wrapper
@@ -259,7 +300,7 @@ class MLXWrapperCache:
             return evicted_count
 
     def clear_cache(self) -> None:
-        """Clear all cached wrapper instances.
+        """Clear all cached wrapper instances and release MLX memory.
 
         This can be useful for memory management or testing purposes.
         """
@@ -268,9 +309,13 @@ class MLXWrapperCache:
 
         with self._lock:
             cache_size = len(self._cache)
+            wrappers_to_release = list(self._cache.items())
             self._cache.clear()
             self._access_times.clear()
             logger.info(f"Cleared ChatGenerator cache ({cache_size} entries)")
+
+        for key, wrapper in wrappers_to_release:
+            self._release_memory(wrapper, key)
 
     def unload_model(self, model_id: str) -> bool:
         """Unload a specific model from the cache.
@@ -281,20 +326,29 @@ class MLXWrapperCache:
         Returns:
             True if model was found and unloaded, False if not in cache
         """
+        normalized_model_id = _normalize_model_id(model_id)
+        wrappers_to_release = []
+
         with self._lock:
             # Find all keys matching this model_id
-            keys_to_remove = [key for key in self._cache if key.model_id == model_id]
+            keys_to_remove = [
+                key for key in self._cache if key.model_id == normalized_model_id
+            ]
 
             if not keys_to_remove:
-                logger.info(f"Model {model_id} not found in cache")
+                logger.info(f"Model {normalized_model_id} not found in cache")
                 return False
 
             for key in keys_to_remove:
-                self._cache.pop(key, None)
+                wrapper = self._cache.pop(key, None)
                 self._access_times.pop(key, None)
+                wrappers_to_release.append((key, wrapper))
                 logger.info(f"Unloaded model from cache: {key}")
 
-            return True
+        for key, wrapper in wrappers_to_release:
+            self._release_memory(wrapper, key)
+
+        return True
 
     def is_model_loaded(self, model_id: str) -> bool:
         """Check if a model is currently loaded in cache.
@@ -305,8 +359,9 @@ class MLXWrapperCache:
         Returns:
             True if model is in cache, False otherwise
         """
+        normalized_model_id = _normalize_model_id(model_id)
         with self._lock:
-            return any(key.model_id == model_id for key in self._cache)
+            return any(key.model_id == normalized_model_id for key in self._cache)
 
     def get_loaded_models(self) -> list[str]:
         """Get list of currently loaded model IDs.

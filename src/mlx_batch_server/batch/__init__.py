@@ -23,7 +23,9 @@ from . import router
 from .coordinator import (
     BatchRequestCoordinator,
     get_batch_coordinator,
+    get_loaded_batch_models,
     shutdown_all_coordinators,
+    shutdown_batch_coordinator,
 )
 from .generator import (
     BatchChatGenerator,
@@ -39,6 +41,8 @@ __all__ = [
     "BatchRequestCoordinator",
     "BatchStreamChunk",
     "get_batch_coordinator",
+    "get_loaded_batch_models",
     "router",
     "shutdown_all_coordinators",
+    "shutdown_batch_coordinator",
 ]

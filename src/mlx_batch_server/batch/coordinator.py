@@ -34,7 +34,9 @@ if TYPE_CHECKING:
 __all__ = [
     "BatchRequestCoordinator",
     "get_batch_coordinator",
+    "get_loaded_batch_models",
     "shutdown_all_coordinators",
+    "shutdown_batch_coordinator",
 ]
 
 
@@ -44,7 +46,7 @@ class PendingRequest:
 
     request_id: str
     messages: list[dict[str, Any]]
-    max_tokens: int
+    max_tokens: int | None
     sampler_config: dict[str, Any] | None
     template_kwargs: dict[str, Any] | None
     response_queue: asyncio.Queue
@@ -128,17 +130,25 @@ class BatchRequestCoordinator:
         """Get existing or create new BatchChatGenerator."""
         with self._generator_lock:
             if self._generator is None:
+                from ..chat.mlx.chat_generator import ChatGenerator
                 from .generator import BatchChatGenerator
 
-                self._generator = BatchChatGenerator.create(
+                # Reuse the cached chat wrapper so batch mode shares a single hot
+                # MLX model instance with the rest of the text stack.
+                shared_wrapper = ChatGenerator.get_or_create(
                     model_id=self.model_id,
                     adapter_path=self.adapter_path,
+                    draft_model_id=None,
+                )
+                self._generator = BatchChatGenerator.from_chat_generator(
+                    shared_wrapper,
                     completion_batch_size=self._completion_batch_size,
                     prefill_batch_size=self._prefill_batch_size,
                     prefill_step_size=self._prefill_step_size,
                 )
                 logger.info(
-                    f"Created BatchChatGenerator for coordinator: model={self.model_id}"
+                    "Created BatchChatGenerator for coordinator from shared wrapper: "
+                    f"model={self.model_id}"
                 )
             return self._generator
 
@@ -254,7 +264,7 @@ class BatchRequestCoordinator:
     async def stream_request(
         self,
         messages: list[dict[str, Any]],
-        max_tokens: int = 128,
+        max_tokens: int | None = None,
         sampler_config: dict[str, Any] | None = None,
         template_kwargs: dict[str, Any] | None = None,
     ) -> AsyncGenerator[BatchStreamChunk, None]:
@@ -422,6 +432,11 @@ class BatchRequestCoordinator:
         """Check if coordinator has active work."""
         return bool(self._pending_requests or self._active_requests)
 
+    @property
+    def has_loaded_generator(self) -> bool:
+        """Check whether the coordinator currently owns a batch generator."""
+        return self._generator is not None
+
 
 # Global coordinator cache
 _coordinators: dict[str, BatchRequestCoordinator] = {}
@@ -478,7 +493,43 @@ async def shutdown_all_coordinators() -> None:
     Call this during application shutdown to cleanly release resources.
     """
     with _coordinator_lock:
-        for coord in _coordinators.values():
-            await coord.shutdown()
+        coords = list(_coordinators.values())
         _coordinators.clear()
-        logger.info("All batch coordinators shutdown")
+
+    for coord in coords:
+        await coord.shutdown()
+
+    logger.info("All batch coordinators shutdown")
+
+
+async def shutdown_batch_coordinator(model_id: str) -> int:
+    """Shutdown coordinator instances for a specific model ID."""
+    with _coordinator_lock:
+        keys_to_remove = [
+            key for key, coord in _coordinators.items() if coord.model_id == model_id
+        ]
+        coords = [_coordinators.pop(key) for key in keys_to_remove]
+
+    for coord in coords:
+        await coord.shutdown()
+
+    if coords:
+        logger.info(
+            "Shutdown %s batch coordinator(s) for model=%s",
+            len(coords),
+            model_id,
+        )
+
+    return len(coords)
+
+
+def get_loaded_batch_models() -> list[str]:
+    """Return model IDs with an instantiated batch generator."""
+    with _coordinator_lock:
+        loaded = [
+            coord.model_id
+            for coord in _coordinators.values()
+            if coord.has_loaded_generator
+        ]
+
+    return list(dict.fromkeys(loaded))
