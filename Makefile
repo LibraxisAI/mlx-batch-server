@@ -205,7 +205,7 @@ unload: ## Unload model(s) (MODEL=<model-id> [TASK=llm|embeddings|visual|images|
 ps: ## List loaded models (in memory)
 	@curl -s $(SERVER_URL)/v1/models/loaded 2>/dev/null | \
 		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); models=d.get('data',[]); \
-		print('\n'.join(f'  \033[32m●\033[0m {m[\"id\"]}' for m in models)) if models else print('  (none loaded)')" 2>/dev/null || \
+		print('\n'.join(f'  \033[32m●\033[0m {m[\"id\"]} [backend={\"+\".join(m.get(\"backends\", [])) or \"unknown\"}]' for m in models)) if models else print('  (none loaded)')" 2>/dev/null || \
 		echo "Server not running"
 
 list: ## List all models in HuggingFace cache (local disk)

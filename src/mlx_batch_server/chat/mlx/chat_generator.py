@@ -8,6 +8,7 @@ from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
 
 from ...utils.logger import logger
+from ...utils.model_limits import extract_context_length, resolve_max_tokens
 from .core_types import (
     CompletionContent,
     CompletionResult,
@@ -203,7 +204,7 @@ class ChatGenerator:
     def _create_mlx_kwargs(
         self,
         sampler: dict[str, Any] | Callable | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int | None = DEFAULT_MAX_TOKENS,
         **kwargs,
     ) -> dict[str, Any]:
         """Convert parameters to mlx-lm compatible kwargs.
@@ -220,9 +221,9 @@ class ChatGenerator:
             Dictionary of kwargs for mlx-lm generate functions
         """
         # Core MLX parameters
-        mlx_kwargs = {
-            "max_tokens": max_tokens,
-        }
+        mlx_kwargs: dict[str, Any] = {}
+        if max_tokens is not None:
+            mlx_kwargs["max_tokens"] = max_tokens
 
         # Handle sampler parameter
         if sampler is not None:
@@ -285,7 +286,7 @@ class ChatGenerator:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         # Core generation parameters
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int | None = DEFAULT_MAX_TOKENS,
         sampler: dict[str, Any] | Callable | None = None,
         top_logprobs: int | None = None,
         # Template parameters
@@ -380,7 +381,7 @@ class ChatGenerator:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         # Core generation parameters
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int | None = DEFAULT_MAX_TOKENS,
         sampler: dict[str, Any] | Callable | None = None,
         top_logprobs: int | None = None,
         # Template parameters
@@ -413,6 +414,11 @@ class ChatGenerator:
         first_token_time = None
 
         try:
+            if max_tokens is not None and int(max_tokens) <= 0:
+                raise ValueError(
+                    f"max_tokens must be a positive integer, got: {max_tokens}"
+                )
+
             # Extract json_schema from kwargs for coordination with chat_template
             json_schema = kwargs.get("json_schema")
 
@@ -431,10 +437,15 @@ class ChatGenerator:
                     self.model, tokenized_prompt
                 )
 
+            resolved_max_tokens = self._resolve_max_tokens(
+                requested=max_tokens,
+                prompt_tokens=len(processed_prompt),
+            )
+
             # Create MLX kwargs
             mlx_kwargs = self._create_mlx_kwargs(
                 sampler=sampler,
-                max_tokens=max_tokens,
+                max_tokens=resolved_max_tokens,
                 **kwargs,
             )
 
@@ -522,3 +533,24 @@ class ChatGenerator:
         except Exception as e:
             logger.error(f"Error during stream generation: {e}")
             raise RuntimeError(f"Stream generation failed: {e}") from e
+
+    def _resolve_max_tokens(
+        self,
+        *,
+        requested: int | None,
+        prompt_tokens: int | None,
+    ) -> int:
+        context_length = getattr(
+            self.model,
+            "context_length",
+            None,
+        ) or extract_context_length(
+            self.model.config,
+            self.tokenizer,
+        )
+        return resolve_max_tokens(
+            requested=requested,
+            context_length=context_length,
+            prompt_tokens=prompt_tokens,
+            context_label=self.model.model_id,
+        )

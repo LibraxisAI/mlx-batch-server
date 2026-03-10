@@ -33,6 +33,7 @@ except ImportError:
 
 
 from ...utils.logger import logger
+from ...utils.model_limits import extract_context_length
 from .tools.chat_template import ChatTemplate
 
 
@@ -152,6 +153,7 @@ def load_mlx_model(
             model_id=model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
+            config=config,
             model=model,
             tokenizer=tokenizer,
             chat_template=chat_template,
@@ -176,6 +178,7 @@ class MLXModel:
         model_id: str,
         adapter_path: str | None,
         draft_model_id: str | None,
+        config: dict,
         model: nn.Module,
         tokenizer: TokenizerWrapper,
         chat_template: ChatTemplate,
@@ -190,6 +193,7 @@ class MLXModel:
             model_id: Model name/path
             adapter_path: Path to LoRA adapter (if any)
             draft_model_id: Draft model name/path (if any)
+            config: Loaded model configuration
             model: Loaded main model
             tokenizer: Loaded tokenizer
             chat_template: Chat template instance
@@ -200,6 +204,8 @@ class MLXModel:
         self.model_id = model_id
         self.adapter_path = adapter_path
         self.draft_model_id = draft_model_id
+        self.config = config
+        self.context_length = extract_context_length(config, tokenizer)
 
         # Loaded model components
         self.model = model

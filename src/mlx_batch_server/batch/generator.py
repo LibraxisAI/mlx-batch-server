@@ -34,6 +34,7 @@ from mlx_lm.sample_utils import make_sampler
 
 from ..chat.mlx.model_types import MLXModel
 from ..utils.logger import logger
+from ..utils.model_limits import extract_context_length, resolve_max_tokens
 
 if TYPE_CHECKING:
     from ..chat.mlx.chat_generator import ChatGenerator
@@ -79,7 +80,7 @@ class BatchRequest:
 
     id: str
     messages: list[dict[str, Any]]
-    max_tokens: int = 128
+    max_tokens: int | None = None
     sampler_config: dict[str, Any] | None = None
     template_kwargs: dict[str, Any] | None = None
 
@@ -153,6 +154,12 @@ class BatchChatGenerator:
         self._completion_batch_size = completion_batch_size
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
+        self._context_length = getattr(
+            model, "context_length", None
+        ) or extract_context_length(
+            model.config,
+            model.tokenizer,
+        )
 
         # Generator instance - created lazily
         self._generator: BatchGenerator | None = None
@@ -231,28 +238,21 @@ class BatchChatGenerator:
 
     def _get_or_create_generator(
         self,
-        max_tokens: int = 128,
-        sampler_config: dict[str, Any] | None = None,
+        max_tokens: int,
     ) -> BatchGenerator:
         """Get existing or create new BatchGenerator.
 
-        Note: BatchGenerator configuration is set at creation time.
-        If different sampler/max_tokens are needed, the generator is recreated.
-        For production use, consider using consistent settings across requests.
+        Note: generator-level max_tokens is only a default. Per-request limits
+        and samplers are passed to ``BatchGenerator.insert()`` so concurrent
+        requests can keep independent decoding settings.
 
         Args:
             max_tokens: Default max tokens for new requests
-            sampler_config: Optional sampler configuration
 
         Returns:
             BatchGenerator instance
         """
         with self._generator_lock:
-            # Create sampler from config if provided
-            sampler = None
-            if sampler_config is not None:
-                sampler = make_sampler(**sampler_config)
-
             # Get stop tokens from tokenizer
             stop_tokens = set()
             if hasattr(self.tokenizer, "eos_token_ids"):
@@ -265,7 +265,6 @@ class BatchChatGenerator:
                     model=self.model.model,
                     max_tokens=max_tokens,
                     stop_tokens=stop_tokens,
-                    sampler=sampler,
                     completion_batch_size=self._completion_batch_size,
                     prefill_batch_size=self._prefill_batch_size,
                     prefill_step_size=self._prefill_step_size,
@@ -308,17 +307,18 @@ class BatchChatGenerator:
 
     def _prepare_batch_requests(
         self, requests: list[BatchRequest]
-    ) -> tuple[list[list[int]], list[int]]:
+    ) -> tuple[list[list[int]], list[int], list[Any | None]]:
         """Prepare and tokenize batch requests.
 
         Args:
             requests: List of BatchRequest objects
 
         Returns:
-            Tuple of (prompts, max_tokens_list)
+            Tuple of (prompts, max_tokens_list, samplers)
         """
         prompts = []
         max_tokens_list = []
+        samplers = []
 
         for req in requests:
             prompt_str = self._format_prompt(
@@ -327,14 +327,23 @@ class BatchChatGenerator:
             )
             tokenized = self.tokenizer.encode(prompt_str)
             prompts.append(tokenized)
-            max_tokens_list.append(req.max_tokens)
+            resolved_max_tokens = resolve_max_tokens(
+                requested=req.max_tokens,
+                context_length=self._context_length,
+                prompt_tokens=len(tokenized),
+                context_label=self.model.model_id,
+            )
+            max_tokens_list.append(resolved_max_tokens)
+            samplers.append(
+                make_sampler(**req.sampler_config) if req.sampler_config else None
+            )
 
             logger.debug(
                 f"Request {req.id}: prompt_length={len(tokenized)}, "
-                f"max_tokens={req.max_tokens}"
+                f"max_tokens={resolved_max_tokens}"
             )
 
-        return prompts, max_tokens_list
+        return prompts, max_tokens_list, samplers
 
     def _process_response(self, response) -> BatchStreamChunk | None:
         """Process a single response from BatchGenerator.
@@ -432,17 +441,13 @@ class BatchChatGenerator:
         if not requests:
             return
 
-        # Get common sampler config and create generator
-        sampler_config = requests[0].sampler_config if requests else None
-        max_tokens_default = max(r.max_tokens for r in requests)
-        gen = self._get_or_create_generator(
-            max_tokens=max_tokens_default,
-            sampler_config=sampler_config,
-        )
-
         # Prepare and insert requests
-        prompts, max_tokens_list = self._prepare_batch_requests(requests)
-        uids = gen.insert(prompts, max_tokens=max_tokens_list)
+        prompts, max_tokens_list, samplers = self._prepare_batch_requests(requests)
+
+        # The generator-level max_tokens is only the default. Per-request limits
+        # and samplers are applied at insert time.
+        gen = self._get_or_create_generator(max_tokens=max(max_tokens_list))
+        uids = gen.insert(prompts, max_tokens=max_tokens_list, samplers=samplers)
 
         # Map UIDs to request IDs
         for uid, req in zip(uids, requests, strict=True):

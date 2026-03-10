@@ -4,11 +4,16 @@ Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 """
 
 import asyncio
+from types import SimpleNamespace
+
+import pytest
 
 from mlx_batch_server.batch.coordinator import (
     BatchRequestCoordinator,
     PendingRequest,
     get_batch_coordinator,
+    get_loaded_batch_models,
+    shutdown_batch_coordinator,
 )
 
 
@@ -89,3 +94,52 @@ class TestGetBatchCoordinator:
         coord2 = get_batch_coordinator("model-c", adapter_path="/path/to/adapter")
 
         assert coord1 is not coord2
+
+    def test_loaded_batch_models_only_include_initialized_generators(self):
+        """Only coordinators with live generators should be reported as loaded."""
+        loaded_model = "model-loaded-generator"
+        idle_model = "model-without-generator"
+
+        loaded = get_batch_coordinator(loaded_model)
+        idle = get_batch_coordinator(idle_model)
+
+        fake_generator = SimpleNamespace(
+            stats_dict=lambda: {},
+            close=lambda: None,
+        )
+
+        loaded._generator = fake_generator
+        idle._generator = None
+
+        loaded_models = get_loaded_batch_models()
+
+        assert loaded_model in loaded_models
+        assert idle_model not in loaded_models
+
+        loaded._generator = None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_batch_coordinator_removes_matching_model(self):
+        """Shutdown should remove all coordinators for the selected model."""
+        target_model = "model-shutdown-target"
+        other_model = "model-shutdown-other"
+        target = get_batch_coordinator(target_model)
+        other = get_batch_coordinator(other_model)
+
+        state = {"target_shutdown": False, "other_shutdown": False}
+
+        async def target_shutdown():
+            state["target_shutdown"] = True
+
+        async def other_shutdown():
+            state["other_shutdown"] = True
+
+        target.shutdown = target_shutdown
+        other.shutdown = other_shutdown
+
+        removed = await shutdown_batch_coordinator(target_model)
+
+        assert removed == 1
+        assert state["target_shutdown"] is True
+        assert state["other_shutdown"] is False
+        assert get_batch_coordinator(other_model) is other

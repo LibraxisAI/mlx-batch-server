@@ -54,7 +54,7 @@ dependencies = [
     "openai-harmony>=0.0.8",
     "torch==2.10.0",
     "torchvision==0.25.0",
-    "mlx-vlm @file:///Users/polyversai/Libraxis/mlx-vlm-local",
+    "mlx-vlm",
 ]
 
 [project.urls]
@@ -71,6 +71,7 @@ dev = [
     "gradio>=5.0.0", # playground API tester
     "pre-commit>=4.0.1,<5",
     "weave>=0.51.46,<0.60",
+    "chardet>=5,<6", # keep requests compatibility when weave pulls chardet
     "openai>=1.97.0",
     "anthropic>=0.57.1",
     # linting & formatting (LibraxisAI)
@@ -100,6 +101,9 @@ allow-direct-references = true
 
 [tool.uv]
 prerelease = "allow"
+
+[tool.uv.sources]
+mlx-vlm = { path = "../mlx-vlm-local" }
 
 [tool.pytest.ini_options]
 log_cli = true

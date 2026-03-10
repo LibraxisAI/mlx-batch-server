@@ -220,16 +220,37 @@ async def list_loaded_models() -> dict:
     List only models currently loaded in memory.
 
     Unlike /v1/models which lists all cached models on disk,
-    this endpoint shows only models actively loaded in wrapper_cache.
+    this endpoint shows only models actively loaded in runtime caches.
     """
+    from ....batch.coordinator import get_loaded_batch_models
     from ....chat.mlx.wrapper_cache import wrapper_cache
+    from ....responses.adapter import get_loaded_vlm_models
 
     loaded_models = wrapper_cache.get_loaded_models()
+    vlm_loaded_models = get_loaded_vlm_models()
+    batch_loaded_models = get_loaded_batch_models()
     cache_info = wrapper_cache.get_cache_info()
+    by_model_id: dict[str, set[str]] = {}
+
+    for model_id in loaded_models:
+        by_model_id.setdefault(model_id, set()).add("wrapper")
+
+    for model_id in vlm_loaded_models:
+        by_model_id.setdefault(model_id, set()).add("vlm")
 
     return {
         "object": "list",
-        "data": [{"id": model_id, "loaded": True} for model_id in loaded_models],
+        "data": [
+            {
+                "id": model_id,
+                "loaded": True,
+                "task": "llm",
+                "backends": sorted(backends),
+            }
+            for model_id, backends in by_model_id.items()
+        ],
+        "coordinators": {"llm_batch": batch_loaded_models},
+        "caches": {"wrapper": loaded_models, "vlm": vlm_loaded_models},
         "cache_info": cache_info,
     }
 
@@ -394,10 +415,22 @@ def _build_unload_response(
     )
 
 
-def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
+async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
     if task == "llm":
+        from ....batch.coordinator import shutdown_batch_coordinator
+        from ....responses.adapter import unload_vlm_model
+
+        await shutdown_batch_coordinator(model_id)
         result = get_models_service().unload_model(model_id=model_id)
+        unloaded_models = list(result.get("unloaded_models", []))
+        unloaded_models.extend(unload_vlm_model(model_id))
+        unloaded_models = list(dict.fromkeys(unloaded_models))
+
         result["task"] = "llm"
+        result["unloaded_models"] = unloaded_models
+        if unloaded_models:
+            result["status"] = "unloaded"
+            result["message"] = f"Model {model_id} unloaded successfully"
         return ModelUnloadResponse(**result)
 
     if task == "embeddings":
@@ -490,9 +523,19 @@ def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
     raise HTTPException(status_code=400, detail=f"Unsupported task '{task}'")
 
 
-def _clear_task(task: str) -> ModelUnloadResponse:
+async def _clear_task(task: str) -> ModelUnloadResponse:
     if task == "llm":
+        from ....batch.coordinator import shutdown_all_coordinators
+        from ....responses.adapter import unload_vlm_model
+
+        await shutdown_all_coordinators()
         result = get_models_service().unload_model(model_id=None)
+        unloaded_models = list(result.get("unloaded_models", []))
+        unloaded_models.extend(unload_vlm_model())
+        result["unloaded_models"] = list(dict.fromkeys(unloaded_models))
+        result["message"] = (
+            f"Cleared {len(result['unloaded_models'])} llm model(s) from cache"
+        )
         result["task"] = "llm"
         return ModelUnloadResponse(**result)
 
@@ -556,16 +599,21 @@ def _clear_task(task: str) -> ModelUnloadResponse:
     raise HTTPException(status_code=400, detail=f"Unsupported task '{task}'")
 
 
-def _clear_all_models() -> ModelUnloadResponse:
+async def _clear_all_models() -> ModelUnloadResponse:
+    from ....batch.coordinator import shutdown_all_coordinators
+
+    await shutdown_all_coordinators()
     result = get_models_service().unload_model(model_id=None)
     unloaded_models = list(result.get("unloaded_models", []))
 
     from ....embeddings.embeddings_service import get_embeddings_service
     from ....embeddings.visual_router import unload_visual_embedder
     from ....images.images_service import get_images_service
+    from ....responses.adapter import unload_vlm_model
     from ....stt.whisper_model import unload_whisper_model
     from ....tts.tts_service import TTSService
 
+    unloaded_models.extend(unload_vlm_model())
     unloaded_models.extend(get_embeddings_service().clear_models())
     unloaded_models.extend(unload_visual_embedder())
     unloaded_models.extend(get_images_service().clear_models())
@@ -606,12 +654,12 @@ async def unload_model(
 
         if model_id:
             task = _detect_task(model_id, task_hint)
-            return _unload_specific(task, model_id)
+            return await _unload_specific(task, model_id)
 
         if task_hint:
-            return _clear_task(task_hint)
+            return await _clear_task(task_hint)
 
-        return _clear_all_models()
+        return await _clear_all_models()
     except HTTPException as e:
         raise e
     except ValueError as e:
@@ -628,14 +676,21 @@ async def health_check() -> dict:
     Returns server status and basic info about loaded models.
     """
     from ....chat.mlx.wrapper_cache import wrapper_cache
+    from ....responses.adapter import get_loaded_vlm_models
 
     loaded_models = wrapper_cache.get_loaded_models()
+    vlm_loaded_models = get_loaded_vlm_models()
+    all_loaded_models = list(dict.fromkeys([*loaded_models, *vlm_loaded_models]))
     cache_info = wrapper_cache.get_cache_info()
 
     return {
         "status": "healthy",
-        "loaded_models_count": len(loaded_models),
-        "loaded_models": loaded_models,
+        "loaded_models_count": len(all_loaded_models),
+        "loaded_models": all_loaded_models,
+        "loaded_models_by_backend": {
+            "wrapper": loaded_models,
+            "vlm": vlm_loaded_models,
+        },
         "cache_max_size": cache_info.get("max_size", 1),
         "cache_ttl_seconds": cache_info.get("ttl_seconds", 600),
     }

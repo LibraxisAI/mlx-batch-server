@@ -40,6 +40,7 @@ from ..utils.harmony_parser import (
     parse_harmony_output,
 )
 from ..utils.logger import logger
+from ..utils.memory import force_mlx_cleanup
 from .normalizer import (
     collect_system_preamble,
     has_media_content,
@@ -63,6 +64,47 @@ _CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
 
 _VLM_CACHE: dict[str, tuple[Any, Any]] = {}
 _VLM_LOCK = threading.Lock()
+
+
+def get_loaded_vlm_models() -> list[str]:
+    """Return model IDs currently resident in the vision-language cache."""
+    with _VLM_LOCK:
+        return list(_VLM_CACHE.keys())
+
+
+def unload_vlm_model(model_id: str | None = None) -> list[str]:
+    """
+    Unload one or all models from the vision-language cache.
+
+    This cache is separate from the text wrapper cache, so it needs explicit
+    lifecycle management to keep /v1/models/loaded and unload semantics honest.
+    """
+    evicted: list[tuple[str, tuple[Any, Any]]] = []
+
+    with _VLM_LOCK:
+        if model_id is None:
+            if _VLM_CACHE:
+                evicted = list(_VLM_CACHE.items())
+                _VLM_CACHE.clear()
+        else:
+            cached = _VLM_CACHE.pop(model_id, None)
+            if cached is not None:
+                evicted = [(model_id, cached)]
+
+    if not evicted:
+        return []
+
+    unloaded_ids: list[str] = []
+    for cached_model_id, (model, processor) in evicted:
+        unloaded_ids.append(cached_model_id)
+        del model
+        del processor
+
+    label = (
+        f"vlm:{model_id}" if model_id is not None else f"vlm:all:{len(unloaded_ids)}"
+    )
+    force_mlx_cleanup(label, passes=3)
+    return unloaded_ids
 
 
 class ResponsesAdapter:
