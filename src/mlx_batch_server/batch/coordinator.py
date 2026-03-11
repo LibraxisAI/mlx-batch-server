@@ -47,6 +47,7 @@ class PendingRequest:
     request_id: str
     messages: list[dict[str, Any]]
     max_tokens: int | None
+    tools: list[dict[str, Any]] | None
     sampler_config: dict[str, Any] | None
     template_kwargs: dict[str, Any] | None
     response_queue: asyncio.Queue
@@ -219,6 +220,7 @@ class BatchRequestCoordinator:
                 id=req.request_id,
                 messages=req.messages,
                 max_tokens=req.max_tokens,
+                tools=req.tools,
                 sampler_config=req.sampler_config,
                 template_kwargs=req.template_kwargs,
             )
@@ -230,10 +232,10 @@ class BatchRequestCoordinator:
             for req in batch:
                 self._active_requests[req.request_id] = req.response_queue
 
-        # Get generator and stream batch
-        generator = self._get_or_create_generator()
-
         try:
+            # Generator creation can fail before any tokens are streamed; keep that
+            # inside the request error path so callers don't hang waiting on queues.
+            generator = self._get_or_create_generator()
             async for chunk in generator.stream_batch(batch_requests):
                 self._total_tokens += 1
 
@@ -259,12 +261,13 @@ class BatchRequestCoordinator:
                 for req in batch:
                     queue = self._active_requests.pop(req.request_id, None)
                     if queue is not None:
-                        await queue.put(Exception(str(e)))
+                        await queue.put(e)
 
     async def stream_request(
         self,
         messages: list[dict[str, Any]],
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
         sampler_config: dict[str, Any] | None = None,
         template_kwargs: dict[str, Any] | None = None,
     ) -> AsyncGenerator[BatchStreamChunk, None]:
@@ -277,6 +280,7 @@ class BatchRequestCoordinator:
         Args:
             messages: Chat messages in standard format
             max_tokens: Maximum tokens to generate
+            tools: Optional tools for function calling
             sampler_config: Optional sampler configuration
             template_kwargs: Optional template parameters
 
@@ -301,6 +305,7 @@ class BatchRequestCoordinator:
             request_id=request_id,
             messages=messages,
             max_tokens=max_tokens,
+            tools=tools,
             sampler_config=sampler_config,
             template_kwargs=template_kwargs,
             response_queue=response_queue,

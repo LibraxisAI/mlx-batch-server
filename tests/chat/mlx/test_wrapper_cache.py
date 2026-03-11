@@ -16,9 +16,13 @@ from mlx_batch_server.chat.mlx.wrapper_cache import MLXWrapperCache, WrapperCach
 class MockChatGenerator:
     """Mock wrapper for testing without actual model loading."""
 
-    def __init__(self, model_id: str):
+    def __init__(self, model_id: str, *, multimodal: bool = False):
         self.model_id = model_id
-        self.model = Mock()  # Mock the underlying model
+        runtime = Mock()
+        runtime.processor = Mock() if multimodal else None
+        runtime.supports_multimodal = multimodal
+        runtime.model = Mock()
+        self.model = runtime
 
     def __str__(self):
         return f"MockWrapper({self.model_id})"
@@ -419,6 +423,20 @@ class TestMLXWrapperCacheModelManagement:
         result = self.cache.unload_model("any_model")
         assert result is False
         assert self.cache.get_cache_info()["cache_size"] == 0
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_multimodal_backend_reuses_shared_wrapper_runtime(self, mock_create):
+        """VLM backend access should reuse the same cached wrapper runtime."""
+        wrapper = MockChatGenerator("model-vlm", multimodal=True)
+        mock_create.return_value = wrapper
+
+        first = self.cache.get_wrapper("model-vlm")
+        model, processor = self.cache.get_vlm_backend("model-vlm")
+
+        assert first is wrapper
+        assert model is wrapper.model.model
+        assert processor is wrapper.model.processor
+        assert self.cache.get_loaded_vlm_models() == ["model-vlm"]
 
 
 class TestMLXWrapperCachePinnedOnly:

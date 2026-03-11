@@ -1,16 +1,17 @@
-"""Centralized ChatGenerator Cache
+"""Centralized MLX Runtime Cache.
 
-This module provides a unified caching system for ChatGenerator instances
-to avoid expensive model reloading when the same model configuration is used
-across different API endpoints.
-
-Supports pinned models that are NEVER evicted (always available).
+This cache is the single residency owner for MLX runtimes. Multimodal-capable
+models are loaded once through the normal ChatGenerator path; text batching uses
+their ``language_model`` tower and media requests reuse the same resident
+runtime/processor in single-flight mode.
 """
+
+from __future__ import annotations
 
 import threading
 import time
 from collections import OrderedDict
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 
 from ...core.config import get_settings
@@ -46,14 +47,12 @@ class WrapperCacheKey:
 
 
 class MLXWrapperCache:
-    """Thread-safe LRU cache for ChatGenerator instances with TTL support.
+    """Thread-safe LRU cache for MLX runtimes.
 
-    This cache ensures that expensive model loading only happens once per unique
-    combination of (model_id, adapter_path, draft_model_id). All API endpoints
-    (OpenAI, Anthropic) can share the same cached wrapper instance.
-
-    Uses LRU (Least Recently Used) eviction policy and TTL (Time To Live)
-    to manage memory usage automatically.
+    One cached ChatGenerator owns one loaded model runtime. If that runtime is
+    multimodal, the same wrapper also owns the processor stack used by
+    ``mlx-vlm`` requests. Text batching and multimodal single-flight therefore
+    share a single model residency.
     """
 
     def __init__(
@@ -73,6 +72,8 @@ class MLXWrapperCache:
         """
         self._cache: OrderedDict[WrapperCacheKey, ChatGenerator] = OrderedDict()
         self._access_times: dict[WrapperCacheKey, float] = {}
+        self._vlm_execution_locks: dict[str, threading.Lock] = {}
+
         self._lock = threading.Lock()
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
@@ -102,7 +103,7 @@ class MLXWrapperCache:
     def _release_memory(
         self, wrapper: ChatGenerator | None, key: WrapperCacheKey
     ) -> None:
-        """Release MLX memory after cache eviction or unload."""
+        """Release MLX memory after text cache eviction or unload."""
         if wrapper is None:
             return
 
@@ -127,10 +128,10 @@ class MLXWrapperCache:
             return  # TTL disabled
 
         current_time = time.time()
-        expired_keys = []
 
+        # --- Text cache ---
+        expired_keys = []
         for key, access_time in self._access_times.items():
-            # Skip pinned models - they never expire
             if self._is_pinned(key):
                 continue
             if current_time - access_time > self._ttl_seconds:
@@ -300,7 +301,7 @@ class MLXWrapperCache:
             return evicted_count
 
     def clear_cache(self) -> None:
-        """Clear all cached wrapper instances and release MLX memory.
+        """Clear all cached model instances and release MLX memory.
 
         This can be useful for memory management or testing purposes.
         """
@@ -312,43 +313,45 @@ class MLXWrapperCache:
             wrappers_to_release = list(self._cache.items())
             self._cache.clear()
             self._access_times.clear()
-            logger.info(f"Cleared ChatGenerator cache ({cache_size} entries)")
+            self._vlm_execution_locks.clear()
+            logger.info(f"Cleared cache ({cache_size} runtime entries)")
 
         for key, wrapper in wrappers_to_release:
             self._release_memory(wrapper, key)
 
     def unload_model(self, model_id: str) -> bool:
-        """Unload a specific model from the cache.
+        """Unload a specific model from cache.
 
         Args:
             model_id: The model ID to unload
 
         Returns:
-            True if model was found and unloaded, False if not in cache
+            True if model was found and unloaded, False otherwise
         """
         normalized_model_id = _normalize_model_id(model_id)
-        wrappers_to_release = []
+        wrappers_to_release: list[tuple[WrapperCacheKey, ChatGenerator | None]] = []
+        found = False
 
         with self._lock:
-            # Find all keys matching this model_id
             keys_to_remove = [
                 key for key in self._cache if key.model_id == normalized_model_id
             ]
-
-            if not keys_to_remove:
-                logger.info(f"Model {normalized_model_id} not found in cache")
-                return False
-
             for key in keys_to_remove:
                 wrapper = self._cache.pop(key, None)
                 self._access_times.pop(key, None)
                 wrappers_to_release.append((key, wrapper))
                 logger.info(f"Unloaded model from cache: {key}")
 
+            self._vlm_execution_locks.pop(normalized_model_id, None)
+            found = bool(keys_to_remove)
+
+        if not found:
+            logger.info(f"Model {normalized_model_id} not found in cache")
+
         for key, wrapper in wrappers_to_release:
             self._release_memory(wrapper, key)
 
-        return True
+        return found
 
     def is_model_loaded(self, model_id: str) -> bool:
         """Check if a model is currently loaded in cache.
@@ -364,13 +367,89 @@ class MLXWrapperCache:
             return any(key.model_id == normalized_model_id for key in self._cache)
 
     def get_loaded_models(self) -> list[str]:
-        """Get list of currently loaded model IDs.
-
-        Returns:
-            List of model IDs currently in cache
-        """
+        """Get list of currently loaded model IDs."""
         with self._lock:
             return list({key.model_id for key in self._cache})
+
+    # ------------------------------------------------------------------
+    # Multimodal helpers on top of the shared runtime cache
+    # ------------------------------------------------------------------
+
+    def _loaded_multimodal_model_ids(self) -> list[str]:
+        return sorted(
+            {
+                key.model_id
+                for key, wrapper in self._cache.items()
+                if getattr(wrapper.model, "supports_multimodal", False)
+            }
+        )
+
+    def get_vlm_backend(self, model_id: str):
+        """Return the shared multimodal backend from the cached wrapper runtime.
+
+        Args:
+            model_id: Model name/path
+
+        Returns:
+            ``(model, processor)`` tuple from the resident VLM runtime
+        """
+        wrapper = self.get_wrapper(
+            model_id=model_id, adapter_path=None, draft_model_id=None
+        )
+        if (
+            not getattr(wrapper.model, "supports_multimodal", False)
+            or wrapper.model.processor is None
+        ):
+            raise RuntimeError(
+                f"Model {model_id} is not loaded as a multimodal MLX-VLM runtime"
+            )
+        return wrapper.model.model, wrapper.model.processor
+
+    def get_loaded_vlm_models(self) -> list[str]:
+        """Return model IDs currently resident as multimodal-capable runtimes."""
+        with self._lock:
+            return self._loaded_multimodal_model_ids()
+
+    def unload_vlm_model(self, model_id: str | None = None) -> list[str]:
+        """Unload one or all multimodal-capable runtimes.
+
+        Args:
+            model_id: Specific model to unload, or ``None`` to clear all.
+
+        Returns:
+            List of model IDs that were actually evicted.
+        """
+        if model_id is not None:
+            normalized = _normalize_model_id(model_id)
+            with self._lock:
+                is_multimodal = any(
+                    key.model_id == normalized
+                    and getattr(wrapper.model, "supports_multimodal", False)
+                    for key, wrapper in self._cache.items()
+                )
+            if not is_multimodal:
+                return []
+            return [normalized] if self.unload_model(normalized) else []
+
+        with self._lock:
+            multimodal_ids = self._loaded_multimodal_model_ids()
+        unloaded: list[str] = []
+        for mid in multimodal_ids:
+            if self.unload_model(mid):
+                unloaded.append(mid)
+        return unloaded
+
+    @contextmanager
+    def vlm_execution(self, model_id: str):
+        """Serialize multimodal generation on a shared resident VLM runtime."""
+        normalized = _normalize_model_id(model_id)
+        with self._lock:
+            lock = self._vlm_execution_locks.setdefault(normalized, threading.Lock())
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
 
     def get_cache_info(self) -> dict[str, any]:
         """Get cache statistics.
@@ -405,6 +484,7 @@ class MLXWrapperCache:
                 "max_size": self._max_size,
                 "ttl_seconds": self._ttl_seconds,
                 "cached_keys": [str(key) for key in self._cache],
+                "vlm_cached_keys": self._loaded_multimodal_model_ids(),
                 "lru_order": [str(key) for key, _ in sorted_keys],  # Most recent first
                 "ttl_info": ttl_info,
             }

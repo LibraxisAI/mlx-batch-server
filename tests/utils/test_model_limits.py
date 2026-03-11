@@ -21,6 +21,18 @@ def test_extract_context_length_reads_nested_config():
     assert extract_context_length(config) == 32768
 
 
+def test_extract_context_length_prefers_larger_nested_text_window():
+    """Nested text towers should override smaller top-level multimodal values."""
+    config = {
+        "max_position_embeddings": 8192,
+        "text_config": {
+            "max_position_embeddings": 32768,
+        },
+    }
+
+    assert extract_context_length(config) == 32768
+
+
 def test_extract_context_length_uses_rope_scaling():
     """RoPE scaling metadata should expand the effective context length."""
     config = {

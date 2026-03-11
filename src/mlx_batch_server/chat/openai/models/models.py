@@ -4,6 +4,7 @@ import importlib.util
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -58,6 +59,109 @@ def _normalize_task(task: str | None) -> str | None:
         return None
     task = task.strip().lower()
     return _TASK_ALIASES.get(task, task)
+
+
+def _build_llm_runtime_contract() -> dict[str, Any]:
+    from ....core.config import get_settings
+
+    settings = get_settings()
+    return {
+        "product_residency": "single_model",
+        "text": {
+            "runtime": "mlx-vlm.language_model",
+            "tool_capable": True,
+            "batch_capable": settings.enable_batch_inference,
+        },
+        "multimodal": {
+            "runtime": "mlx-vlm",
+            "batch_capable": False,
+            "execution": "single_flight",
+        },
+        "notes": [
+            "Text requests batch through the resident model language tower.",
+            "Image and video requests intentionally run through the mlx-vlm single-flight lane.",
+        ],
+    }
+
+
+def _snapshot_llm_runtime() -> dict[str, Any]:
+    from ....batch.coordinator import get_loaded_batch_models
+    from ....chat.mlx.wrapper_cache import wrapper_cache
+
+    wrapper_loaded = sorted(wrapper_cache.get_loaded_models())
+    vlm_loaded = sorted(wrapper_cache.get_loaded_vlm_models())
+    batch_loaded = sorted(get_loaded_batch_models())
+    cache_info = wrapper_cache.get_cache_info()
+    contract = _build_llm_runtime_contract()
+
+    wrapper_loaded_set = set(wrapper_loaded)
+    vlm_loaded_set = set(vlm_loaded)
+    batch_loaded_set = set(batch_loaded)
+
+    data = []
+    for model_id in sorted(wrapper_loaded_set | vlm_loaded_set | batch_loaded_set):
+        text_resident = model_id in wrapper_loaded_set or model_id in batch_loaded_set
+        multimodal_resident = model_id in vlm_loaded_set
+        active_lanes = []
+        if text_resident:
+            active_lanes.append("text")
+        if multimodal_resident:
+            active_lanes.append("multimodal")
+
+        backends = []
+        if text_resident:
+            backends.append("wrapper")
+        if multimodal_resident:
+            backends.append("vlm")
+
+        data.append(
+            {
+                "id": model_id,
+                "loaded": True,
+                "task": "llm",
+                "backends": backends,
+                "runtime": {
+                    "product_residency": "single_model",
+                    "active_lanes": active_lanes,
+                    "text": {
+                        "resident": text_resident,
+                        "runtime": contract["text"]["runtime"],
+                        "tool_capable": contract["text"]["tool_capable"],
+                        "batch_capable": contract["text"]["batch_capable"],
+                        "batch_resident": model_id in batch_loaded_set,
+                    },
+                    "multimodal": {
+                        "resident": multimodal_resident,
+                        "runtime": contract["multimodal"]["runtime"],
+                        "batch_capable": contract["multimodal"]["batch_capable"],
+                        "execution": contract["multimodal"]["execution"],
+                    },
+                },
+            }
+        )
+
+    return {
+        "data": data,
+        "loaded_models": [entry["id"] for entry in data],
+        "coordinators": {"llm_batch": batch_loaded},
+        "caches": {"wrapper": wrapper_loaded, "vlm": vlm_loaded},
+        "cache_info": cache_info,
+        "runtime_contract": contract,
+    }
+
+
+def _build_llm_cache_info() -> dict[str, Any]:
+    runtime = _snapshot_llm_runtime()
+    cache_info = dict(runtime["cache_info"])
+    cache_info["loaded_models"] = runtime["loaded_models"]
+    cache_info["loaded_models_count"] = len(runtime["loaded_models"])
+    cache_info["loaded_models_by_backend"] = {
+        "wrapper": runtime["caches"]["wrapper"],
+        "vlm": runtime["caches"]["vlm"],
+        "batch": runtime["coordinators"]["llm_batch"],
+    }
+    cache_info["runtime_contract"] = runtime["runtime_contract"]
+    return cache_info
 
 
 @lru_cache(maxsize=128)
@@ -222,36 +326,15 @@ async def list_loaded_models() -> dict:
     Unlike /v1/models which lists all cached models on disk,
     this endpoint shows only models actively loaded in runtime caches.
     """
-    from ....batch.coordinator import get_loaded_batch_models
-    from ....chat.mlx.wrapper_cache import wrapper_cache
-    from ....responses.adapter import get_loaded_vlm_models
-
-    loaded_models = wrapper_cache.get_loaded_models()
-    vlm_loaded_models = get_loaded_vlm_models()
-    batch_loaded_models = get_loaded_batch_models()
-    cache_info = wrapper_cache.get_cache_info()
-    by_model_id: dict[str, set[str]] = {}
-
-    for model_id in loaded_models:
-        by_model_id.setdefault(model_id, set()).add("wrapper")
-
-    for model_id in vlm_loaded_models:
-        by_model_id.setdefault(model_id, set()).add("vlm")
+    runtime = _snapshot_llm_runtime()
 
     return {
         "object": "list",
-        "data": [
-            {
-                "id": model_id,
-                "loaded": True,
-                "task": "llm",
-                "backends": sorted(backends),
-            }
-            for model_id, backends in by_model_id.items()
-        ],
-        "coordinators": {"llm_batch": batch_loaded_models},
-        "caches": {"wrapper": loaded_models, "vlm": vlm_loaded_models},
-        "cache_info": cache_info,
+        "data": runtime["data"],
+        "coordinators": runtime["coordinators"],
+        "caches": runtime["caches"],
+        "cache_info": runtime["cache_info"],
+        "runtime_contract": runtime["runtime_contract"],
     }
 
 
@@ -300,6 +383,7 @@ async def load_model(request: ModelLoadRequest) -> ModelLoadResponse:
                 draft_model_id=request.draft_model_id,
             )
             result["task"] = "llm"
+            result["cache_info"] = _build_llm_cache_info()
             return ModelLoadResponse(**result)
 
         if task == "embeddings":
@@ -431,6 +515,7 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
         if unloaded_models:
             result["status"] = "unloaded"
             result["message"] = f"Model {model_id} unloaded successfully"
+        result["cache_info"] = _build_llm_cache_info()
         return ModelUnloadResponse(**result)
 
     if task == "embeddings":
@@ -537,6 +622,7 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
             f"Cleared {len(result['unloaded_models'])} llm model(s) from cache"
         )
         result["task"] = "llm"
+        result["cache_info"] = _build_llm_cache_info()
         return ModelUnloadResponse(**result)
 
     if task == "embeddings":
@@ -625,6 +711,7 @@ async def _clear_all_models() -> ModelUnloadResponse:
     result["message"] = (
         f"Cleared {len(result['unloaded_models'])} model(s) across caches"
     )
+    result["cache_info"] = _build_llm_cache_info()
     return ModelUnloadResponse(**result)
 
 
@@ -675,22 +762,20 @@ async def health_check() -> dict:
 
     Returns server status and basic info about loaded models.
     """
-    from ....chat.mlx.wrapper_cache import wrapper_cache
-    from ....responses.adapter import get_loaded_vlm_models
-
-    loaded_models = wrapper_cache.get_loaded_models()
-    vlm_loaded_models = get_loaded_vlm_models()
-    all_loaded_models = list(dict.fromkeys([*loaded_models, *vlm_loaded_models]))
-    cache_info = wrapper_cache.get_cache_info()
+    runtime = _snapshot_llm_runtime()
+    cache_info = runtime["cache_info"]
 
     return {
         "status": "healthy",
-        "loaded_models_count": len(all_loaded_models),
-        "loaded_models": all_loaded_models,
+        "loaded_models_count": len(runtime["loaded_models"]),
+        "loaded_models": runtime["loaded_models"],
         "loaded_models_by_backend": {
-            "wrapper": loaded_models,
-            "vlm": vlm_loaded_models,
+            "wrapper": runtime["caches"]["wrapper"],
+            "vlm": runtime["caches"]["vlm"],
+            "batch": runtime["coordinators"]["llm_batch"],
         },
+        "loaded_models_runtime": runtime["data"],
+        "runtime_contract": runtime["runtime_contract"],
         "cache_max_size": cache_info.get("max_size", 1),
         "cache_ttl_seconds": cache_info.get("ttl_seconds", 600),
     }

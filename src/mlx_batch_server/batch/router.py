@@ -19,6 +19,7 @@ class BatchStatsResponse(BaseModel):
     enabled: bool
     coordinators: dict
     settings: dict
+    coverage: dict[str, str]
 
 
 @router.get("/stats", response_model=BatchStatsResponse)
@@ -52,5 +53,10 @@ async def get_batch_stats() -> BatchStatsResponse:
             "batch_completion_size": settings.batch_completion_size,
             "batch_prefill_size": settings.batch_prefill_size,
             "batch_prefill_step_size": settings.batch_prefill_step_size,
+        },
+        coverage={
+            "text": "Text requests can use the shared batch coordinator lane.",
+            "tools": "Tool-capable text requests stay on the same model runtime but currently fall back to the single-request lane.",
+            "multimodal": "Image and video requests use mlx-vlm single-flight and are intentionally absent from batch stats.",
         },
     )

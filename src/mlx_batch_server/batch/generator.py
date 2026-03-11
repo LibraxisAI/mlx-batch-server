@@ -74,6 +74,7 @@ class BatchRequest:
         id: Unique identifier for this request
         messages: Chat messages in standard format
         max_tokens: Maximum tokens to generate
+        tools: Optional tools for function calling
         sampler_config: Optional sampler configuration
         template_kwargs: Optional template parameters
     """
@@ -81,6 +82,7 @@ class BatchRequest:
     id: str
     messages: list[dict[str, Any]]
     max_tokens: int | None = None
+    tools: list[dict[str, Any]] | None = None
     sampler_config: dict[str, Any] | None = None
     template_kwargs: dict[str, Any] | None = None
 
@@ -262,7 +264,7 @@ class BatchChatGenerator:
 
             if self._generator is None:
                 self._generator = BatchGenerator(
-                    model=self.model.model,
+                    model=self.model.text_model,
                     max_tokens=max_tokens,
                     stop_tokens=stop_tokens,
                     completion_batch_size=self._completion_batch_size,
@@ -299,7 +301,13 @@ class BatchChatGenerator:
         if "enable_thinking" in kwargs:
             kwargs["enable_thinking_parse"] = kwargs.pop("enable_thinking")
 
-        return self.chat_template.apply_chat_template(
+        request_template = (
+            self.model.new_chat_template()
+            if hasattr(self.model, "new_chat_template")
+            else self.chat_template
+        )
+
+        return request_template.apply_chat_template(
             messages=messages,
             tools=tools,
             **kwargs,
@@ -323,6 +331,7 @@ class BatchChatGenerator:
         for req in requests:
             prompt_str = self._format_prompt(
                 messages=req.messages,
+                tools=req.tools,
                 template_kwargs=req.template_kwargs,
             )
             tokenized = self.tokenizer.encode(prompt_str)

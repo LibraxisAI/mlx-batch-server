@@ -1,10 +1,13 @@
 """MLX Model types and management."""
 
+import importlib
 from pathlib import Path
+from typing import Any
 
 from mlx import nn
 from mlx_lm.tokenizer_utils import TokenizerWrapper
-from mlx_lm.utils import load, load_config
+from mlx_lm.utils import load as load_text_runtime
+from mlx_lm.utils import load_config as load_text_config
 
 # Handle mlx_lm version compatibility: newer versions use hf_repo_to_path (returns Path),
 # older versions (< 0.29) use get_model_path (returns Tuple[Path, Optional[str]])
@@ -35,6 +38,25 @@ except ImportError:
 from ...utils.logger import logger
 from ...utils.model_limits import extract_context_length
 from .tools.chat_template import ChatTemplate
+
+_MULTIMODAL_CONFIG_KEYS = (
+    "vision_config",
+    "vision_model",
+    "vision_tower",
+    "image_token_id",
+    "image_token_index",
+    "video_token_id",
+    "audio_config",
+    "audio_tower",
+)
+_MULTIMODAL_MODEL_TYPE_MARKERS = (
+    "vl",
+    "vision",
+    "llava",
+    "idefics",
+    "molmo",
+    "bunny",
+)
 
 
 def _fix_tokenizer_eos(tokenizer: TokenizerWrapper) -> None:
@@ -68,6 +90,12 @@ def _fix_tokenizer_eos(tokenizer: TokenizerWrapper) -> None:
         )
 
 
+def _wrap_tokenizer(tokenizer_like: Any) -> TokenizerWrapper:
+    if isinstance(tokenizer_like, TokenizerWrapper):
+        return tokenizer_like
+    return TokenizerWrapper(tokenizer_like)
+
+
 def _is_local_path(model_id: str) -> bool:
     """Check if model_id is a local filesystem path."""
     return (
@@ -75,6 +103,66 @@ def _is_local_path(model_id: str) -> bool:
         or model_id.startswith("~")
         or model_id.startswith("./")
     )
+
+
+def _looks_multimodal_config(config: dict[str, Any]) -> bool:
+    if any(config.get(key) is not None for key in _MULTIMODAL_CONFIG_KEYS):
+        return True
+
+    model_type = str(config.get("model_type", "")).lower()
+    if any(marker in model_type for marker in _MULTIMODAL_MODEL_TYPE_MARKERS):
+        return True
+
+    architectures = config.get("architectures") or []
+    return any(
+        any(
+            marker in str(architecture).lower()
+            for marker in _MULTIMODAL_MODEL_TYPE_MARKERS
+        )
+        for architecture in architectures
+    )
+
+
+def _should_use_vlm_runtime(config: dict[str, Any]) -> bool:
+    if not _looks_multimodal_config(config):
+        return False
+
+    try:
+        get_vlm_model_and_args = importlib.import_module(
+            "mlx_vlm.utils"
+        ).get_model_and_args
+    except Exception as exc:
+        raise RuntimeError(
+            "mlx-vlm is required to load vision-language models"
+        ) from exc
+
+    try:
+        get_vlm_model_and_args(config)
+    except Exception:
+        return False
+
+    return True
+
+
+def _load_vlm_runtime(
+    model_id: str,
+    adapter_path: str | None,
+) -> tuple[nn.Module, TokenizerWrapper, Any, Any]:
+    try:
+        load_vlm = importlib.import_module("mlx_vlm").load
+    except Exception as exc:
+        raise RuntimeError(
+            "mlx-vlm is required to load vision-language models"
+        ) from exc
+
+    model, processor = load_vlm(model_id, adapter_path=adapter_path)
+    tokenizer_source = getattr(processor, "tokenizer", processor)
+    tokenizer = _wrap_tokenizer(tokenizer_source)
+    _fix_tokenizer_eos(tokenizer)
+    chat_template_source = (
+        processor if hasattr(processor, "apply_chat_template") else tokenizer
+    )
+    return model, tokenizer, processor, chat_template_source
 
 
 def load_mlx_model(
@@ -106,33 +194,43 @@ def load_mlx_model(
         model_id = str(Path(model_id).expanduser())
 
     try:
-        # Load the main model
-        model, tokenizer = load(
-            model_id,
-            tokenizer_config={"trust_remote_code": True},
-            adapter_path=adapter_path,
-        )
-        # Fix potential eos_token_ids mismatch (e.g., config.json vs tokenizer)
-        _fix_tokenizer_eos(tokenizer)
-        logger.info(f"Loaded model: {model_id}")
-
         # Load configuration - use path directly for local models
         if _is_local_path(model_id):
             model_path = Path(model_id)
         else:
             model_path = get_model_path(model_id)
-        config = load_config(model_path)
-        chat_template = ChatTemplate(config["model_type"], tokenizer)
+        config = load_text_config(model_path)
+        processor = None
+
+        if _should_use_vlm_runtime(config):
+            model, tokenizer, processor, chat_template_source = _load_vlm_runtime(
+                model_id=model_id,
+                adapter_path=adapter_path,
+            )
+            logger.info("Loaded VLM runtime for text generation: %s", model_id)
+        else:
+            model, tokenizer = load_text_runtime(
+                model_id,
+                tokenizer_config={"trust_remote_code": True},
+                adapter_path=adapter_path,
+            )
+            tokenizer = _wrap_tokenizer(tokenizer)
+            _fix_tokenizer_eos(tokenizer)
+            chat_template_source = tokenizer
+            logger.info(f"Loaded model: {model_id}")
+
+        chat_template = ChatTemplate(config["model_type"], chat_template_source)
 
         # Load draft model if specified
         draft_model = None
         draft_tokenizer = None
         if draft_model_id:
             try:
-                draft_model, draft_tokenizer = load(
+                draft_model, draft_tokenizer = load_text_runtime(
                     draft_model_id,
                     tokenizer_config={"trust_remote_code": True},
                 )
+                draft_tokenizer = _wrap_tokenizer(draft_tokenizer)
                 # Fix potential eos_token_ids mismatch for draft model
                 _fix_tokenizer_eos(draft_tokenizer)
 
@@ -157,6 +255,7 @@ def load_mlx_model(
             model=model,
             tokenizer=tokenizer,
             chat_template=chat_template,
+            processor=processor,
             draft_model=draft_model,
             draft_tokenizer=draft_tokenizer,
         )
@@ -182,6 +281,7 @@ class MLXModel:
         model: nn.Module,
         tokenizer: TokenizerWrapper,
         chat_template: ChatTemplate,
+        processor: Any | None = None,
         draft_model: nn.Module | None = None,
         draft_tokenizer: TokenizerWrapper | None = None,
     ):
@@ -211,8 +311,25 @@ class MLXModel:
         self.model = model
         self.tokenizer = tokenizer
         self.chat_template = chat_template
+        self.processor = processor
         self.draft_model = draft_model
         self.draft_tokenizer = draft_tokenizer
+
+    @property
+    def text_model(self) -> nn.Module:
+        """Return the text-generation tower for both LLM and VLM runtimes."""
+        return getattr(self.model, "language_model", self.model)
+
+    @property
+    def supports_multimodal(self) -> bool:
+        """Whether this runtime also carries the full VLM processor stack."""
+        return self.processor is not None
+
+    def new_chat_template(self) -> ChatTemplate:
+        """Return a fresh request-local ChatTemplate instance."""
+        if hasattr(self.chat_template, "fork"):
+            return self.chat_template.fork()
+        return self.chat_template
 
     @classmethod
     def load(
