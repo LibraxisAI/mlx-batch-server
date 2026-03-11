@@ -66,7 +66,7 @@ class PromptCache:
     def reset_prompt_cache(self, model: MLXModel, prompt):
         logger.debug("*** Resetting cache. ***")
         self.model_key = model.model_id
-        self.cache = make_prompt_cache(model.model)
+        self.cache = make_prompt_cache(model.text_model)
 
         if model.draft_model is not None:
             self.cache += make_prompt_cache(model.draft_model)

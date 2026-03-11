@@ -30,12 +30,14 @@ class _FakeChatTemplate:
 
 
 def _fake_model(context_length: int) -> SimpleNamespace:
+    text_model = object()
     return SimpleNamespace(
         model_id="test-model",
         config={"max_position_embeddings": context_length},
         tokenizer=_FakeTokenizer(),
         chat_template=_FakeChatTemplate(),
-        model=object(),
+        model=text_model,
+        text_model=text_model,
     )
 
 
@@ -149,3 +151,35 @@ class TestBatchChatGenerator:
             None,
             {"built": {"temp": 0.7}},
         ]
+
+    def test_get_or_create_generator_uses_language_model_for_vlm_runtime(
+        self, monkeypatch
+    ):
+        """VLM-backed wrappers should batch on the text tower only."""
+        language_model = object()
+        generator = BatchChatGenerator(
+            model=SimpleNamespace(
+                model_id="test-vlm",
+                config={"text_config": {"max_position_embeddings": 16}},
+                tokenizer=_FakeTokenizer(),
+                chat_template=_FakeChatTemplate(),
+                model=SimpleNamespace(language_model=language_model),
+                text_model=language_model,
+            )
+        )
+        captured = {}
+
+        class FakeBatchGenerator:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(
+            batch_generator_module,
+            "BatchGenerator",
+            FakeBatchGenerator,
+        )
+
+        generator._get_or_create_generator(max_tokens=4)
+
+        assert captured["model"] is language_model
+        assert captured["stop_tokens"] == {0}

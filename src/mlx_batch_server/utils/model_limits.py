@@ -44,6 +44,7 @@ def _get_mapping_value(obj: Any, key: str) -> Any | None:
 
 def extract_context_length(config: Any, tokenizer: Any | None = None) -> int | None:
     candidates: list[Any] = []
+    resolved_lengths: list[int] = []
     if config is not None:
         candidates.append(config)
 
@@ -78,7 +79,10 @@ def extract_context_length(config: Any, tokenizer: Any | None = None) -> int | N
                 direct_values.append(base * factor)
 
         if direct_values:
-            return max(direct_values)
+            resolved_lengths.append(max(direct_values))
+
+    if resolved_lengths:
+        return max(resolved_lengths)
 
     if tokenizer is not None:
         tok_length = _coerce_positive_int(getattr(tokenizer, "model_max_length", None))

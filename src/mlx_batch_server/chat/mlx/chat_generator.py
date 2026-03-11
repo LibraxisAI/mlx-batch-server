@@ -164,7 +164,8 @@ class ChatGenerator:
         tools: list[dict[str, Any]] | None = None,
         template_kwargs: dict[str, Any] | None = None,
         json_schema: Any | None = None,
-    ) -> str:
+        chat_template=None,
+    ) -> tuple[str, Any]:
         """Prepare prompt using chat tokenizer.
 
         Args:
@@ -192,17 +193,43 @@ class ChatGenerator:
                 "enable_thinking"
             )
 
-        prompt = self.chat_template.apply_chat_template(
+        request_template = chat_template or self.model.new_chat_template()
+
+        prompt = request_template.apply_chat_template(
             messages=messages,
             tools=tools,
             **template_kwargs,
         )
 
         logger.debug(f"Encoded prompt: {prompt}")
-        return prompt
+        return prompt, request_template
+
+    def _new_chat_template(self):
+        """Return a request-local chat template when the runtime supports it."""
+        if hasattr(self.model, "new_chat_template"):
+            return self.model.new_chat_template()
+        return self.chat_template
+
+    def build_request_chat_template(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        template_kwargs: dict[str, Any] | None = None,
+        json_schema: Any | None = None,
+    ):
+        """Create and prime a request-local chat template instance."""
+        _, request_template = self._prepare_prompt(
+            messages=messages,
+            tools=tools,
+            template_kwargs=template_kwargs,
+            json_schema=json_schema,
+            chat_template=self._new_chat_template(),
+        )
+        return request_template
 
     def _create_mlx_kwargs(
         self,
+        chat_template,
         sampler: dict[str, Any] | Callable | None = None,
         max_tokens: int | None = DEFAULT_MAX_TOKENS,
         **kwargs,
@@ -257,7 +284,7 @@ class ChatGenerator:
             from .outlines_logits_processor import OutlinesLogitsProcessor
 
             # Check if we need thinking support
-            enable_thinking = self.chat_template.enable_thinking_parse
+            enable_thinking = chat_template.enable_thinking_parse
             logits_processors.append(
                 OutlinesLogitsProcessor(
                     self.tokenizer, json_schema, enable_thinking=enable_thinking
@@ -294,6 +321,7 @@ class ChatGenerator:
         # Control parameters
         enable_prompt_cache: bool = False,
         # Additional MLX generation parameters via **kwargs
+        _chat_template=None,
         **kwargs,
     ) -> CompletionResult:
         """Generate complete response.
@@ -315,6 +343,7 @@ class ChatGenerator:
             Complete generation result
         """
         try:
+            request_template = _chat_template or self._new_chat_template()
             # Generate complete response by collecting stream.
             # stream_generate handles the preparation of configurations.
             complete_raw_text = ""
@@ -330,6 +359,7 @@ class ChatGenerator:
                 top_logprobs,
                 template_kwargs,
                 enable_prompt_cache,
+                _chat_template=request_template,
                 **kwargs,
             ):
                 # Collect deltas to reconstruct complete content
@@ -347,7 +377,7 @@ class ChatGenerator:
                 raise RuntimeError("No tokens generated")
 
             logger.info(f"Model Response:\n{complete_raw_text}")
-            chat_result = self.chat_template.parse_chat_response(complete_raw_text)
+            chat_result = request_template.parse_chat_response(complete_raw_text)
 
             # Determine appropriate finish_reason
             finish_reason = final_stream_result.finish_reason
@@ -389,6 +419,7 @@ class ChatGenerator:
         # Control parameters
         enable_prompt_cache: bool = False,
         # Additional MLX generation parameters via **kwargs
+        _chat_template=None,
         **kwargs,
     ) -> Generator[StreamResult, None, None]:
         """Generate streaming response.
@@ -423,7 +454,13 @@ class ChatGenerator:
             json_schema = kwargs.get("json_schema")
 
             # Prepare prompt
-            prompt = self._prepare_prompt(messages, tools, template_kwargs, json_schema)
+            prompt, request_template = self._prepare_prompt(
+                messages,
+                tools,
+                template_kwargs,
+                json_schema,
+                chat_template=_chat_template or self._new_chat_template(),
+            )
 
             # Tokenize prompt
             tokenized_prompt = self.tokenizer.encode(prompt)
@@ -444,6 +481,7 @@ class ChatGenerator:
 
             # Create MLX kwargs
             mlx_kwargs = self._create_mlx_kwargs(
+                chat_template=request_template,
                 sampler=sampler,
                 max_tokens=resolved_max_tokens,
                 **kwargs,
@@ -459,7 +497,7 @@ class ChatGenerator:
             decoded_text = ""  # Track full decoded text for delta calculation
 
             for response in stream_generate(
-                model=self.model.model,
+                model=self.model.text_model,
                 tokenizer=self.tokenizer,
                 prompt=processed_prompt,
                 draft_model=self.model.draft_model,
@@ -489,7 +527,7 @@ class ChatGenerator:
                     )
 
                 # Use delta_text instead of response.text for parsing
-                parse_result = self.chat_template.stream_parse_chat_result(delta_text)
+                parse_result = request_template.stream_parse_chat_result(delta_text)
 
                 # Create StreamContent based on parse result
                 chunk_index = len(generated_tokens)

@@ -49,6 +49,20 @@ class TestBatchStatsEndpoint:
             assert "batch_window_ms" in settings
             assert "max_batch_size" in settings
 
+    @pytest.mark.asyncio
+    async def test_batch_stats_describe_single_flight_multimodal_scope(self, app):
+        """Batch stats should say multimodal requests are intentionally out of scope."""
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/v1/batch/stats")
+            data = response.json()
+
+            assert "coverage" in data
+            assert "same model runtime" in data["coverage"]["tools"]
+            assert "single-flight" in data["coverage"]["multimodal"]
+
 
 class TestBatchConfig:
     """Tests for batch configuration."""
@@ -106,6 +120,31 @@ class TestBatchCoordinatorCaching:
         assert stats["coordinator"]["total_requests"] == 0
         assert stats["coordinator"]["pending_requests"] == 0
 
+    @pytest.mark.asyncio
+    async def test_coordinator_surfaces_generator_creation_errors(self, monkeypatch):
+        """Generator startup failures should reach the waiting request immediately."""
+        from mlx_batch_server.batch.coordinator import BatchRequestCoordinator
+
+        coord = BatchRequestCoordinator("test-model-error")
+
+        def fail_generator_startup():
+            raise RuntimeError("generator failed")
+
+        monkeypatch.setattr(
+            coord,
+            "_get_or_create_generator",
+            fail_generator_startup,
+        )
+
+        with pytest.raises(RuntimeError, match="generator failed"):
+            async for _ in coord.stream_request(
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=1,
+            ):
+                pass
+
+        await coord.shutdown()
+
 
 class TestBatchResponsesIntegration:
     """Tests for batch integration with Responses API."""
@@ -156,10 +195,12 @@ class TestBatchGeneratorDataclasses:
             id="req_456",
             messages=[{"role": "user", "content": "Hi"}],
             max_tokens=100,
+            tools=[{"type": "function", "name": "lookup"}],
         )
 
         assert req.id == "req_456"
         assert req.max_tokens == 100
+        assert req.tools == [{"type": "function", "name": "lookup"}]
 
     def test_batch_generation_stats(self):
         """BatchGenerationStats should have expected fields."""

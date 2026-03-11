@@ -15,6 +15,8 @@ from mlx_batch_server.batch.coordinator import (
     get_loaded_batch_models,
     shutdown_batch_coordinator,
 )
+from mlx_batch_server.batch.generator import BatchChatGenerator
+from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 
 
 class TestPendingRequest:
@@ -27,6 +29,7 @@ class TestPendingRequest:
             request_id="test_123",
             messages=[{"role": "user", "content": "Hello"}],
             max_tokens=100,
+            tools=None,
             sampler_config=None,
             template_kwargs=None,
             response_queue=queue,
@@ -69,6 +72,35 @@ class TestBatchRequestCoordinator:
         assert stats["coordinator"]["total_requests"] == 0
         assert stats["coordinator"]["total_batches"] == 0
         assert stats["coordinator"]["pending_requests"] == 0
+
+    def test_get_or_create_generator_reuses_shared_vlm_wrapper(self, monkeypatch):
+        """Coordinator should keep using the shared chat wrapper for VLM text paths."""
+        coord = BatchRequestCoordinator(model_id="test-vlm")
+        fake_wrapper = SimpleNamespace(model=SimpleNamespace(text_model=object()))
+        fake_batch_generator = SimpleNamespace()
+        seen = {}
+
+        monkeypatch.setattr(
+            ChatGenerator,
+            "get_or_create",
+            lambda model_id, adapter_path=None, draft_model_id=None: fake_wrapper,
+        )
+        monkeypatch.setattr(
+            BatchChatGenerator,
+            "from_chat_generator",
+            lambda chat_generator,
+            completion_batch_size=32,
+            prefill_batch_size=8,
+            prefill_step_size=2048: (
+                seen.setdefault("chat_generator", chat_generator),
+                fake_batch_generator,
+            )[1],
+        )
+
+        result = coord._get_or_create_generator()
+
+        assert result is fake_batch_generator
+        assert seen["chat_generator"] is fake_wrapper
 
 
 class TestGetBatchCoordinator:
