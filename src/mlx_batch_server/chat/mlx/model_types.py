@@ -4,6 +4,7 @@ import importlib
 from pathlib import Path
 from typing import Any
 
+import mlx.core as mx
 from mlx import nn
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.utils import load as load_text_runtime
@@ -57,6 +58,104 @@ _MULTIMODAL_MODEL_TYPE_MARKERS = (
     "molmo",
     "bunny",
 )
+
+
+class _MLXLMCompatibleCacheProxy:
+    """Normalize mlx_lm batch cache offsets for VLM language towers."""
+
+    def __init__(self, base_cache: Any):
+        self.base_cache = base_cache
+
+    @property
+    def offset(self):
+        offset = self.base_cache.offset
+        if isinstance(offset, int):
+            return offset
+        if isinstance(offset, mx.array):
+            if offset.ndim == 0:
+                return int(offset.item())
+            batch_index = getattr(self.base_cache, "_idx", None)
+            if batch_index is not None:
+                return int(batch_index)
+            if offset.size == 1:
+                return int(offset[0].item())
+            return int(offset.max().item())
+        return offset
+
+    @offset.setter
+    def offset(self, value):
+        self.base_cache.offset = value
+
+    def __getattr__(self, name: str):
+        return getattr(self.base_cache, name)
+
+    def __getitem__(self, idx):
+        return self.base_cache[idx]
+
+    def __setitem__(self, idx, value):
+        self.base_cache[idx] = value
+
+
+class MLXLMCompatibleLanguageModel(nn.Module):
+    """Adapt VLM language towers to the logits tensor contract used by mlx_lm.
+
+    ``mlx_lm`` generation helpers expect ``model(...)`` to return a logits tensor
+    shaped like ``[batch, seq, vocab]``. ``mlx_vlm`` language towers instead
+    return an object with a ``.logits`` attribute. This wrapper normalizes that
+    forward contract while preserving cache-related attributes needed for batch
+    and prompt-cache flows.
+    """
+
+    def __init__(self, base_model: Any):
+        super().__init__()
+        self.base_model = base_model
+
+    def _normalize_cache(self, cache):
+        if cache is None:
+            return None
+        normalized = []
+        for entry in cache:
+            if entry is None or not hasattr(entry, "offset"):
+                normalized.append(entry)
+                continue
+            normalized.append(_MLXLMCompatibleCacheProxy(entry))
+        return normalized
+
+    def __call__(
+        self,
+        inputs,
+        cache=None,
+        input_embeddings=None,
+        **kwargs,
+    ):
+        if input_embeddings is not None and "inputs_embeds" not in kwargs:
+            kwargs["inputs_embeds"] = input_embeddings
+
+        output = self.base_model(inputs, cache=self._normalize_cache(cache), **kwargs)
+        return getattr(output, "logits", output)
+
+    def make_cache(self):
+        if hasattr(self.base_model, "make_cache"):
+            return self.base_model.make_cache()
+        raise AttributeError("Wrapped language model does not define make_cache()")
+
+    @property
+    def layers(self):
+        return self.base_model.layers
+
+    @property
+    def head_dim(self):
+        return self.base_model.head_dim
+
+    @property
+    def n_kv_heads(self):
+        return self.base_model.n_kv_heads
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(object.__getattribute__(self, "base_model"), name)
 
 
 def _fix_tokenizer_eos(tokenizer: TokenizerWrapper) -> None:
@@ -314,11 +413,18 @@ class MLXModel:
         self.processor = processor
         self.draft_model = draft_model
         self.draft_tokenizer = draft_tokenizer
+        self._text_model_proxy: nn.Module | None = None
 
     @property
     def text_model(self) -> nn.Module:
         """Return the text-generation tower for both LLM and VLM runtimes."""
-        return getattr(self.model, "language_model", self.model)
+        base_model = getattr(self.model, "language_model", self.model)
+        if not self.supports_multimodal:
+            return base_model
+
+        if self._text_model_proxy is None:
+            self._text_model_proxy = MLXLMCompatibleLanguageModel(base_model)
+        return self._text_model_proxy
 
     @property
     def supports_multimodal(self) -> bool:

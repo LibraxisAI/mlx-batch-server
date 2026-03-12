@@ -180,6 +180,73 @@ class BatchChatGenerator:
         self._stats = BatchGenerationStats()
         self._start_time: float | None = None
 
+    @staticmethod
+    def _safe_tokens_per_second(
+        token_count: int,
+        elapsed_seconds: float | int | None,
+    ) -> float:
+        """Compute throughput without surfacing divide-by-zero from mlx_lm stats."""
+        if elapsed_seconds is None or elapsed_seconds <= 0:
+            return 0.0
+        return float(token_count / elapsed_seconds)
+
+    def _apply_generator_stats(self, stats_like: Any) -> None:
+        """Copy compatible stats from mlx_lm or its raw counter object."""
+        prompt_tokens = int(
+            getattr(stats_like, "prompt_tokens", self._stats.prompt_tokens)
+        )
+        generation_tokens = int(
+            getattr(stats_like, "generation_tokens", self._stats.generation_tokens)
+        )
+
+        self._stats.prompt_tokens = prompt_tokens
+        self._stats.generation_tokens = generation_tokens
+
+        if hasattr(stats_like, "prompt_time"):
+            self._stats.prompt_tps = self._safe_tokens_per_second(
+                prompt_tokens,
+                getattr(stats_like, "prompt_time", 0.0),
+            )
+        else:
+            self._stats.prompt_tps = float(
+                getattr(stats_like, "prompt_tps", self._stats.prompt_tps)
+            )
+
+        if hasattr(stats_like, "generation_time"):
+            self._stats.generation_tps = self._safe_tokens_per_second(
+                generation_tokens,
+                getattr(stats_like, "generation_time", 0.0),
+            )
+        else:
+            self._stats.generation_tps = float(
+                getattr(stats_like, "generation_tps", self._stats.generation_tps)
+            )
+
+        peak_memory = getattr(stats_like, "peak_memory", None)
+        if peak_memory is not None:
+            self._stats.peak_memory_gb = float(peak_memory)
+
+    def _sync_generator_stats(self) -> None:
+        """Best-effort stats sync that never breaks a successful response."""
+        if self._generator is None:
+            return
+
+        try:
+            self._apply_generator_stats(self._generator.stats())
+        except ZeroDivisionError:
+            raw_stats = getattr(self._generator, "_stats", None)
+            if raw_stats is None:
+                logger.warning(
+                    "BatchGenerator.stats() hit zero elapsed time without raw counters"
+                )
+                return
+            logger.warning(
+                "BatchGenerator.stats() hit zero elapsed time; using raw counters"
+            )
+            self._apply_generator_stats(raw_stats)
+        except Exception as e:
+            logger.debug(f"Could not get generator stats: {e}")
+
     @classmethod
     def create(
         cls,
@@ -501,13 +568,7 @@ class BatchChatGenerator:
             raise
         finally:
             # Update stats
-            if self._generator:
-                mlx_stats = self._generator.stats()
-                self._stats.prompt_tokens = mlx_stats.prompt_tokens
-                self._stats.generation_tokens = mlx_stats.generation_tokens
-                self._stats.prompt_tps = mlx_stats.prompt_tps
-                self._stats.generation_tps = mlx_stats.generation_tps
-                self._stats.peak_memory_gb = mlx_stats.peak_memory
+            self._sync_generator_stats()
 
     def cancel(self, request_id: str) -> bool:
         """Cancel a specific request.
@@ -581,17 +642,7 @@ class BatchChatGenerator:
             BatchGenerationStats with current metrics
         """
         # Update stats from underlying generator if available
-        if self._generator is not None:
-            try:
-                mlx_stats = self._generator.stats()
-                self._stats.prompt_tokens = mlx_stats.prompt_tokens
-                self._stats.generation_tokens = mlx_stats.generation_tokens
-                self._stats.prompt_tps = mlx_stats.prompt_tps
-                self._stats.generation_tps = mlx_stats.generation_tps
-                self._stats.peak_memory_gb = mlx_stats.peak_memory
-            except Exception as e:
-                logger.debug(f"Could not get generator stats: {e}")
-
+        self._sync_generator_stats()
         return self._stats
 
     def stats_dict(self) -> dict[str, Any]:
