@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import mlx.core as mx
 import pytest
 
 from mlx_batch_server.chat.mlx import chat_generator as chat_generator_module
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
+from mlx_batch_server.chat.mlx.model_types import (
+    MLXLMCompatibleLanguageModel,
+    MLXModel,
+)
 
 
 class _FakeTokenizer:
@@ -30,6 +35,42 @@ class _FakeChatTemplate:
 
     def stream_parse_chat_result(self, text: str):
         return SimpleNamespace(thinking=None, content=text)
+
+
+class _FakeRuntimeTokenizer:
+    model_max_length = 16
+
+
+class _FakeLanguageTowerOutput:
+    def __init__(self, logits):
+        self.logits = logits
+
+
+class _FakeVLMLanguageTower:
+    layers = [object()]
+    head_dim = 8
+    n_kv_heads = 1
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, inputs, cache=None, inputs_embeds=None, **kwargs):
+        self.calls.append(
+            {
+                "inputs": inputs,
+                "cache": cache,
+                "inputs_embeds": inputs_embeds,
+                "kwargs": kwargs,
+            }
+        )
+        batch, seq = inputs.shape
+        logits = mx.array(
+            [[[0.0, 1.0, -1.0, -2.0] for _ in range(seq)] for _ in range(batch)]
+        )
+        return _FakeLanguageTowerOutput(logits=logits)
+
+    def make_cache(self):
+        return []
 
 
 def _fake_wrapper(context_length: int, *, multimodal: bool = False) -> ChatGenerator:
@@ -164,3 +205,37 @@ class TestChatGeneratorLimits:
         assert len(results) == 1
         assert state["model"] is wrapper.model.text_model
         assert state["kwargs"]["max_tokens"] == 1
+
+    def test_vlm_text_model_is_mlx_lm_compatible_with_real_generate_step(self):
+        """The VLM seam should unwrap LanguageModelOutput for real mlx_lm generation."""
+        tower = _FakeVLMLanguageTower()
+        model = MLXModel(
+            model_id="test-vlm",
+            adapter_path=None,
+            draft_model_id=None,
+            config={"max_position_embeddings": 16},
+            model=SimpleNamespace(language_model=tower),
+            tokenizer=_FakeRuntimeTokenizer(),
+            chat_template=_FakeChatTemplate(),
+            processor=object(),
+        )
+
+        text_model = model.text_model
+
+        assert isinstance(text_model, MLXLMCompatibleLanguageModel)
+
+        from mlx_lm.generate import generate_step
+
+        token, logprobs = next(
+            generate_step(
+                prompt=mx.array([1]),
+                model=text_model,
+                max_tokens=1,
+                prompt_cache=[],
+            )
+        )
+
+        assert token == 1
+        assert logprobs.shape == (4,)
+        assert tower.calls[0]["cache"] == []
+        assert text_model.make_cache() == []
