@@ -1,0 +1,98 @@
+# Loctree CI - Codebase Health Analysis
+# Installs from crates.io
+#
+# Vibecrafted with AI Agents by VetCoders (c)2026 The Loctree Team
+
+name: Loctree
+
+on:
+  pull_request:
+    paths: ['src/**/*.py', 'tests/**/*.py']
+
+env:
+  HEALTH_THRESHOLD: 70
+  LOCTREE_VERSION: "0.8.11"
+
+jobs:
+  analyze:
+    name: Codebase Health
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: ${{ runner.os }}-cargo-loctree-${{ env.LOCTREE_VERSION }}
+
+      - name: Install loctree
+        id: install
+        run: |
+          if ! command -v loct &> /dev/null; then
+            cargo install loctree --version "${LOCTREE_VERSION}"
+          fi
+          echo "installed=true" >> $GITHUB_OUTPUT
+          loct --version
+
+      - name: Run Analysis
+        if: steps.install.outputs.installed == 'true'
+        id: scan
+        run: |
+          echo "## Loctree Analysis" >> $GITHUB_STEP_SUMMARY
+
+          # Generate artifacts
+          loct auto 2>/dev/null || true
+
+          if [ -f .loctree/agent.json ]; then
+            HEALTH=$(jq -r '.summary.health_score // 0' .loctree/agent.json)
+            FILES=$(jq -r '.summary.files_analyzed // 0' .loctree/agent.json)
+            DEAD=$(jq -r '.summary.dead_exports // 0' .loctree/agent.json)
+            TWINS=$(jq -r '.summary.duplicate_defs // 0' .loctree/agent.json)
+
+            echo "health=$HEALTH" >> $GITHUB_OUTPUT
+
+            BADGE=$([ "$HEALTH" -ge 80 ] && echo "🟢" || ([ "$HEALTH" -ge 50 ] && echo "🟡" || echo "🔴"))
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### $BADGE Health Score: ${HEALTH}/100" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Files analyzed | $FILES |" >> $GITHUB_STEP_SUMMARY
+            echo "| Dead exports | $DEAD |" >> $GITHUB_STEP_SUMMARY
+            echo "| Duplicate definitions | $TWINS |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Analysis artifacts not generated" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check Health Threshold
+        if: steps.install.outputs.installed == 'true' && steps.scan.outputs.health != ''
+        run: |
+          HEALTH=${{ steps.scan.outputs.health }}
+          if [ "$HEALTH" -lt "${{ env.HEALTH_THRESHOLD }}" ]; then
+            echo "::error::Health score $HEALTH below threshold (${{ env.HEALTH_THRESHOLD }})"
+            exit 1
+          fi
+
+      - name: Check Duplicates
+        if: steps.install.outputs.installed == 'true'
+        run: |
+          echo "### Duplicate Definitions" >> $GITHUB_STEP_SUMMARY
+          loct twins 2>/dev/null | head -50 >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload Artifacts
+        if: steps.install.outputs.installed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: loctree-analysis
+          path: .loctree/
+          if-no-files-found: ignore

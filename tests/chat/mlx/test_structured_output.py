@@ -4,7 +4,7 @@ from textwrap import dedent
 
 from pydantic import BaseModel
 
-from mlx_omni_server.chat.mlx.chat_generator import ChatGenerator
+from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,7 +58,6 @@ math_tutor_json_schema = {
 
 
 class TestStructuredOutput:
-
     def test_json_schema(self):
         """Test structured generation with a JSON schema."""
         # Try to load reasoning model
