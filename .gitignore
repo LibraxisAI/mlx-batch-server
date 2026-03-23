@@ -178,3 +178,5 @@ GEMINI.md
 # Server runtime
 .mlx-batch-server.pid
 mlx-batch-server.log
+/.ai-context
+/logs
