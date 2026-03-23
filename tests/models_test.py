@@ -3,7 +3,7 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 from openai import NotFoundError, OpenAI
-from src.mlx_omni_server.main import app
+from src.mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -233,4 +233,4 @@ class TestModelLoadUnload:
         )
 
         # Empty model should fail
-        assert response.status_code == 500
+        assert response.status_code == 400

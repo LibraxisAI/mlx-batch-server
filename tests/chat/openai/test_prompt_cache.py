@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openai import OpenAI
 
-from mlx_omni_server.main import app
+from mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,5 +81,5 @@ class TestPromptCache:
             )
 
         except Exception as e:
-            logger.error(f"Error testing prompt cache: {str(e)}")
+            logger.error(f"Error testing prompt cache: {e!s}")
             raise

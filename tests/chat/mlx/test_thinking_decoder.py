@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from mlx_omni_server.chat.mlx.tools.thinking_decoder import ThinkingDecoder
+from mlx_batch_server.chat.mlx.tools.thinking_decoder import ThinkingDecoder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

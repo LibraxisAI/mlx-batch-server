@@ -2,13 +2,13 @@
 
 Tests the full pipeline from /v1/responses endpoint through batch coordinator.
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 """
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mlx_omni_server.main import create_app
+from mlx_batch_server.main import create_app
 
 
 @pytest.fixture
@@ -49,13 +49,27 @@ class TestBatchStatsEndpoint:
             assert "batch_window_ms" in settings
             assert "max_batch_size" in settings
 
+    @pytest.mark.asyncio
+    async def test_batch_stats_describe_single_flight_multimodal_scope(self, app):
+        """Batch stats should say multimodal requests are intentionally out of scope."""
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/v1/batch/stats")
+            data = response.json()
+
+            assert "coverage" in data
+            assert "same model runtime" in data["coverage"]["tools"]
+            assert "single-flight" in data["coverage"]["multimodal"]
+
 
 class TestBatchConfig:
     """Tests for batch configuration."""
 
     def test_batch_settings_in_config(self):
         """Config should include batch settings."""
-        from mlx_omni_server.core.config import get_settings
+        from mlx_batch_server.core.config import get_settings
 
         settings = get_settings()
 
@@ -67,7 +81,7 @@ class TestBatchConfig:
 
     def test_batch_enabled_by_default(self):
         """Batch inference should be enabled by default."""
-        from mlx_omni_server.core.config import get_settings
+        from mlx_batch_server.core.config import get_settings
 
         settings = get_settings()
         assert settings.enable_batch_inference is True
@@ -78,7 +92,7 @@ class TestBatchCoordinatorCaching:
 
     def test_coordinator_cached_per_model(self):
         """Same model should return same coordinator."""
-        from mlx_omni_server.batch import get_batch_coordinator
+        from mlx_batch_server.batch import get_batch_coordinator
 
         coord1 = get_batch_coordinator("test-model-cache-1")
         coord2 = get_batch_coordinator("test-model-cache-1")
@@ -87,7 +101,7 @@ class TestBatchCoordinatorCaching:
 
     def test_coordinator_unique_per_model(self):
         """Different models should get different coordinators."""
-        from mlx_omni_server.batch import get_batch_coordinator
+        from mlx_batch_server.batch import get_batch_coordinator
 
         coord1 = get_batch_coordinator("test-model-unique-1")
         coord2 = get_batch_coordinator("test-model-unique-2")
@@ -97,7 +111,7 @@ class TestBatchCoordinatorCaching:
     @pytest.mark.asyncio
     async def test_coordinator_stats_tracking(self):
         """Coordinator should track request statistics."""
-        from mlx_omni_server.batch import get_batch_coordinator
+        from mlx_batch_server.batch import get_batch_coordinator
 
         coord = get_batch_coordinator("test-model-stats")
         stats = coord.stats()
@@ -106,13 +120,38 @@ class TestBatchCoordinatorCaching:
         assert stats["coordinator"]["total_requests"] == 0
         assert stats["coordinator"]["pending_requests"] == 0
 
+    @pytest.mark.asyncio
+    async def test_coordinator_surfaces_generator_creation_errors(self, monkeypatch):
+        """Generator startup failures should reach the waiting request immediately."""
+        from mlx_batch_server.batch.coordinator import BatchRequestCoordinator
+
+        coord = BatchRequestCoordinator("test-model-error")
+
+        def fail_generator_startup():
+            raise RuntimeError("generator failed")
+
+        monkeypatch.setattr(
+            coord,
+            "_get_or_create_generator",
+            fail_generator_startup,
+        )
+
+        with pytest.raises(RuntimeError, match="generator failed"):
+            async for _ in coord.stream_request(
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=1,
+            ):
+                pass
+
+        await coord.shutdown()
+
 
 class TestBatchResponsesIntegration:
     """Tests for batch integration with Responses API."""
 
     def test_adapter_has_batch_method(self):
         """ResponsesAdapter should have batch streaming method."""
-        from mlx_omni_server.responses.adapter import ResponsesAdapter
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
 
         adapter = ResponsesAdapter()
 
@@ -122,7 +161,7 @@ class TestBatchResponsesIntegration:
 
     def test_adapter_batch_decision(self):
         """Adapter should check batch setting."""
-        from mlx_omni_server.responses.adapter import ResponsesAdapter
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
 
         adapter = ResponsesAdapter()
         # Default is True (batch enabled)
@@ -134,7 +173,7 @@ class TestBatchGeneratorDataclasses:
 
     def test_batch_stream_chunk_creation(self):
         """BatchStreamChunk should be creatable."""
-        from mlx_omni_server.batch import BatchStreamChunk
+        from mlx_batch_server.batch import BatchStreamChunk
 
         chunk = BatchStreamChunk(
             request_id="test_123",
@@ -150,20 +189,22 @@ class TestBatchGeneratorDataclasses:
 
     def test_batch_request_creation(self):
         """BatchRequest should be creatable."""
-        from mlx_omni_server.batch import BatchRequest
+        from mlx_batch_server.batch import BatchRequest
 
         req = BatchRequest(
             id="req_456",
             messages=[{"role": "user", "content": "Hi"}],
             max_tokens=100,
+            tools=[{"type": "function", "name": "lookup"}],
         )
 
         assert req.id == "req_456"
         assert req.max_tokens == 100
+        assert req.tools == [{"type": "function", "name": "lookup"}]
 
     def test_batch_generation_stats(self):
         """BatchGenerationStats should have expected fields."""
-        from mlx_omni_server.batch import BatchGenerationStats
+        from mlx_batch_server.batch import BatchGenerationStats
 
         stats = BatchGenerationStats()
 
