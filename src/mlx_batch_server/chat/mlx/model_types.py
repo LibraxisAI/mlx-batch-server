@@ -1,6 +1,7 @@
 """MLX Model types and management."""
 
 import importlib
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,32 @@ from ...utils.logger import logger
 from ...utils.model_limits import extract_context_length
 from .runtime_aliases import resolve_runtime_model_id
 from .tools.chat_template import ChatTemplate
+
+
+def _patch_transformers_auto_docstring_for_vlm() -> None:
+    """Avoid the transformers 4.57.x auto-docstring crash on some VLM processors."""
+    try:
+        auto_docstring = importlib.import_module("transformers.utils.auto_docstring")
+        original = getattr(auto_docstring, "get_placeholders_dict", None)
+        if original is None or getattr(original, "_mlx_batch_safe_wrapper", False):
+            return
+
+        def _safe_get_placeholders_dict(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            except IndexError:
+                return {}
+
+        _safe_get_placeholders_dict._mlx_batch_safe_wrapper = True
+        auto_docstring.get_placeholders_dict = _safe_get_placeholders_dict
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Skipping transformers auto_docstring patch in model_types: %s",
+            type(exc).__name__,
+        )
+
+
+_patch_transformers_auto_docstring_for_vlm()
 
 _MULTIMODAL_CONFIG_KEYS = (
     "vision_config",
@@ -141,7 +168,9 @@ class MLXLMCompatibleLanguageModel(nn.Module):
             return self.base_model.make_cache()
         if hasattr(self.base_model, "layers"):
             return [KVCache() for _ in self.base_model.layers]
-        raise AttributeError("Wrapped language model does not define make_cache()")
+        # Some frontier VLM language towers keep cache ownership outside the tower
+        # object. mlx_lm accepts an empty prompt-cache list for those runtimes.
+        return []
 
     @property
     def layers(self):
