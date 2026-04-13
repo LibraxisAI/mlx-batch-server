@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
+from mlx_batch_server.chat.mlx.runtime_policy import endpoint_runtime_session
 from mlx_batch_server.chat.openai.openai_adapter import OpenAIAdapter
 from mlx_batch_server.chat.openai.schema import (
     ChatCompletionRequest,
@@ -18,20 +19,33 @@ router = APIRouter(tags=["chat—completions"])
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def create_chat_completion(request: ChatCompletionRequest):
     """Create a chat completion"""
-
-    text_model = _create_text_model(
-        request.model,
-        request.get_extra_params().get("adapter_path"),
-        request.get_extra_params().get("draft_model"),
-    )
-
     if not request.stream:
-        completion = text_model.generate(request)
-        return JSONResponse(content=completion.model_dump(exclude_none=True))
+        async with endpoint_runtime_session(
+            model_id=request.model,
+            adapter_path=request.get_extra_params().get("adapter_path"),
+            draft_model_id=request.get_extra_params().get("draft_model"),
+        ):
+            text_model = _create_text_model(
+                request.model,
+                request.get_extra_params().get("adapter_path"),
+                request.get_extra_params().get("draft_model"),
+            )
+            completion = text_model.generate(request)
+            return JSONResponse(content=completion.model_dump(exclude_none=True))
 
     async def event_generator() -> Generator[str, None, None]:
-        for chunk in text_model.generate_stream(request):
-            yield f"data: {json.dumps(chunk.model_dump(exclude_none=True))}\n\n"
+        async with endpoint_runtime_session(
+            model_id=request.model,
+            adapter_path=request.get_extra_params().get("adapter_path"),
+            draft_model_id=request.get_extra_params().get("draft_model"),
+        ):
+            text_model = _create_text_model(
+                request.model,
+                request.get_extra_params().get("adapter_path"),
+                request.get_extra_params().get("draft_model"),
+            )
+            for chunk in text_model.generate_stream(request):
+                yield f"data: {json.dumps(chunk.model_dump(exclude_none=True))}\n\n"
 
         yield "data: [DONE]\n\n"
 

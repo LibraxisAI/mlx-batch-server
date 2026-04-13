@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx.wrapper_cache import MLXWrapperCache, WrapperCacheKey
 
 
@@ -437,6 +438,34 @@ class TestMLXWrapperCacheModelManagement:
         assert model is wrapper.model.model
         assert processor is wrapper.model.processor
         assert self.cache.get_loaded_vlm_models() == ["model-vlm"]
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_runtime_alias_reuses_single_cached_wrapper(self, mock_create):
+        """Dynamic runtime aliases should not create duplicate residency."""
+        runtime_aliases_module.clear_runtime_aliases()
+        try:
+            runtime_aliases_module.register_runtime_alias(
+                "qwen3.5-vl-crack",
+                "libraxisai/gpt-oss-120b-mlx-mxfp4",
+            )
+            mock_create.return_value = MockChatGenerator(
+                "libraxisai/gpt-oss-120b-mlx-mxfp4",
+                multimodal=True,
+            )
+
+            canonical = self.cache.get_wrapper("libraxisai/gpt-oss-120b-mlx-mxfp4")
+            alias = self.cache.get_wrapper("qwen3.5-vl-crack")
+
+            assert alias is canonical
+            assert mock_create.call_count == 1
+            assert self.cache.get_loaded_models() == [
+                "libraxisai/gpt-oss-120b-mlx-mxfp4"
+            ]
+            assert self.cache.get_loaded_vlm_models() == [
+                "libraxisai/gpt-oss-120b-mlx-mxfp4"
+            ]
+        finally:
+            runtime_aliases_module.clear_runtime_aliases()
 
 
 class TestMLXWrapperCachePinnedOnly:

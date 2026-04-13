@@ -6,6 +6,7 @@ from typing import Any
 
 import mlx.core as mx
 from mlx import nn
+from mlx_lm.models.cache import KVCache
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.utils import load as load_text_runtime
 from mlx_lm.utils import load_config as load_text_config
@@ -38,6 +39,7 @@ except ImportError:
 
 from ...utils.logger import logger
 from ...utils.model_limits import extract_context_length
+from .runtime_aliases import resolve_runtime_model_id
 from .tools.chat_template import ChatTemplate
 
 _MULTIMODAL_CONFIG_KEYS = (
@@ -137,6 +139,8 @@ class MLXLMCompatibleLanguageModel(nn.Module):
     def make_cache(self):
         if hasattr(self.base_model, "make_cache"):
             return self.base_model.make_cache()
+        if hasattr(self.base_model, "layers"):
+            return [KVCache() for _ in self.base_model.layers]
         raise AttributeError("Wrapped language model does not define make_cache()")
 
     @property
@@ -286,11 +290,15 @@ def load_mlx_model(
     if not model_id or not model_id.strip():
         raise ValueError("model_id cannot be empty")
 
-    model_id = model_id.strip()
+    model_id = resolve_runtime_model_id(model_id).strip()
+    if draft_model_id:
+        draft_model_id = resolve_runtime_model_id(draft_model_id).strip()
 
     # Expand home directory if needed
     if model_id.startswith("~"):
         model_id = str(Path(model_id).expanduser())
+    if draft_model_id and draft_model_id.startswith("~"):
+        draft_model_id = str(Path(draft_model_id).expanduser())
 
     try:
         # Load configuration - use path directly for local models
@@ -414,6 +422,19 @@ class MLXModel:
         self.draft_model = draft_model
         self.draft_tokenizer = draft_tokenizer
         self._text_model_proxy: nn.Module | None = None
+
+    def reset_runtime_state(self) -> None:
+        """Clear request-local transient state left behind by some VLM towers."""
+        candidate = getattr(self.model, "language_model", self.model)
+        cleared = False
+
+        for attr in ("_position_ids", "_rope_deltas"):
+            if hasattr(candidate, attr):
+                setattr(candidate, attr, None)
+                cleared = True
+
+        if cleared:
+            logger.debug("Cleared transient runtime state for %s", self.model_id)
 
     @property
     def text_model(self) -> nn.Module:
