@@ -67,6 +67,10 @@ class ModelLoadRequest(BaseModel):
     draft_model_id: str | None = Field(
         default=None, description="Optional draft model for speculative decoding"
     )
+    alias: str | None = Field(
+        default=None,
+        description="Optional runtime alias to register for this model in the current server process",
+    )
 
 
 class ModelLoadResponse(BaseModel):

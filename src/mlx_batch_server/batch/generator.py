@@ -16,7 +16,7 @@ Target metrics:
 - <500ms time-to-first-token per user
 - <150MB overhead per concurrent request
 
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 Co-Authored-By: [Maciej](void@div0.space) & [Klaudiusz](the1st@whoai.am)
 """
 
@@ -34,6 +34,7 @@ from mlx_lm.sample_utils import make_sampler
 
 from ..chat.mlx.model_types import MLXModel
 from ..utils.logger import logger
+from ..utils.model_limits import extract_context_length, resolve_max_tokens
 
 if TYPE_CHECKING:
     from ..chat.mlx.chat_generator import ChatGenerator
@@ -73,13 +74,15 @@ class BatchRequest:
         id: Unique identifier for this request
         messages: Chat messages in standard format
         max_tokens: Maximum tokens to generate
+        tools: Optional tools for function calling
         sampler_config: Optional sampler configuration
         template_kwargs: Optional template parameters
     """
 
     id: str
     messages: list[dict[str, Any]]
-    max_tokens: int = 128
+    max_tokens: int | None = None
+    tools: list[dict[str, Any]] | None = None
     sampler_config: dict[str, Any] | None = None
     template_kwargs: dict[str, Any] | None = None
 
@@ -153,6 +156,12 @@ class BatchChatGenerator:
         self._completion_batch_size = completion_batch_size
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
+        self._context_length = getattr(
+            model, "context_length", None
+        ) or extract_context_length(
+            model.config,
+            model.tokenizer,
+        )
 
         # Generator instance - created lazily
         self._generator: BatchGenerator | None = None
@@ -170,6 +179,73 @@ class BatchChatGenerator:
         # Statistics
         self._stats = BatchGenerationStats()
         self._start_time: float | None = None
+
+    @staticmethod
+    def _safe_tokens_per_second(
+        token_count: int,
+        elapsed_seconds: float | int | None,
+    ) -> float:
+        """Compute throughput without surfacing divide-by-zero from mlx_lm stats."""
+        if elapsed_seconds is None or elapsed_seconds <= 0:
+            return 0.0
+        return float(token_count / elapsed_seconds)
+
+    def _apply_generator_stats(self, stats_like: Any) -> None:
+        """Copy compatible stats from mlx_lm or its raw counter object."""
+        prompt_tokens = int(
+            getattr(stats_like, "prompt_tokens", self._stats.prompt_tokens)
+        )
+        generation_tokens = int(
+            getattr(stats_like, "generation_tokens", self._stats.generation_tokens)
+        )
+
+        self._stats.prompt_tokens = prompt_tokens
+        self._stats.generation_tokens = generation_tokens
+
+        if hasattr(stats_like, "prompt_time"):
+            self._stats.prompt_tps = self._safe_tokens_per_second(
+                prompt_tokens,
+                getattr(stats_like, "prompt_time", 0.0),
+            )
+        else:
+            self._stats.prompt_tps = float(
+                getattr(stats_like, "prompt_tps", self._stats.prompt_tps)
+            )
+
+        if hasattr(stats_like, "generation_time"):
+            self._stats.generation_tps = self._safe_tokens_per_second(
+                generation_tokens,
+                getattr(stats_like, "generation_time", 0.0),
+            )
+        else:
+            self._stats.generation_tps = float(
+                getattr(stats_like, "generation_tps", self._stats.generation_tps)
+            )
+
+        peak_memory = getattr(stats_like, "peak_memory", None)
+        if peak_memory is not None:
+            self._stats.peak_memory_gb = float(peak_memory)
+
+    def _sync_generator_stats(self) -> None:
+        """Best-effort stats sync that never breaks a successful response."""
+        if self._generator is None:
+            return
+
+        try:
+            self._apply_generator_stats(self._generator.stats())
+        except ZeroDivisionError:
+            raw_stats = getattr(self._generator, "_stats", None)
+            if raw_stats is None:
+                logger.warning(
+                    "BatchGenerator.stats() hit zero elapsed time without raw counters"
+                )
+                return
+            logger.warning(
+                "BatchGenerator.stats() hit zero elapsed time; using raw counters"
+            )
+            self._apply_generator_stats(raw_stats)
+        except Exception as e:
+            logger.debug(f"Could not get generator stats: {e}")
 
     @classmethod
     def create(
@@ -231,28 +307,21 @@ class BatchChatGenerator:
 
     def _get_or_create_generator(
         self,
-        max_tokens: int = 128,
-        sampler_config: dict[str, Any] | None = None,
+        max_tokens: int,
     ) -> BatchGenerator:
         """Get existing or create new BatchGenerator.
 
-        Note: BatchGenerator configuration is set at creation time.
-        If different sampler/max_tokens are needed, the generator is recreated.
-        For production use, consider using consistent settings across requests.
+        Note: generator-level max_tokens is only a default. Per-request limits
+        and samplers are passed to ``BatchGenerator.insert()`` so concurrent
+        requests can keep independent decoding settings.
 
         Args:
             max_tokens: Default max tokens for new requests
-            sampler_config: Optional sampler configuration
 
         Returns:
             BatchGenerator instance
         """
         with self._generator_lock:
-            # Create sampler from config if provided
-            sampler = None
-            if sampler_config is not None:
-                sampler = make_sampler(**sampler_config)
-
             # Get stop tokens from tokenizer
             stop_tokens = set()
             if hasattr(self.tokenizer, "eos_token_ids"):
@@ -262,10 +331,9 @@ class BatchChatGenerator:
 
             if self._generator is None:
                 self._generator = BatchGenerator(
-                    model=self.model.model,
+                    model=self.model.text_model,
                     max_tokens=max_tokens,
                     stop_tokens=stop_tokens,
-                    sampler=sampler,
                     completion_batch_size=self._completion_batch_size,
                     prefill_batch_size=self._prefill_batch_size,
                     prefill_step_size=self._prefill_step_size,
@@ -300,7 +368,13 @@ class BatchChatGenerator:
         if "enable_thinking" in kwargs:
             kwargs["enable_thinking_parse"] = kwargs.pop("enable_thinking")
 
-        return self.chat_template.apply_chat_template(
+        request_template = (
+            self.model.new_chat_template()
+            if hasattr(self.model, "new_chat_template")
+            else self.chat_template
+        )
+
+        return request_template.apply_chat_template(
             messages=messages,
             tools=tools,
             **kwargs,
@@ -308,33 +382,44 @@ class BatchChatGenerator:
 
     def _prepare_batch_requests(
         self, requests: list[BatchRequest]
-    ) -> tuple[list[list[int]], list[int]]:
+    ) -> tuple[list[list[int]], list[int], list[Any | None]]:
         """Prepare and tokenize batch requests.
 
         Args:
             requests: List of BatchRequest objects
 
         Returns:
-            Tuple of (prompts, max_tokens_list)
+            Tuple of (prompts, max_tokens_list, samplers)
         """
         prompts = []
         max_tokens_list = []
+        samplers = []
 
         for req in requests:
             prompt_str = self._format_prompt(
                 messages=req.messages,
+                tools=req.tools,
                 template_kwargs=req.template_kwargs,
             )
             tokenized = self.tokenizer.encode(prompt_str)
             prompts.append(tokenized)
-            max_tokens_list.append(req.max_tokens)
+            resolved_max_tokens = resolve_max_tokens(
+                requested=req.max_tokens,
+                context_length=self._context_length,
+                prompt_tokens=len(tokenized),
+                context_label=self.model.model_id,
+            )
+            max_tokens_list.append(resolved_max_tokens)
+            samplers.append(
+                make_sampler(**req.sampler_config) if req.sampler_config else None
+            )
 
             logger.debug(
                 f"Request {req.id}: prompt_length={len(tokenized)}, "
-                f"max_tokens={req.max_tokens}"
+                f"max_tokens={resolved_max_tokens}"
             )
 
-        return prompts, max_tokens_list
+        return prompts, max_tokens_list, samplers
 
     def _process_response(self, response) -> BatchStreamChunk | None:
         """Process a single response from BatchGenerator.
@@ -432,17 +517,16 @@ class BatchChatGenerator:
         if not requests:
             return
 
-        # Get common sampler config and create generator
-        sampler_config = requests[0].sampler_config if requests else None
-        max_tokens_default = max(r.max_tokens for r in requests)
-        gen = self._get_or_create_generator(
-            max_tokens=max_tokens_default,
-            sampler_config=sampler_config,
-        )
+        if hasattr(self.model, "reset_runtime_state"):
+            self.model.reset_runtime_state()
 
         # Prepare and insert requests
-        prompts, max_tokens_list = self._prepare_batch_requests(requests)
-        uids = gen.insert(prompts, max_tokens=max_tokens_list)
+        prompts, max_tokens_list, samplers = self._prepare_batch_requests(requests)
+
+        # The generator-level max_tokens is only the default. Per-request limits
+        # and samplers are applied at insert time.
+        gen = self._get_or_create_generator(max_tokens=max(max_tokens_list))
+        uids = gen.insert(prompts, max_tokens=max_tokens_list, samplers=samplers)
 
         # Map UIDs to request IDs
         for uid, req in zip(uids, requests, strict=True):
@@ -487,13 +571,7 @@ class BatchChatGenerator:
             raise
         finally:
             # Update stats
-            if self._generator:
-                mlx_stats = self._generator.stats()
-                self._stats.prompt_tokens = mlx_stats.prompt_tokens
-                self._stats.generation_tokens = mlx_stats.generation_tokens
-                self._stats.prompt_tps = mlx_stats.prompt_tps
-                self._stats.generation_tps = mlx_stats.generation_tps
-                self._stats.peak_memory_gb = mlx_stats.peak_memory
+            self._sync_generator_stats()
 
     def cancel(self, request_id: str) -> bool:
         """Cancel a specific request.
@@ -567,17 +645,7 @@ class BatchChatGenerator:
             BatchGenerationStats with current metrics
         """
         # Update stats from underlying generator if available
-        if self._generator is not None:
-            try:
-                mlx_stats = self._generator.stats()
-                self._stats.prompt_tokens = mlx_stats.prompt_tokens
-                self._stats.generation_tokens = mlx_stats.generation_tokens
-                self._stats.prompt_tps = mlx_stats.prompt_tps
-                self._stats.generation_tps = mlx_stats.generation_tps
-                self._stats.peak_memory_gb = mlx_stats.peak_memory
-            except Exception as e:
-                logger.debug(f"Could not get generator stats: {e}")
-
+        self._sync_generator_stats()
         return self._stats
 
     def stats_dict(self) -> dict[str, Any]:
