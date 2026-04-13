@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 
 router = APIRouter(tags=["visual-embeddings"])
@@ -29,17 +30,29 @@ class MaxSimRequest(BaseModel):
     doc_embedding: list[list[float]]
 
 
+def _normalize_embedder_key(
+    model_id: str,
+    projection_path: str | None,
+    processor_id: str | None,
+) -> tuple[str, str | None, str | None]:
+    return (
+        normalize_model_id(model_id),
+        projection_path.strip() or None if projection_path else None,
+        processor_id.strip() or None if processor_id else None,
+    )
+
+
 def _get_embedder(
     model_id: str, projection_path: str | None, processor_id: str | None
 ) -> Qwen3VLEmbedder:
-    key = (model_id, projection_path, processor_id)
+    key = _normalize_embedder_key(model_id, projection_path, processor_id)
     with _embedder_lock:
         embedder = _embedder_cache.get(key)
         if embedder is None:
             embedder = Qwen3VLEmbedder(
-                model_id=model_id,
-                projection_path=projection_path,
-                processor_id=processor_id,
+                model_id=key[0],
+                projection_path=key[1],
+                processor_id=key[2],
             )
             embedder.load()
             embedder.log_summary()
@@ -55,17 +68,31 @@ def get_visual_embedder(
 
 
 def unload_visual_embedder(model_id: str | None = None) -> list[str]:
-    """Unload visual embedders. Returns unloaded model IDs."""
+    """Unload visual embedders and their shared VLM runtime residency."""
+    removed_models: list[str] = []
+    specific_model_id = normalize_model_id(model_id) if model_id is not None else None
+
     with _embedder_lock:
         if model_id is None:
-            unloaded = list({key[0] for key in _embedder_cache})
+            removed_models = sorted({key[0] for key in _embedder_cache})
             _embedder_cache.clear()
-            return unloaded
+        else:
+            keys_to_remove = [
+                key for key in _embedder_cache if key[0] == specific_model_id
+            ]
+            for key in keys_to_remove:
+                _embedder_cache.pop(key, None)
+            removed_models = [specific_model_id] if keys_to_remove else []
 
-        keys_to_remove = [key for key in _embedder_cache if key[0] == model_id]
-        for key in keys_to_remove:
-            _embedder_cache.pop(key, None)
-        return [model_id] if keys_to_remove else []
+    runtime_unloaded: list[str] = []
+    runtime_targets = removed_models
+    if specific_model_id is not None and not runtime_targets:
+        runtime_targets = [specific_model_id]
+
+    for normalized_model_id in runtime_targets:
+        runtime_unloaded.extend(wrapper_cache.unload_vlm_model(normalized_model_id))
+
+    return list(dict.fromkeys([*removed_models, *runtime_unloaded]))
 
 
 @router.post("/visual-embeddings")
