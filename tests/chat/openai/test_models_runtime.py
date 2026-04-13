@@ -32,8 +32,11 @@ class TestLoadedModelsRuntime:
             "_get_runtime_memory_snapshot",
             lambda: {
                 "process_rss_gb": 12.34,
+                "rss_gb": 12.34,
                 "mlx_active_memory_gb": 5.67,
+                "mlx_active_gb": 5.67,
                 "mlx_cache_memory_gb": 1.23,
+                "mlx_cache_gb": 1.23,
                 "pid": 4321,
             },
         )
@@ -73,8 +76,11 @@ class TestLoadedModelsRuntime:
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
         assert payload["runtime"] == {
             "process_rss_gb": 12.34,
+            "rss_gb": 12.34,
             "mlx_active_memory_gb": 5.67,
+            "mlx_active_gb": 5.67,
             "mlx_cache_memory_gb": 1.23,
+            "mlx_cache_gb": 1.23,
             "pid": 4321,
         }
 
@@ -157,8 +163,11 @@ class TestLoadedModelsRuntime:
             "_get_runtime_memory_snapshot",
             lambda: {
                 "process_rss_gb": 10.5,
+                "rss_gb": 10.5,
                 "mlx_active_memory_gb": 4.25,
+                "mlx_active_gb": 4.25,
                 "mlx_cache_memory_gb": 0.75,
+                "mlx_cache_gb": 0.75,
                 "pid": 2468,
             },
         )
@@ -199,8 +208,11 @@ class TestLoadedModelsRuntime:
         assert runtime_entry["runtime"]["multimodal"]["resident"] is True
         assert payload["memory"] == {
             "process_rss_gb": 10.5,
+            "rss_gb": 10.5,
             "mlx_active_memory_gb": 4.25,
+            "mlx_active_gb": 4.25,
             "mlx_cache_memory_gb": 0.75,
+            "mlx_cache_gb": 0.75,
             "pid": 2468,
         }
 
