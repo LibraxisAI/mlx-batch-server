@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import pytest
 
 from mlx_batch_server.batch import coordinator as batch_coordinator_module
+from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx import wrapper_cache as wrapper_cache_module
 from mlx_batch_server.chat.openai.models import models as models_module
-from mlx_batch_server.chat.openai.models.schema import ModelUnloadRequest
+from mlx_batch_server.chat.openai.models.schema import (
+    ModelLoadRequest,
+    ModelUnloadRequest,
+)
 from mlx_batch_server.responses import adapter as responses_adapter_module
+
+
+@pytest.fixture(autouse=True)
+def clear_runtime_aliases():
+    runtime_aliases_module.clear_runtime_aliases()
+    yield
+    runtime_aliases_module.clear_runtime_aliases()
 
 
 class TestLoadedModelsRuntime:
@@ -83,6 +96,39 @@ class TestLoadedModelsRuntime:
         assert runtime_entry["runtime"]["active_lanes"] == ["text", "multimodal"]
         assert runtime_entry["runtime"]["text"]["resident"] is True
         assert runtime_entry["runtime"]["multimodal"]["resident"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_loaded_models_collapses_case_mismatch_across_backends(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: ["libraxisai/gpt-oss-120b-mlx-mxfp4"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 1},
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: ["LibraxisAI/GPT-OSS-120B-mlx-mxfp4"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: ["libraxisai/gpt-oss-120b-mlx-mxfp4"],
+        )
+
+        payload = await models_module.list_loaded_models()
+
+        assert len(payload["data"]) == 1
+        entry = payload["data"][0]
+        assert entry["id"] == "libraxisai/gpt-oss-120b-mlx-mxfp4"
+        assert entry["backends"] == ["wrapper", "vlm"]
+        assert entry["runtime"]["text"]["batch_resident"] is True
 
     @pytest.mark.asyncio
     async def test_health_check_keeps_one_model_story_across_text_and_multimodal(
@@ -335,3 +381,131 @@ class TestUnloadRuntime:
         assert response.cache_info["runtime_contract"]["multimodal"]["execution"] == (
             "single_flight"
         )
+
+
+class TestLoadRuntime:
+    @pytest.mark.asyncio
+    async def test_load_llm_hard_switches_before_loading(self, monkeypatch):
+        state = {"switch_called": False}
+
+        @asynccontextmanager
+        async def fake_runtime_session(
+            model_id, adapter_path=None, draft_model_id=None
+        ):
+            assert model_id == "model-new"
+            assert adapter_path == "/adapter"
+            assert draft_model_id == "draft-model"
+            state["switch_called"] = True
+            yield {
+                "switched": True,
+                "evicted_models": ["model-old"],
+            }
+
+        class FakeModelsService:
+            def load_model(self, model_id, adapter_path=None, draft_model_id=None):
+                assert state["switch_called"] is True
+                assert model_id == "model-new"
+                assert adapter_path == "/adapter"
+                assert draft_model_id == "draft-model"
+                return {
+                    "id": model_id,
+                    "status": "loaded",
+                    "message": f"Model {model_id} loaded successfully",
+                    "cache_info": {"cache_size": 1},
+                }
+
+        monkeypatch.setattr(
+            models_module,
+            "endpoint_runtime_session",
+            fake_runtime_session,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.load_model(
+            ModelLoadRequest(
+                model="model-new",
+                task="llm",
+                adapter_path="/adapter",
+                draft_model_id="draft-model",
+            )
+        )
+
+        assert response.status == "loaded"
+        assert "after evicting 1 prior model(s): model-old" in response.message
+        assert response.cache_info["loaded_models_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_load_llm_registers_alias_and_loads_canonical_runtime(
+        self, monkeypatch
+    ):
+        state = {"switch_called": False, "loaded": False}
+
+        @asynccontextmanager
+        async def fake_runtime_session(
+            model_id, adapter_path=None, draft_model_id=None
+        ):
+            assert model_id == "libraxisai/gpt-oss-120b-mlx-mxfp4"
+            assert adapter_path is None
+            assert draft_model_id is None
+            state["switch_called"] = True
+            yield {
+                "switched": False,
+                "evicted_models": [],
+            }
+
+        class FakeModelsService:
+            def load_model(self, model_id, adapter_path=None, draft_model_id=None):
+                assert state["switch_called"] is True
+                assert model_id == "libraxisai/gpt-oss-120b-mlx-mxfp4"
+                state["loaded"] = True
+                return {
+                    "id": model_id,
+                    "status": "already_loaded",
+                    "message": f"Model {model_id} was already loaded",
+                    "cache_info": {"cache_size": 1},
+                }
+
+        monkeypatch.setattr(
+            models_module,
+            "endpoint_runtime_session",
+            fake_runtime_session,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.load_model(
+            ModelLoadRequest(
+                model="libraxisai/gpt-oss-120b-mlx-mxfp4",
+                task="llm",
+                alias="qwen3.5-vl-crack",
+            )
+        )
+
+        assert state["loaded"] is True
+        assert response.id == "libraxisai/gpt-oss-120b-mlx-mxfp4"
+        assert (
+            runtime_aliases_module.resolve_runtime_model_id("qwen3.5-vl-crack")
+            == "libraxisai/gpt-oss-120b-mlx-mxfp4"
+        )
+        assert (
+            "runtime alias registered: qwen3.5-vl-crack -> "
+            "libraxisai/gpt-oss-120b-mlx-mxfp4" in response.message
+        )
+        assert response.cache_info["loaded_models_count"] == 1
