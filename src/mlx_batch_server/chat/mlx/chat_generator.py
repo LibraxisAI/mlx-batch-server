@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable, Generator
+from contextlib import nullcontext
 from typing import Any
 
 from mlx_lm.generate import stream_generate
@@ -445,131 +446,140 @@ class ChatGenerator:
         first_token_time = None
 
         try:
-            if hasattr(self.model, "reset_runtime_state"):
-                self.model.reset_runtime_state()
+            from .wrapper_cache import wrapper_cache
 
-            if max_tokens is not None and int(max_tokens) <= 0:
-                raise ValueError(
-                    f"max_tokens must be a positive integer, got: {max_tokens}"
-                )
-
-            # Extract json_schema from kwargs for coordination with chat_template
-            json_schema = kwargs.get("json_schema")
-
-            # Prepare prompt
-            prompt, request_template = self._prepare_prompt(
-                messages,
-                tools,
-                template_kwargs,
-                json_schema,
-                chat_template=_chat_template or self._new_chat_template(),
+            execution_context = (
+                wrapper_cache.vlm_execution(self.model.model_id)
+                if getattr(self.model, "supports_multimodal", False)
+                else nullcontext()
             )
 
-            # Tokenize prompt
-            tokenized_prompt = self.tokenizer.encode(prompt)
+            with execution_context:
+                if hasattr(self.model, "reset_runtime_state"):
+                    self.model.reset_runtime_state()
 
-            # Process cache if enabled
-            processed_prompt = tokenized_prompt
-            cached_tokens = 0
-
-            if enable_prompt_cache:
-                processed_prompt, cached_tokens = self.prompt_cache.get_prompt_cache(
-                    self.model, tokenized_prompt
-                )
-
-            resolved_max_tokens = self._resolve_max_tokens(
-                requested=max_tokens,
-                prompt_tokens=len(processed_prompt),
-            )
-
-            # Create MLX kwargs
-            mlx_kwargs = self._create_mlx_kwargs(
-                chat_template=request_template,
-                sampler=sampler,
-                max_tokens=resolved_max_tokens,
-                **kwargs,
-            )
-
-            # Add cache to kwargs if available
-            if enable_prompt_cache and self.prompt_cache.cache:
-                mlx_kwargs["prompt_cache"] = self.prompt_cache.cache
-
-            # Stream generation with delta decoding
-            # Delta decoding preserves spaces for SentencePiece tokenizers
-            generated_tokens = []
-            decoded_text = ""  # Track full decoded text for delta calculation
-
-            for response in stream_generate(
-                model=self.model.text_model,
-                tokenizer=self.tokenizer,
-                prompt=processed_prompt,
-                draft_model=self.model.draft_model,
-                **mlx_kwargs,
-            ):
-                if response.finish_reason is not None:
-                    break
-
-                generated_tokens.append(response.token)
-
-                # Delta decoding: decode all tokens together to preserve spaces
-                # SentencePiece tokenizers encode spaces as prefix (▁), which is lost
-                # when decoding individual tokens
-                full_decoded = self.tokenizer.decode(generated_tokens)
-                delta_text = full_decoded[len(decoded_text) :]
-                decoded_text = full_decoded
-
-                # Record first token time if this is the first token
-                if first_token_time is None:
-                    first_token_time = time.perf_counter() - request_start_time
-
-                # Process logprobs if requested
-                logprobs = None
-                if top_logprobs is not None:
-                    logprobs = self.logprobs_processor.get_logprobs(
-                        response, top_logprobs
+                if max_tokens is not None and int(max_tokens) <= 0:
+                    raise ValueError(
+                        f"max_tokens must be a positive integer, got: {max_tokens}"
                     )
 
-                # Use delta_text instead of response.text for parsing
-                parse_result = request_template.stream_parse_chat_result(delta_text)
+                # Extract json_schema from kwargs for coordination with chat_template
+                json_schema = kwargs.get("json_schema")
 
-                # Create StreamContent based on parse result
-                chunk_index = len(generated_tokens)
-
-                # Determine which delta field to populate
-                if parse_result.thinking:
-                    content = StreamContent(
-                        reasoning_delta=parse_result.thinking,
-                        token=response.token,
-                        chunk_index=chunk_index,
-                    )
-                else:
-                    content = StreamContent(
-                        text_delta=parse_result.content or delta_text,
-                        token=response.token,
-                        chunk_index=chunk_index,
-                    )
-
-                stats = GenerationStats(
-                    prompt_tokens=response.prompt_tokens,
-                    completion_tokens=response.generation_tokens,
-                    prompt_tps=response.prompt_tps,
-                    generation_tps=response.generation_tps,
-                    peak_memory=response.peak_memory,
-                    cache_hit_tokens=cached_tokens,
-                    time_to_first_token=first_token_time or 0.0,
+                # Prepare prompt
+                prompt, request_template = self._prepare_prompt(
+                    messages,
+                    tools,
+                    template_kwargs,
+                    json_schema,
+                    chat_template=_chat_template or self._new_chat_template(),
                 )
 
-                yield GenerationResult(
-                    content=content,
-                    finish_reason=response.finish_reason,
-                    stats=stats,
-                    logprobs=logprobs,
-                    from_draft=response.from_draft,
+                # Tokenize prompt
+                tokenized_prompt = self.tokenizer.encode(prompt)
+
+                # Process cache if enabled
+                processed_prompt = tokenized_prompt
+                cached_tokens = 0
+
+                if enable_prompt_cache:
+                    processed_prompt, cached_tokens = (
+                        self.prompt_cache.get_prompt_cache(self.model, tokenized_prompt)
+                    )
+
+                resolved_max_tokens = self._resolve_max_tokens(
+                    requested=max_tokens,
+                    prompt_tokens=len(processed_prompt),
                 )
 
-            # Extend cache with generated tokens if caching is enabled
-            if enable_prompt_cache and generated_tokens:
-                self.prompt_cache.extend_completion_cache(generated_tokens)
+                # Create MLX kwargs
+                mlx_kwargs = self._create_mlx_kwargs(
+                    chat_template=request_template,
+                    sampler=sampler,
+                    max_tokens=resolved_max_tokens,
+                    **kwargs,
+                )
+
+                # Add cache to kwargs if available
+                if enable_prompt_cache and self.prompt_cache.cache:
+                    mlx_kwargs["prompt_cache"] = self.prompt_cache.cache
+
+                # Stream generation with delta decoding
+                # Delta decoding preserves spaces for SentencePiece tokenizers
+                generated_tokens = []
+                decoded_text = ""  # Track full decoded text for delta calculation
+
+                for response in stream_generate(
+                    model=self.model.text_model,
+                    tokenizer=self.tokenizer,
+                    prompt=processed_prompt,
+                    draft_model=self.model.draft_model,
+                    **mlx_kwargs,
+                ):
+                    if response.finish_reason is not None:
+                        break
+
+                    generated_tokens.append(response.token)
+
+                    # Delta decoding: decode all tokens together to preserve spaces
+                    # SentencePiece tokenizers encode spaces as prefix (▁), which is lost
+                    # when decoding individual tokens
+                    full_decoded = self.tokenizer.decode(generated_tokens)
+                    delta_text = full_decoded[len(decoded_text) :]
+                    decoded_text = full_decoded
+
+                    # Record first token time if this is the first token
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter() - request_start_time
+
+                    # Process logprobs if requested
+                    logprobs = None
+                    if top_logprobs is not None:
+                        logprobs = self.logprobs_processor.get_logprobs(
+                            response, top_logprobs
+                        )
+
+                    # Use delta_text instead of response.text for parsing
+                    parse_result = request_template.stream_parse_chat_result(delta_text)
+
+                    # Create StreamContent based on parse result
+                    chunk_index = len(generated_tokens)
+
+                    # Determine which delta field to populate
+                    if parse_result.thinking:
+                        content = StreamContent(
+                            reasoning_delta=parse_result.thinking,
+                            token=response.token,
+                            chunk_index=chunk_index,
+                        )
+                    else:
+                        content = StreamContent(
+                            text_delta=parse_result.content or delta_text,
+                            token=response.token,
+                            chunk_index=chunk_index,
+                        )
+
+                    stats = GenerationStats(
+                        prompt_tokens=response.prompt_tokens,
+                        completion_tokens=response.generation_tokens,
+                        prompt_tps=response.prompt_tps,
+                        generation_tps=response.generation_tps,
+                        peak_memory=response.peak_memory,
+                        cache_hit_tokens=cached_tokens,
+                        time_to_first_token=first_token_time or 0.0,
+                    )
+
+                    yield GenerationResult(
+                        content=content,
+                        finish_reason=response.finish_reason,
+                        stats=stats,
+                        logprobs=logprobs,
+                        from_draft=response.from_draft,
+                    )
+
+                # Extend cache with generated tokens if caching is enabled
+                if enable_prompt_cache and generated_tokens:
+                    self.prompt_cache.extend_completion_cache(generated_tokens)
 
         except Exception as e:
             logger.error(f"Error during stream generation: {e}")
