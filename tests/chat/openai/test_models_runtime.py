@@ -27,6 +27,16 @@ class TestLoadedModelsRuntime:
     async def test_list_loaded_models_reports_batch_coordinators(self, monkeypatch):
         """Loaded-models endpoint should surface batch coordinator residency."""
         monkeypatch.setattr(
+            models_module,
+            "_get_runtime_memory_snapshot",
+            lambda: {
+                "process_rss_gb": 12.34,
+                "mlx_active_memory_gb": 5.67,
+                "mlx_cache_memory_gb": 1.23,
+                "pid": 4321,
+            },
+        )
+        monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
             "get_loaded_models",
             lambda: ["model-a"],
@@ -60,6 +70,12 @@ class TestLoadedModelsRuntime:
         assert payload["cache_info"] == {"cache_size": 1}
         assert payload["runtime_contract"]["text"]["tool_capable"] is True
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
+        assert payload["runtime"] == {
+            "process_rss_gb": 12.34,
+            "mlx_active_memory_gb": 5.67,
+            "mlx_cache_memory_gb": 1.23,
+            "pid": 4321,
+        }
 
     @pytest.mark.asyncio
     async def test_list_loaded_models_merges_wrapper_and_vlm_residency(
@@ -136,6 +152,16 @@ class TestLoadedModelsRuntime:
         monkeypatch,
     ):
         monkeypatch.setattr(
+            models_module,
+            "_get_runtime_memory_snapshot",
+            lambda: {
+                "process_rss_gb": 10.5,
+                "mlx_active_memory_gb": 4.25,
+                "mlx_cache_memory_gb": 0.75,
+                "pid": 2468,
+            },
+        )
+        monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
             "get_loaded_models",
             lambda: ["model-a"],
@@ -170,6 +196,12 @@ class TestLoadedModelsRuntime:
         assert runtime_entry["runtime"]["text"]["tool_capable"] is True
         assert runtime_entry["runtime"]["text"]["batch_resident"] is True
         assert runtime_entry["runtime"]["multimodal"]["resident"] is True
+        assert payload["memory"] == {
+            "process_rss_gb": 10.5,
+            "mlx_active_memory_gb": 4.25,
+            "mlx_cache_memory_gb": 0.75,
+            "pid": 2468,
+        }
 
 
 class TestUnloadRuntime:
