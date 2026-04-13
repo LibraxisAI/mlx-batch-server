@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -83,6 +85,35 @@ def _build_llm_runtime_contract() -> dict[str, Any]:
             "Text requests batch through the resident model language tower.",
             "Image and video requests intentionally run through the mlx-vlm single-flight lane.",
         ],
+    }
+
+
+def _get_process_rss_gb() -> float | None:
+    """Return peak resident set size in GB across macOS/Linux semantics."""
+    try:
+        import resource
+
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:
+        return None
+
+    divisor = 1024**3 if sys.platform == "darwin" else 1024**2
+    try:
+        return round(float(rss) / divisor, 2)
+    except Exception:
+        return None
+
+
+def _get_runtime_memory_snapshot() -> dict[str, float | int | None]:
+    """Build one consistent physical-memory snapshot for runtime endpoints."""
+    from ....utils.memory import get_mlx_memory_snapshot
+
+    mlx_mem = get_mlx_memory_snapshot()
+    return {
+        "process_rss_gb": _get_process_rss_gb(),
+        "mlx_active_memory_gb": mlx_mem.get("mlx_active_memory_gb"),
+        "mlx_cache_memory_gb": mlx_mem.get("mlx_cache_memory_gb"),
+        "pid": os.getpid(),
     }
 
 
@@ -346,6 +377,7 @@ async def list_loaded_models() -> dict:
         "caches": runtime["caches"],
         "cache_info": runtime["cache_info"],
         "runtime_contract": runtime["runtime_contract"],
+        "runtime": _get_runtime_memory_snapshot(),
     }
 
 
@@ -815,4 +847,5 @@ async def health_check() -> dict:
         "runtime_contract": runtime["runtime_contract"],
         "cache_max_size": cache_info.get("max_size", 1),
         "cache_ttl_seconds": cache_info.get("ttl_seconds", 600),
+        "memory": _get_runtime_memory_snapshot(),
     }
