@@ -9,6 +9,7 @@ from mlx_batch_server.chat.anthropic.anthropic_messages_adapter import (
 )
 
 from ..mlx.chat_generator import ChatGenerator
+from ..mlx.runtime_policy import endpoint_runtime_session
 from .anthropic_schema import MessagesRequest, MessagesResponse
 from .models_service import AnthropicModelsService
 from .schema import AnthropicModelList
@@ -62,22 +63,26 @@ async def list_anthropic_models(
 @router.post("/v1/messages", response_model=MessagesResponse)
 async def create_message(request: MessagesRequest):
     """Create an Anthropic Messages API completion"""
-
-    anthropic_model = _create_anthropic_model(
-        request.model,
-        # Extract extra params if needed - for now use defaults
-        None,  # adapter_path
-        None,  # draft_model
-    )
-
     if not request.stream:
-        completion = anthropic_model.generate(request)
-        return JSONResponse(content=completion.model_dump(exclude_none=True))
+        async with endpoint_runtime_session(request.model):
+            anthropic_model = _create_anthropic_model(
+                request.model,
+                None,
+                None,
+            )
+            completion = anthropic_model.generate(request)
+            return JSONResponse(content=completion.model_dump(exclude_none=True))
 
     async def anthropic_event_generator() -> Generator[str, None, None]:
-        for event in anthropic_model.generate_stream(request):
-            yield f"event: {event.type.value}\n"
-            yield f"data: {json.dumps(event.model_dump(exclude_none=True))}\n\n"
+        async with endpoint_runtime_session(request.model):
+            anthropic_model = _create_anthropic_model(
+                request.model,
+                None,
+                None,
+            )
+            for event in anthropic_model.generate_stream(request):
+                yield f"event: {event.type.value}\n"
+                yield f"data: {json.dumps(event.model_dump(exclude_none=True))}\n\n"
 
     return StreamingResponse(
         anthropic_event_generator(),

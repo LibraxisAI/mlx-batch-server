@@ -21,6 +21,7 @@ from mlx_batch_server.responses.normalizer import (
 )
 from mlx_batch_server.responses.schema import (
     ResponseRequest,
+    ResponseResponse,
     ResponseStatus,
     build_error_response,
     build_text_output,
@@ -232,6 +233,177 @@ Here is my answer."""
         assert not is_harmony_model("qwen2.5-coder")
 
 
+class TestResponsesAdapterRouting:
+    """Adapter routing tests for mixed text and multimodal traffic."""
+
+    @pytest.mark.asyncio
+    async def test_text_image_text_sequence_keeps_one_model_contract(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        calls = []
+
+        async def fake_generate_text(model_id, normalised_body, request_model=None):
+            calls.append(
+                {
+                    "lane": "text",
+                    "model_id": model_id,
+                    "request_model": request_model,
+                    "has_tools": bool(normalised_body.get("tools")),
+                }
+            )
+            return ResponseResponse(
+                model=request_model or model_id,
+                output=build_text_output("text"),
+            )
+
+        async def fake_generate_vision(model_id, normalised_body, request_model=None):
+            calls.append(
+                {
+                    "lane": "multimodal",
+                    "model_id": model_id,
+                    "request_model": request_model,
+                    "has_tools": bool(normalised_body.get("tools")),
+                }
+            )
+            return ResponseResponse(
+                model=request_model or model_id,
+                output=build_text_output("vision"),
+            )
+
+        monkeypatch.setattr(adapter, "_generate_text", fake_generate_text)
+        monkeypatch.setattr(adapter, "_generate_vision", fake_generate_vision)
+
+        await adapter.generate(ResponseRequest(model="demo-model", input="Hello"))
+        await adapter.generate(
+            ResponseRequest(
+                model="demo-model",
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/cat.png",
+                            },
+                        ],
+                    }
+                ],
+            )
+        )
+        await adapter.generate(
+            ResponseRequest(
+                model="demo-model",
+                input="Use the tool",
+                tools=[{"type": "function", "name": "lookup"}],
+            )
+        )
+
+        assert [call["lane"] for call in calls] == ["text", "multimodal", "text"]
+        assert {call["model_id"] for call in calls} == {"demo-model"}
+        assert {call["request_model"] for call in calls} == {"demo-model"}
+        assert calls[2]["has_tools"] is True
+
+    @pytest.mark.asyncio
+    async def test_streaming_text_with_tools_falls_back_to_single_request_lane(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen = {}
+
+        monkeypatch.setattr(adapter, "_should_use_batch", lambda: True)
+
+        class FakeAdapter:
+            def generate_stream(self, request):
+                seen["model"] = request.model
+                seen["messages"] = [msg.model_dump() for msg in request.messages]
+                seen["stop"] = request.stop
+                seen["tools"] = request.tools
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "choices": [
+                            type(
+                                "Choice",
+                                (),
+                                {
+                                    "delta": type(
+                                        "Delta",
+                                        (),
+                                        {"content": "sunny"},
+                                    )()
+                                },
+                            )()
+                        ]
+                    },
+                )()
+
+        monkeypatch.setattr(
+            adapter, "_get_openai_adapter", lambda _model_id: FakeAdapter()
+        )
+
+        events = [
+            event
+            async for event in adapter.generate_stream(
+                ResponseRequest(
+                    model="demo-model",
+                    input="What is the weather?",
+                    tools=[{"type": "function", "name": "lookup_weather"}],
+                    max_output_tokens=64,
+                    temperature=0.2,
+                )
+            )
+        ]
+
+        assert seen["model"] == "demo-model"
+        assert len(seen["messages"]) == 1
+        assert seen["messages"][0]["role"] == "user"
+        assert seen["messages"][0]["content"] == "What is the weather?"
+        assert seen["tools"] is not None
+        assert any(event["type"] == "response.completed" for event in events)
+        assert any(
+            event["type"] == "response.output_text.done" and event["text"] == "sunny"
+            for event in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_multimodal_requests_with_tools_are_rejected(self):
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+
+        response = await adapter.generate(
+            ResponseRequest(
+                model="demo-model",
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/cat.png",
+                            },
+                        ],
+                    }
+                ],
+                tools=[{"type": "function", "name": "lookup"}],
+            )
+        )
+
+        assert response.status == ResponseStatus.FAILED
+        assert response.error["code"] == "invalid_request_error"
+        assert "Multimodal requests with tools" in response.error["message"]
+
+
 # Integration tests (require model to be loaded)
 @pytest.fixture
 def client():
@@ -277,6 +449,83 @@ class TestResponsesEndpoint:
         """DELETE for nonexistent response should return 404."""
         response = client.delete("/v1/responses/resp_nonexistent")
         assert response.status_code == 404
+
+
+class TestResponsesRuntimeGuards:
+    @pytest.mark.asyncio
+    async def test_streaming_text_with_previous_response_id_falls_back_to_single_lane(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen = {}
+
+        monkeypatch.setattr(adapter, "_should_use_batch", lambda: True)
+
+        class FakeAdapter:
+            def generate_stream(self, request):
+                seen["model"] = request.model
+                seen["messages"] = [msg.model_dump() for msg in request.messages]
+                seen["tools"] = request.tools
+                seen["extra"] = request.get_extra_params()
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "choices": [
+                            type(
+                                "Choice",
+                                (),
+                                {
+                                    "delta": type(
+                                        "Delta",
+                                        (),
+                                        {"content": "follow-up ok"},
+                                    )()
+                                },
+                            )()
+                        ]
+                    },
+                )()
+
+        monkeypatch.setattr(
+            adapter, "_get_openai_adapter", lambda _model_id: FakeAdapter()
+        )
+
+        events = [
+            event
+            async for event in adapter.generate_stream(
+                ResponseRequest(
+                    model="demo-model",
+                    previous_response_id="resp_prev_123",
+                    input=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Tell me more about that.",
+                                }
+                            ],
+                        }
+                    ],
+                )
+            )
+        ]
+
+        assert seen["model"] == "demo-model"
+        assert seen["tools"] is None
+        assert seen["extra"]["extra_body"]["enable_prompt_cache"] is False
+        assert len(seen["messages"]) == 1
+        assert seen["messages"][0]["content"] == "Tell me more about that."
+        assert any(event["type"] == "response.completed" for event in events)
+        assert any(
+            event["type"] == "response.output_text.done"
+            and event["text"] == "follow-up ok"
+            for event in events
+        )
 
 
 # =============================================================================
