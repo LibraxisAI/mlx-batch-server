@@ -12,6 +12,7 @@ from mlx_batch_server.chat.openai.models.schema import (
     ModelLoadRequest,
     ModelUnloadRequest,
 )
+from mlx_batch_server.embeddings import visual_router as visual_router_module
 from mlx_batch_server.responses import adapter as responses_adapter_module
 
 
@@ -541,3 +542,79 @@ class TestLoadRuntime:
             "libraxisai/gpt-oss-120b-mlx-mxfp4" in response.message
         )
         assert response.cache_info["loaded_models_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_load_visual_uses_shared_runtime_session(self, monkeypatch):
+        state = {"switch_called": False, "loaded_model": None}
+
+        @asynccontextmanager
+        async def fake_runtime_session(
+            model_id, adapter_path=None, draft_model_id=None
+        ):
+            assert model_id == "libraxisai/qwen3-vl-30b"
+            assert adapter_path is None
+            assert draft_model_id is None
+            state["switch_called"] = True
+            yield {
+                "switched": True,
+                "evicted_models": ["model-old"],
+            }
+
+        def fake_get_visual_embedder(model_id):
+            assert state["switch_called"] is True
+            state["loaded_model"] = model_id
+            return object()
+
+        monkeypatch.setattr(
+            models_module,
+            "endpoint_runtime_session",
+            fake_runtime_session,
+        )
+        monkeypatch.setattr(
+            visual_router_module,
+            "get_visual_embedder",
+            fake_get_visual_embedder,
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.load_model(
+            ModelLoadRequest(model="LibraxisAI/Qwen3-VL-30B", task="visual")
+        )
+
+        assert response.id == "libraxisai/qwen3-vl-30b"
+        assert response.task == "visual"
+        assert response.status == "loaded"
+        assert state["loaded_model"] == "libraxisai/qwen3-vl-30b"
+        assert "after evicting 1 prior model(s): model-old" in response.message
+        assert response.cache_info["loaded_models_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unload_visual_returns_shared_runtime_cache_info(self, monkeypatch):
+        monkeypatch.setattr(
+            visual_router_module,
+            "unload_visual_embedder",
+            lambda model_id=None: ["model-vlm"] if model_id == "model-vlm" else [],
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 0},
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="model-vlm", task="visual")
+        )
+
+        assert response.task == "visual"
+        assert response.status == "unloaded"
+        assert response.unloaded_models == ["model-vlm"]
+        assert response.cache_info["loaded_models_count"] == 0
