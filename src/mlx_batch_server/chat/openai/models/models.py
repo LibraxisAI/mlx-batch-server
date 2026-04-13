@@ -439,7 +439,9 @@ async def _load_llm_model(request: ModelLoadRequest) -> ModelLoadResponse:
 
 @router.post("/models/load", response_model=ModelLoadResponse)
 @router.post("/v1/models/load", response_model=ModelLoadResponse)
-async def load_model(request: ModelLoadRequest) -> ModelLoadResponse:
+async def load_model(  # noqa: PLR0912
+    request: ModelLoadRequest,
+) -> ModelLoadResponse:
     """
     Load a model into memory for inference.
 
@@ -473,15 +475,47 @@ async def load_model(request: ModelLoadRequest) -> ModelLoadResponse:
             )
 
         if task == "visual":
+            from ....chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
             from ....embeddings.visual_router import get_visual_embedder
 
-            get_visual_embedder(request.model)
+            canonical_model_id = normalize_model_id(request.model)
+            alias_message = ""
+            if request.alias:
+                canonical_model_id = register_runtime_alias(
+                    request.alias, canonical_model_id
+                )
+                alias_message = (
+                    f" (runtime alias registered: {request.alias} -> "
+                    f"{canonical_model_id})"
+                )
+
+            already_loaded = canonical_model_id in wrapper_cache.get_loaded_vlm_models()
+            async with endpoint_runtime_session(
+                model_id=canonical_model_id
+            ) as switch_result:
+                get_visual_embedder(canonical_model_id)
+
+            message = (
+                f"Visual embeddings model {canonical_model_id} was already loaded"
+                if already_loaded
+                else f"Visual embeddings model {canonical_model_id} loaded successfully"
+            )
+            if alias_message:
+                message = message + alias_message
+            if switch_result["switched"]:
+                evicted = switch_result["evicted_models"]
+                message = (
+                    message
+                    + f" after evicting {len(evicted)} prior model(s): "
+                    + ", ".join(evicted)
+                )
+
             return ModelLoadResponse(
-                id=request.model,
+                id=canonical_model_id,
                 task="visual",
-                status="loaded",
-                message=f"Visual embeddings model {request.model} loaded successfully",
-                cache_info=None,
+                status="already_loaded" if already_loaded else "loaded",
+                message=message,
+                cache_info=_build_llm_cache_info(),
             )
 
         if task == "stt":
@@ -615,11 +649,12 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
             if unloaded
             else f"Visual model {model_id} was not loaded"
         )
-        return _build_unload_response(
+        return ModelUnloadResponse(
             task="visual",
             status=status,
             message=message,
             unloaded_models=unloaded,
+            cache_info=_build_llm_cache_info(),
         )
 
     if task == "stt":
@@ -710,11 +745,12 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
         from ....embeddings.visual_router import unload_visual_embedder
 
         unloaded = unload_visual_embedder()
-        return _build_unload_response(
+        return ModelUnloadResponse(
             task="visual",
             status="cleared",
             message=f"Cleared {len(unloaded)} visual model(s) from cache",
             unloaded_models=unloaded,
+            cache_info=_build_llm_cache_info(),
         )
 
     if task == "stt":
