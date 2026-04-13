@@ -105,14 +105,24 @@ def _get_process_rss_gb() -> float | None:
 
 
 def _get_runtime_memory_snapshot() -> dict[str, float | int | None]:
-    """Build one consistent physical-memory snapshot for runtime endpoints."""
+    """Build one consistent physical-memory snapshot for runtime endpoints.
+
+    We expose the new explicit field names and the older short aliases so the
+    operator/tooling surface stays compatible across the sibling runtime repos.
+    """
     from ....utils.memory import get_mlx_memory_snapshot
 
     mlx_mem = get_mlx_memory_snapshot()
+    process_rss_gb = _get_process_rss_gb()
+    mlx_active_memory_gb = mlx_mem.get("mlx_active_memory_gb")
+    mlx_cache_memory_gb = mlx_mem.get("mlx_cache_memory_gb")
     return {
-        "process_rss_gb": _get_process_rss_gb(),
-        "mlx_active_memory_gb": mlx_mem.get("mlx_active_memory_gb"),
-        "mlx_cache_memory_gb": mlx_mem.get("mlx_cache_memory_gb"),
+        "process_rss_gb": process_rss_gb,
+        "rss_gb": process_rss_gb,
+        "mlx_active_memory_gb": mlx_active_memory_gb,
+        "mlx_active_gb": mlx_active_memory_gb,
+        "mlx_cache_memory_gb": mlx_cache_memory_gb,
+        "mlx_cache_gb": mlx_cache_memory_gb,
         "pid": os.getpid(),
     }
 
