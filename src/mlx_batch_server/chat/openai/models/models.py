@@ -161,10 +161,8 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
             active_lanes.append("multimodal")
 
         backends = []
-        if text_resident:
+        if text_resident or multimodal_resident:
             backends.append("wrapper")
-        if multimodal_resident:
-            backends.append("vlm")
 
         data.append(
             {
@@ -196,7 +194,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
         "data": data,
         "loaded_models": [entry["id"] for entry in data],
         "coordinators": {"llm_batch": batch_loaded},
-        "caches": {"wrapper": wrapper_loaded, "vlm": vlm_loaded},
+        "caches": {"wrapper": wrapper_loaded},
         "cache_info": cache_info,
         "runtime_contract": contract,
     }
@@ -209,7 +207,6 @@ def _build_llm_cache_info() -> dict[str, Any]:
     cache_info["loaded_models_count"] = len(runtime["loaded_models"])
     cache_info["loaded_models_by_backend"] = {
         "wrapper": runtime["caches"]["wrapper"],
-        "vlm": runtime["caches"]["vlm"],
         "batch": runtime["coordinators"]["llm_batch"],
     }
     cache_info["runtime_contract"] = runtime["runtime_contract"]
@@ -886,7 +883,6 @@ async def health_check() -> dict:
         "loaded_models": runtime["loaded_models"],
         "loaded_models_by_backend": {
             "wrapper": runtime["caches"]["wrapper"],
-            "vlm": runtime["caches"]["vlm"],
             "batch": runtime["coordinators"]["llm_batch"],
         },
         "loaded_models_runtime": runtime["data"],
