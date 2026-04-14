@@ -750,18 +750,27 @@ def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
 async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
     if task == "llm":
         from ....batch.coordinator import shutdown_batch_coordinator
-        from ....responses.adapter import unload_vlm_model
 
-        release_runtime_surface(model_id, "llm")
+        attachment_state = release_runtime_surface(model_id, "llm")
+        preserve_runtime = bool(attachment_state.remaining_surfaces)
         await shutdown_batch_coordinator(model_id)
-        result = get_models_service().unload_model(model_id=model_id)
+        result = get_models_service().unload_model(
+            model_id=model_id,
+            release_runtime=not preserve_runtime,
+        )
         unloaded_models = list(result.get("unloaded_models", []))
-        unloaded_models.extend(unload_vlm_model(model_id))
         unloaded_models = list(dict.fromkeys(unloaded_models))
 
         result["task"] = "llm"
         result["unloaded_models"] = unloaded_models
-        if unloaded_models:
+        if unloaded_models and preserve_runtime:
+            result["status"] = "detached"
+            result["message"] = _format_retained_runtime_message(
+                label="LLM",
+                model_id=attachment_state.model_id,
+                remaining_surfaces=attachment_state.remaining_surfaces,
+            )
+        elif unloaded_models:
             result["status"] = "unloaded"
             result["message"] = f"Model {model_id} unloaded successfully"
         result["cache_info"] = _build_llm_cache_info()
@@ -828,24 +837,60 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
     raise HTTPException(status_code=400, detail=f"Unsupported task '{task}'")
 
 
-async def _clear_task(task: str) -> ModelUnloadResponse:
-    if task == "llm":
-        from ....batch.coordinator import shutdown_all_coordinators
-        from ....responses.adapter import unload_vlm_model
+async def _clear_llm_task() -> ModelUnloadResponse:
+    """Clear llm surfaces while preserving shared VLM runtime ownership."""
+    from ....batch.coordinator import shutdown_all_coordinators
+    from ....responses.adapter import unload_vlm_model
 
-        for attached_model_id in get_attached_models("llm"):
-            release_runtime_surface(attached_model_id, "llm")
-        await shutdown_all_coordinators()
+    await shutdown_all_coordinators()
+    llm_models = get_attached_models("llm")
+
+    # Legacy fallback: older runtime state may have resident llm wrappers
+    # without attachment bookkeeping yet. Preserve the old operator behavior
+    # only when the whole surface registry is empty.
+    if not llm_models and not list_runtime_surface_attachments():
         result = get_models_service().unload_model(model_id=None)
         unloaded_models = list(result.get("unloaded_models", []))
         unloaded_models.extend(unload_vlm_model())
+        result["task"] = "llm"
         result["unloaded_models"] = list(dict.fromkeys(unloaded_models))
         result["message"] = (
-            f"Cleared {len(result['unloaded_models'])} llm model(s) from cache"
+            f"Cleared {len(result['unloaded_models'])} llm model(s); "
+            "legacy runtime state had no surface attachments"
         )
-        result["task"] = "llm"
         result["cache_info"] = _build_llm_cache_info()
         return ModelUnloadResponse(**result)
+
+    unloaded_models: list[str] = []
+    detached_models: list[str] = []
+    for attached_model_id in llm_models:
+        attachment_state = release_runtime_surface(attached_model_id, "llm")
+        preserve_runtime = bool(attachment_state.remaining_surfaces)
+        result = get_models_service().unload_model(
+            model_id=attached_model_id,
+            release_runtime=not preserve_runtime,
+        )
+        if result.get("unloaded_models"):
+            unloaded_models.extend(result["unloaded_models"])
+            if preserve_runtime:
+                detached_models.extend(result["unloaded_models"])
+
+    unloaded_models = list(dict.fromkeys(unloaded_models))
+    return ModelUnloadResponse(
+        task="llm",
+        status="cleared",
+        unloaded_models=unloaded_models,
+        message=(
+            f"Cleared {len(unloaded_models)} llm model(s); "
+            f"{len(detached_models)} shared runtime(s) stayed hot for other surfaces"
+        ),
+        cache_info=_build_llm_cache_info(),
+    )
+
+
+async def _clear_task(task: str) -> ModelUnloadResponse:
+    if task == "llm":
+        return await _clear_llm_task()
 
     if task == "embeddings":
         from ....embeddings.embeddings_service import get_embeddings_service

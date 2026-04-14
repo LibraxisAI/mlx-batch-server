@@ -7,12 +7,15 @@ from mlx_embeddings import generate, load
 
 from ..chat.mlx.model_types import resolves_to_multimodal_runtime
 from ..chat.mlx.runtime_aliases import resolve_runtime_model_id
-from ..chat.mlx.runtime_attachments import attach_runtime_surface
-from ..chat.mlx.wrapper_cache import normalize_model_id
+from ..chat.mlx.runtime_attachments import (
+    attach_runtime_surface,
+    get_attached_models,
+    release_runtime_surface,
+)
+from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 from ..utils.logger import logger
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
 from .shared_vlm_text_embedder import SharedVLMTextEmbedder
-from .visual_router import unload_visual_embedder
 
 
 class EmbeddingsService:
@@ -94,8 +97,12 @@ class EmbeddingsService:
             canonical_model_id = self.canonicalize_model_id(model_id)
             was_loaded = canonical_model_id in self._shared_vlm_models
             self._shared_vlm_models.discard(canonical_model_id)
-            if not release_runtime:
-                return was_loaded
+            attachment_state = release_runtime_surface(
+                canonical_model_id,
+                "embeddings",
+            )
+            if not release_runtime or attachment_state.remaining_surfaces:
+                return was_loaded or attachment_state.was_attached
             unloaded = self._unload_shared_vlm_embedder(canonical_model_id)
             return was_loaded or bool(unloaded)
 
@@ -109,10 +116,13 @@ class EmbeddingsService:
     def clear_models(self, *, release_runtime: bool = True) -> list[str]:
         """Unload all embeddings models and return the unloaded model IDs."""
         unloaded = self.clear_native_models()
-        shared_vlm_models = self.get_shared_vlm_models()
+        shared_vlm_models = sorted(
+            set(self.get_shared_vlm_models()).union(get_attached_models("embeddings"))
+        )
         self._shared_vlm_models.clear()
-        if release_runtime:
-            for model_id in shared_vlm_models:
+        for model_id in shared_vlm_models:
+            attachment_state = release_runtime_surface(model_id, "embeddings")
+            if release_runtime and not attachment_state.remaining_surfaces:
                 self._unload_shared_vlm_embedder(model_id)
         return list(dict.fromkeys([*unloaded, *shared_vlm_models]))
 
@@ -136,8 +146,8 @@ class EmbeddingsService:
         return embedder
 
     def _unload_shared_vlm_embedder(self, model_id: str) -> list[str]:
-        """Release the shared visual embedder/runtime for this model."""
-        return unload_visual_embedder(model_id)
+        """Release the shared VLM runtime backing multimodal text embeddings."""
+        return wrapper_cache.unload_vlm_model(model_id)
 
     def _count_tokens(self, text: str | list[str]) -> int:
         """Count tokens in input text"""

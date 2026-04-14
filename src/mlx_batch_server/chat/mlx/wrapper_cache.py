@@ -19,7 +19,10 @@ from ...utils.logger import logger
 from ...utils.memory import force_mlx_cleanup
 from .chat_generator import ChatGenerator
 from .runtime_aliases import normalize_runtime_model_id, normalize_runtime_path
-from .runtime_attachments import clear_runtime_surface_attachments
+from .runtime_attachments import (
+    clear_runtime_surface_attachments,
+    get_runtime_surface_attachments,
+)
 
 
 def normalize_model_id(model_id: str) -> str:
@@ -106,8 +109,19 @@ class MLXWrapperCache:
             self._cleanup_thread.start()
 
     def _is_pinned(self, key: WrapperCacheKey) -> bool:
-        """Check if a model is pinned (should never be evicted)."""
+        """Check if a model is statically pinned (should never be evicted)."""
         return key.model_id in self._pinned_models
+
+    def _is_eviction_protected(self, key: WrapperCacheKey) -> bool:
+        """Return True when runtime residency is protected from TTL/LRU eviction.
+
+        Static pinned models always stay resident. Surface-attached models must also
+        stay hot until the product layer explicitly detaches them; otherwise the
+        cache contract lies about residency and forces surprise reloads.
+        """
+        return self._is_pinned(key) or bool(
+            get_runtime_surface_attachments(key.model_id)
+        )
 
     def _release_memory(
         self, wrapper: ChatGenerator | None, key: WrapperCacheKey
@@ -141,7 +155,7 @@ class MLXWrapperCache:
         # --- Text cache ---
         expired_keys = []
         for key, access_time in self._access_times.items():
-            if self._is_pinned(key):
+            if self._is_eviction_protected(key):
                 continue
             if current_time - access_time > self._ttl_seconds:
                 expired_keys.append(key)
@@ -165,16 +179,21 @@ class MLXWrapperCache:
         if self._max_size <= 0:
             return
 
-        # Count only non-pinned models against max_size
-        non_pinned_count = sum(1 for k in self._cache if not self._is_pinned(k))
+        # Count only evictable models against max_size. Surface-retained runtimes
+        # are intentionally resident, just like statically pinned runtimes.
+        evictable_count = sum(
+            1 for k in self._cache if not self._is_eviction_protected(k)
+        )
 
-        if non_pinned_count >= self._max_size:
-            # Find the least recently used NON-PINNED key
-            non_pinned_keys = [k for k in self._access_times if not self._is_pinned(k)]
-            if not non_pinned_keys:
-                return  # Only pinned models in cache, nothing to evict
+        if evictable_count >= self._max_size:
+            # Find the least recently used evictable key.
+            evictable_keys = [
+                k for k in self._access_times if not self._is_eviction_protected(k)
+            ]
+            if not evictable_keys:
+                return  # Only retained runtimes are resident, nothing to evict
 
-            lru_key = min(non_pinned_keys, key=lambda k: self._access_times[k])
+            lru_key = min(evictable_keys, key=lambda k: self._access_times[k])
 
             # Remove from cache and access times
             wrapper = self._cache.pop(lru_key, None)
