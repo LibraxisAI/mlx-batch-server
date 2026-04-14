@@ -4,6 +4,7 @@ Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 """
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -158,6 +159,17 @@ class TestGetBatchCoordinator:
 
         assert coord1 is coord2
         assert coord1.model_id == "libraxisai/qwen3-vl-30b"
+
+    def test_home_relative_path_reuses_canonical_coordinator(self):
+        """Home-relative model paths should collapse to one batch lane."""
+        home_relative = "~/models/frontier-vlm"
+        expanded = str(Path(home_relative).expanduser())
+
+        coord1 = get_batch_coordinator(home_relative)
+        coord2 = get_batch_coordinator(expanded)
+
+        assert coord1 is coord2
+        assert coord1.model_id == expanded
 
     def test_loaded_batch_models_only_include_initialized_generators(self):
         """Only coordinators with live generators should be reported as loaded."""

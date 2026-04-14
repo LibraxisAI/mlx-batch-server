@@ -95,3 +95,20 @@ def test_embeddings_service_unload_clears_shared_vlm_runtime(monkeypatch):
     assert service.has_shared_vlm_runtime_models() is False
 
     _clear_runtime_aliases()
+
+
+def test_embeddings_service_unload_reports_runtime_only_shared_vlm(monkeypatch):
+    _clear_runtime_aliases()
+    service = EmbeddingsService()
+    unloaded_calls: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "_unload_shared_vlm_embedder",
+        lambda model_id: unloaded_calls.append(model_id) or [model_id],
+    )
+
+    assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is True
+    assert unloaded_calls == ["libraxisai/qwen3-vl-30b"]
+
+    _clear_runtime_aliases()
