@@ -19,6 +19,7 @@ from ...mlx.runtime_attachments import (
     release_runtime_surface,
 )
 from ...mlx.runtime_policy import endpoint_runtime_session
+from ...mlx.wrapper_cache import serialize_runtime_key
 from .models_service import ModelsService
 from .schema import (
     Model,
@@ -138,6 +139,9 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     from ....batch.coordinator import get_loaded_batch_models
     from ....chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 
+    runtime_keys = [
+        serialize_runtime_key(key) for key in wrapper_cache.get_runtime_keys()
+    ]
     surface_attachments = list_runtime_surface_attachments()
     wrapper_loaded = sorted(
         {normalize_model_id(model_id) for model_id in wrapper_cache.get_loaded_models()}
@@ -152,6 +156,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
         {normalize_model_id(model_id) for model_id in get_loaded_batch_models()}
     )
     cache_info = wrapper_cache.get_cache_info()
+    cache_info.setdefault("runtime_keys", runtime_keys)
     contract = _build_llm_runtime_contract()
 
     wrapper_loaded_set = set(wrapper_loaded)
@@ -207,6 +212,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
         "loaded_models": [entry["id"] for entry in data],
         "coordinators": {"llm_batch": batch_loaded},
         "caches": {"wrapper": shared_wrapper_residency},
+        "runtime_keys": runtime_keys,
         "surface_attachments": surface_attachments,
         "cache_info": cache_info,
         "runtime_contract": contract,
@@ -222,6 +228,7 @@ def _build_llm_cache_info() -> dict[str, Any]:
         "wrapper": runtime["caches"]["wrapper"],
         "batch": runtime["coordinators"]["llm_batch"],
     }
+    cache_info["runtime_keys"] = runtime["runtime_keys"]
     cache_info["surface_attachments"] = runtime["surface_attachments"]
     cache_info["runtime_contract"] = runtime["runtime_contract"]
     return cache_info
@@ -409,6 +416,7 @@ async def list_loaded_models() -> dict:
         "data": runtime["data"],
         "coordinators": runtime["coordinators"],
         "caches": runtime["caches"],
+        "runtime_keys": runtime["runtime_keys"],
         "surface_attachments": runtime["surface_attachments"],
         "cache_info": runtime["cache_info"],
         "runtime_contract": runtime["runtime_contract"],
