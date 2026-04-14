@@ -93,7 +93,12 @@ def _get_embedder(
             embedder.load()
             embedder.log_summary()
             _embedder_cache[key] = embedder
-    attach_runtime_surface(key[0], "visual")
+    attach_runtime_surface(
+        key[0],
+        "visual",
+        adapter_path=key[1],
+        draft_model_id=key[2],
+    )
     return embedder
 
 
@@ -121,39 +126,113 @@ def get_loaded_visual_models() -> list[str]:
         return sorted({key[0] for key in _embedder_cache})
 
 
+def has_visual_embedder(
+    model_id: str,
+    *,
+    projection_path: str | None = None,
+    processor_id: str | None = None,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> bool:
+    """Return True when the exact visual embedder runtime key is cached."""
+    key = _normalize_embedder_key(
+        model_id,
+        projection_path,
+        processor_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
+    with _embedder_lock:
+        return key in _embedder_cache
+
+
 def unload_visual_embedder(
     model_id: str | None = None,
     *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
     release_runtime: bool = True,
 ) -> list[str]:
     """Unload visual embedders and their shared VLM runtime residency."""
     removed_models: list[str] = []
+    runtime_targets: list[tuple[str, str | None, str | None]] = []
     specific_model_id = (
         normalize_runtime_model_id(model_id) if model_id is not None else None
+    )
+    specific_target = (
+        resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        if model_id is not None
+        else None
     )
 
     with _embedder_lock:
         if model_id is None:
             removed_models = sorted({key[0] for key in _embedder_cache})
+            runtime_targets = sorted(
+                {(key[0], key[1], key[2]) for key in _embedder_cache},
+            )
             _embedder_cache.clear()
         else:
-            keys_to_remove = [
-                key for key in _embedder_cache if key[0] == specific_model_id
-            ]
+            if adapter_path is None and draft_model_id is None:
+                keys_to_remove = [
+                    key for key in _embedder_cache if key[0] == specific_model_id
+                ]
+            else:
+                keys_to_remove = [
+                    key
+                    for key in _embedder_cache
+                    if key[:3]
+                    == (
+                        specific_target.model_id,
+                        specific_target.adapter_path,
+                        specific_target.draft_model_id,
+                    )
+                ]
             for key in keys_to_remove:
                 _embedder_cache.pop(key, None)
+            runtime_targets = sorted(
+                {(key[0], key[1], key[2]) for key in keys_to_remove}
+            )
             removed_models = [specific_model_id] if keys_to_remove else []
 
-    runtime_unloaded: list[str] = []
-    runtime_targets = removed_models
-    if specific_model_id is not None and not runtime_targets:
-        runtime_targets = [specific_model_id]
+    if specific_target is not None and not runtime_targets:
+        runtime_targets = [
+            (
+                specific_target.model_id,
+                specific_target.adapter_path,
+                specific_target.draft_model_id,
+            )
+        ]
 
-    for normalized_model_id in runtime_targets:
-        attachment_state = release_runtime_surface(normalized_model_id, "visual")
+    runtime_unloaded: list[str] = []
+    for (
+        runtime_model_id,
+        runtime_adapter_path,
+        runtime_draft_model_id,
+    ) in runtime_targets:
+        attachment_state = release_runtime_surface(
+            runtime_model_id,
+            "visual",
+            adapter_path=runtime_adapter_path,
+            draft_model_id=runtime_draft_model_id,
+        )
         if not release_runtime or attachment_state.remaining_surfaces:
             continue
-        runtime_unloaded.extend(wrapper_cache.unload_vlm_model(normalized_model_id))
+        unload_kwargs: dict[str, str] = {}
+        if runtime_adapter_path is not None:
+            unload_kwargs["adapter_path"] = runtime_adapter_path
+        if runtime_draft_model_id is not None:
+            unload_kwargs["draft_model_id"] = runtime_draft_model_id
+        runtime_unloaded.extend(
+            wrapper_cache.unload_vlm_model(
+                runtime_model_id,
+                **unload_kwargs,
+            )
+        )
 
     return list(dict.fromkeys([*removed_models, *runtime_unloaded]))
 
