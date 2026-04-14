@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
+from ..chat.mlx.runtime_policy import endpoint_runtime_session
 from .embeddings_service import get_embeddings_service
 from .schema import EmbeddingRequest, EmbeddingResponse
 
@@ -16,6 +17,10 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     which can be used for semantic search, clustering, and other NLP tasks.
     """
     try:
+        if embeddings_service.uses_shared_vlm_runtime(request.model):
+            canonical_model_id = embeddings_service.canonicalize_model_id(request.model)
+            async with endpoint_runtime_session(canonical_model_id):
+                return embeddings_service.generate_embeddings(request)
         return embeddings_service.generate_embeddings(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

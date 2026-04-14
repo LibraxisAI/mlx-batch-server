@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -106,6 +106,73 @@ def test_visual_router_canonicalizes_projection_and_processor_identity(monkeypat
     assert runtime_attachments_module.get_runtime_surface_attachments(
         "LibraxisAI/Qwen3-VL-30B"
     ) == ["visual"]
+
+    _clear_visual_state()
+
+
+@pytest.mark.asyncio
+async def test_visual_router_reserves_endpoint_runtime_for_canonical_shared_vlm(
+    monkeypatch,
+):
+    _clear_visual_state()
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "LibraxisAI/Qwen3-VL-30B",
+    )
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeEmbedder:
+        embedding_dim = 2
+
+        def embed_text(self, text: str):
+            calls.append(("embed_text", text))
+            return SimpleNamespace(num_tokens=3, source_type="text")
+
+        @staticmethod
+        def to_numpy(result):
+            return np.array([1.0, 2.0], dtype=np.float32)
+
+    @asynccontextmanager
+    async def fake_endpoint_runtime_session(
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
+        assert adapter_path is None
+        assert draft_model_id is None
+        calls.append(("session", model_id))
+        yield {"switched": False}
+
+    monkeypatch.setattr(
+        visual_router_module,
+        "endpoint_runtime_session",
+        fake_endpoint_runtime_session,
+    )
+    monkeypatch.setattr(
+        visual_router_module,
+        "_get_embedder",
+        lambda model_id, projection_path, processor_id: (
+            calls.append(("get_embedder", model_id)),
+            FakeEmbedder(),
+        )[1],
+    )
+
+    response = await visual_router_module.create_visual_embeddings(
+        visual_router_module.VisualEmbeddingRequest(
+            model="frontier-vlm",
+            texts=["hello"],
+        )
+    )
+
+    assert calls == [
+        ("session", "libraxisai/qwen3-vl-30b"),
+        ("get_embedder", "frontier-vlm"),
+        ("embed_text", "hello"),
+    ]
+    assert response["model"] == "frontier-vlm"
+    assert response["dim"] == 2
+    assert response["text_embeddings"][0]["embedding"] == [1.0, 2.0]
 
     _clear_visual_state()
 
