@@ -279,7 +279,10 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
     assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is False
 
     assert loaded == ["libraxisai/qwen3-vl-30b"]
-    assert unloaded == ["libraxisai/qwen3-vl-30b"]
+    assert unloaded == [
+        "libraxisai/qwen3-vl-30b",
+        "libraxisai/qwen3-vl-30b",
+    ]
 
 
 def test_embeddings_service_clear_models_releases_shared_vlm_alias(monkeypatch):
