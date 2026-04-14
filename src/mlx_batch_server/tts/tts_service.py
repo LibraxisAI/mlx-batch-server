@@ -53,7 +53,7 @@ class F5Model(TTSModelAdapter):
         with cls._cache_lock:
             if model_id in cls._model_cache:
                 return True
-        from f5_tts_mlx.cfm import F5TTS  # noqa: PLC0415
+        from f5_tts_mlx.cfm import F5TTS
 
         model = F5TTS.from_pretrained(model_id)
         with cls._cache_lock:
@@ -87,7 +87,7 @@ class F5Model(TTSModelAdapter):
             )
             return Path(output_path).exists()
 
-        from f5_tts_mlx import cfm as f5_cfm  # noqa: PLC0415
+        from f5_tts_mlx import cfm as f5_cfm
 
         with self._cache_lock:
             original = f5_cfm.F5TTS.from_pretrained
@@ -126,7 +126,7 @@ class MlxAudioModel(TTSModelAdapter):
             if model_id in cls._model_cache:
                 return True
 
-        from mlx_audio.tts.utils import load_model  # noqa: PLC0415
+        from mlx_audio.tts.utils import load_model
 
         model = load_model(model_path=model_id)
         with cls._cache_lock:

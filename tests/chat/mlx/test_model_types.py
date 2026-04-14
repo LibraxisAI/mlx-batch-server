@@ -81,7 +81,9 @@ def test_load_mlx_model_rejects_non_pinned_vlm_in_pinned_only_mode(monkeypatch):
 
     def forbidden_vlm_load(model_id: str, adapter_path: str | None):
         load_calls.append((model_id, adapter_path))
-        raise AssertionError("VLM loader should not run for forbidden pinned-only loads")
+        raise AssertionError(
+            "VLM loader should not run for forbidden pinned-only loads"
+        )
 
     monkeypatch.setattr(model_types_module, "_load_vlm_runtime", forbidden_vlm_load)
 
