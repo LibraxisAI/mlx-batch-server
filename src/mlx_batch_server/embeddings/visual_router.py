@@ -10,7 +10,10 @@ from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     normalize_runtime_path,
 )
-from ..chat.mlx.runtime_attachments import attach_runtime_surface
+from ..chat.mlx.runtime_attachments import (
+    attach_runtime_surface,
+    release_runtime_surface,
+)
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 
@@ -102,15 +105,15 @@ def unload_visual_embedder(
                 _embedder_cache.pop(key, None)
             removed_models = [specific_model_id] if keys_to_remove else []
 
-    if not release_runtime:
-        return removed_models
-
     runtime_unloaded: list[str] = []
     runtime_targets = removed_models
     if specific_model_id is not None and not runtime_targets:
         runtime_targets = [specific_model_id]
 
     for normalized_model_id in runtime_targets:
+        attachment_state = release_runtime_surface(normalized_model_id, "visual")
+        if not release_runtime or attachment_state.remaining_surfaces:
+            continue
         runtime_unloaded.extend(wrapper_cache.unload_vlm_model(normalized_model_id))
 
     return list(dict.fromkeys([*removed_models, *runtime_unloaded]))

@@ -236,9 +236,10 @@ class TestUnloadRuntime:
             return 1
 
         class FakeModelsService:
-            def unload_model(self, model_id):
+            def unload_model(self, model_id, *, release_runtime=True):
                 assert state["shutdown_called"] is True
                 assert model_id == "model-a"
+                assert release_runtime is True
                 return {
                     "status": "unloaded",
                     "message": "ok",
@@ -295,9 +296,13 @@ class TestUnloadRuntime:
         assert response.cache_info["loaded_models_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_unload_llm_can_succeed_from_vlm_cache_only(self, monkeypatch):
-        """LLM unload should clear hidden VLM residency even without wrapper cache hit."""
+    async def test_unload_llm_detaches_when_visual_surface_still_holds_runtime(
+        self,
+        monkeypatch,
+    ):
         state = {"shutdown_called": False}
+        runtime_attachments_module.attach_runtime_surface("model-a", "llm")
+        runtime_attachments_module.attach_runtime_surface("model-a", "visual")
 
         async def fake_shutdown(model_id: str) -> int:
             assert model_id == "model-a"
@@ -305,13 +310,14 @@ class TestUnloadRuntime:
             return 0
 
         class FakeModelsService:
-            def unload_model(self, model_id):
+            def unload_model(self, model_id, *, release_runtime=True):
                 assert state["shutdown_called"] is True
                 assert model_id == "model-a"
+                assert release_runtime is False
                 return {
-                    "status": "not_found",
-                    "message": "Model model-a was not loaded",
-                    "unloaded_models": [],
+                    "status": "detached",
+                    "message": "Model model-a detached while shared runtime stayed hot",
+                    "unloaded_models": ["model-a"],
                     "cache_info": {"cache_size": 0},
                 }
 
@@ -321,14 +327,9 @@ class TestUnloadRuntime:
             fake_shutdown,
         )
         monkeypatch.setattr(
-            responses_adapter_module,
-            "unload_vlm_model",
-            lambda model_id=None: ["model-a"],
-        )
-        monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
             "get_loaded_models",
-            lambda: [],
+            lambda: ["model-a"],
         )
         monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
@@ -355,13 +356,16 @@ class TestUnloadRuntime:
             ModelUnloadRequest(model="model-a", task="llm")
         )
 
-        assert response.status == "unloaded"
-        assert response.message == "Model model-a unloaded successfully"
+        assert response.status == "detached"
+        assert "retained by visual" in response.message
         assert response.unloaded_models == ["model-a"]
         assert response.cache_info["loaded_models_by_backend"] == {
-            "wrapper": [],
+            "wrapper": ["model-a"],
             "batch": [],
         }
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-a"
+        ) == ["visual"]
 
     @pytest.mark.asyncio
     async def test_unload_all_llm_models_shuts_down_all_coordinators(
@@ -375,25 +379,22 @@ class TestUnloadRuntime:
             state["shutdown_all_called"] = True
 
         class FakeModelsService:
-            def unload_model(self, model_id):
+            def unload_model(self, model_id, *, release_runtime=True):
                 assert state["shutdown_all_called"] is True
-                assert model_id is None
+                assert model_id == "model-b"
+                assert release_runtime is True
                 return {
-                    "status": "cleared",
+                    "status": "unloaded",
                     "message": "ok",
-                    "unloaded_models": [],
+                    "unloaded_models": ["model-b"],
                     "cache_info": {"cache_size": 0},
                 }
 
+        runtime_attachments_module.attach_runtime_surface("model-b", "llm")
         monkeypatch.setattr(
             batch_coordinator_module,
             "shutdown_all_coordinators",
             fake_shutdown_all,
-        )
-        monkeypatch.setattr(
-            responses_adapter_module,
-            "unload_vlm_model",
-            lambda model_id=None: ["model-b"],
         )
         monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
@@ -429,9 +430,142 @@ class TestUnloadRuntime:
 
         assert response.status == "cleared"
         assert response.unloaded_models == ["model-b"]
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments("model-b") == []
+        )
         assert response.cache_info["runtime_contract"]["multimodal"]["execution"] == (
             "single_flight"
         )
+
+    @pytest.mark.asyncio
+    async def test_unload_all_llm_falls_back_when_surface_registry_is_empty(
+        self,
+        monkeypatch,
+    ):
+        """Legacy llm clear should still work before attachment bookkeeping exists."""
+        state = {"shutdown_all_called": False}
+
+        async def fake_shutdown_all() -> None:
+            state["shutdown_all_called"] = True
+
+        class FakeModelsService:
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert state["shutdown_all_called"] is True
+                assert model_id is None
+                assert release_runtime is True
+                return {
+                    "status": "cleared",
+                    "message": "ok",
+                    "unloaded_models": ["legacy-llm"],
+                    "cache_info": {"cache_size": 0},
+                }
+
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "shutdown_all_coordinators",
+            fake_shutdown_all,
+        )
+        monkeypatch.setattr(
+            responses_adapter_module,
+            "unload_vlm_model",
+            lambda model_id=None: ["legacy-vlm"] if model_id is None else [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 0},
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+
+        response = await models_module.unload_model(ModelUnloadRequest(task="llm"))
+
+        assert response.status == "cleared"
+        assert response.unloaded_models == ["legacy-llm", "legacy-vlm"]
+        assert "legacy runtime state had no surface attachments" in response.message
+        assert response.cache_info["loaded_models_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unload_all_llm_preserves_runtime_for_visual_surfaces(
+        self,
+        monkeypatch,
+    ):
+        state = {"shutdown_all_called": False}
+        calls: list[tuple[str, bool]] = []
+
+        async def fake_shutdown_all() -> None:
+            state["shutdown_all_called"] = True
+
+        class FakeModelsService:
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert state["shutdown_all_called"] is True
+                calls.append((model_id, release_runtime))
+                return {
+                    "status": "detached",
+                    "message": "ok",
+                    "unloaded_models": [model_id],
+                    "cache_info": {"cache_size": 1},
+                }
+
+        runtime_attachments_module.attach_runtime_surface("model-b", "llm")
+        runtime_attachments_module.attach_runtime_surface("model-b", "visual")
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "shutdown_all_coordinators",
+            fake_shutdown_all,
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: ["model-b"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 1},
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: ["model-b"],
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+
+        response = await models_module.unload_model(ModelUnloadRequest(task="llm"))
+
+        assert response.status == "cleared"
+        assert response.unloaded_models == ["model-b"]
+        assert calls == [("model-b", False)]
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-b"
+        ) == ["visual"]
 
 
 class TestLoadRuntime:

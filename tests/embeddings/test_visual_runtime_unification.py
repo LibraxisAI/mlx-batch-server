@@ -138,6 +138,42 @@ def test_unload_visual_embedder_clears_shared_vlm_runtime(monkeypatch):
     _clear_visual_state()
 
 
+def test_unload_visual_embedder_preserves_runtime_when_llm_surface_remains(
+    monkeypatch,
+):
+    _clear_visual_state()
+
+    monkeypatch.setattr(embedder_module.Qwen3VLEmbedder, "load", lambda self: None)
+    monkeypatch.setattr(
+        embedder_module.Qwen3VLEmbedder,
+        "log_summary",
+        lambda self: None,
+    )
+
+    visual_router_module.get_visual_embedder("LibraxisAI/Qwen3-VL-30B")
+    runtime_attachments_module.attach_runtime_surface(
+        "libraxisai/qwen3-vl-30b",
+        "llm",
+    )
+
+    unloaded_calls: list[str] = []
+    monkeypatch.setattr(
+        visual_router_module.wrapper_cache,
+        "unload_vlm_model",
+        lambda model_id=None: unloaded_calls.append(model_id) or [model_id],
+    )
+
+    unloaded = visual_router_module.unload_visual_embedder("libraxisai/qwen3-vl-30b")
+
+    assert unloaded == ["libraxisai/qwen3-vl-30b"]
+    assert unloaded_calls == []
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "libraxisai/qwen3-vl-30b"
+    ) == ["llm"]
+
+    _clear_visual_state()
+
+
 def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
     (tmp_path / "preprocessor_config.json").write_text("{}", encoding="utf-8")
 
@@ -438,6 +474,49 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
         "libraxisai/qwen3-vl-30b",
         "libraxisai/qwen3-vl-30b",
     ]
+
+
+def test_embeddings_service_unload_preserves_runtime_when_llm_surface_remains(
+    monkeypatch,
+):
+    _clear_visual_state()
+    service = EmbeddingsService()
+    unloaded: list[str] = []
+
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
+    monkeypatch.setattr(
+        service,
+        "canonicalize_model_id",
+        lambda model_id: "libraxisai/qwen3-vl-30b",
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_shared_vlm_embedder",
+        lambda model_id: object(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_unload_shared_vlm_embedder",
+        lambda model_id: unloaded.append(model_id) or [model_id],
+    )
+
+    assert service.load_model("LibraxisAI/Qwen3-VL-30B") is False
+    runtime_attachments_module.attach_runtime_surface(
+        "libraxisai/qwen3-vl-30b",
+        "llm",
+    )
+
+    assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is True
+    assert unloaded == []
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "libraxisai/qwen3-vl-30b"
+    ) == ["llm"]
+
+    _clear_visual_state()
 
 
 def test_embeddings_service_clear_models_releases_shared_vlm_alias(monkeypatch):
