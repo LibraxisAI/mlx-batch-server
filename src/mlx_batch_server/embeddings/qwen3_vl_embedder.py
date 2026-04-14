@@ -90,6 +90,7 @@ class Qwen3VLEmbedder:
             self.model_id,
             adapter_path=self.adapter_path,
             draft_model_id=self.draft_model_id,
+            surface="visual",
         )
 
     def load(self) -> None:

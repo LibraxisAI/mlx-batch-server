@@ -47,6 +47,7 @@ class SharedVLMTextEmbedder:
             self.model_id,
             adapter_path=self.adapter_path,
             draft_model_id=self.draft_model_id,
+            surface="embeddings",
         )
 
     @staticmethod
