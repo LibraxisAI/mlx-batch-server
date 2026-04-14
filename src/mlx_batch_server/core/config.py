@@ -162,6 +162,36 @@ class Settings(BaseSettings):
         description="Number of tokens to prefill per step",
     )
 
+    # === VLM Batch Processing ===
+    vlm_batch_enabled: bool = Field(
+        default=True,
+        description="Enable VLM micro-batch coordinator for eligible vision requests",
+    )
+    vlm_batch_window_ms: int = Field(
+        default=50,
+        description="Time window in ms to collect VLM requests before batching",
+    )
+    vlm_max_batch_size: int = Field(
+        default=4,
+        description="Maximum VLM requests per batch",
+    )
+    vlm_batch_group_by_shape: bool = Field(
+        default=True,
+        description="Group VLM requests by image shape for efficient batching",
+    )
+    vlm_batch_pad_to_uniform_size: bool = Field(
+        default=True,
+        description="Pad images to uniform size within a VLM batch",
+    )
+    vlm_batch_resize_shape: str | None = Field(
+        default=None,
+        description="Force resize images to this shape (WxH) before VLM batching",
+    )
+    vlm_stream_batch_enabled: bool = Field(
+        default=True,
+        description="Enable streaming VLM batch coordinator for eligible vision requests",
+    )
+
     # === Health Check ===
     health_check_interval: int = Field(
         default=30,
@@ -300,6 +330,13 @@ class Settings(BaseSettings):
             "max_batch_size": self.max_batch_size,
             "batch_completion_size": self.batch_completion_size,
             "batch_prefill_size": self.batch_prefill_size,
+            "vlm_batch_enabled": self.vlm_batch_enabled,
+            "vlm_batch_window_ms": self.vlm_batch_window_ms,
+            "vlm_max_batch_size": self.vlm_max_batch_size,
+            "vlm_batch_group_by_shape": self.vlm_batch_group_by_shape,
+            "vlm_batch_resize_shape": self.vlm_batch_resize_shape,
+            "vlm_batch_pad_to_uniform_size": self.vlm_batch_pad_to_uniform_size,
+            "vlm_stream_batch_enabled": self.vlm_stream_batch_enabled,
             # Mask API keys
             "openai_api_key": "***" if self.openai_api_key else None,
             "anthropic_api_key": "***" if self.anthropic_api_key else None,
