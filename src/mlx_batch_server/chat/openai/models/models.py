@@ -10,7 +10,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ...mlx.runtime_aliases import register_runtime_alias, resolve_runtime_model_id
+from ...mlx.runtime_aliases import (
+    register_runtime_alias,
+    resolve_runtime_target,
+)
 from ...mlx.runtime_attachments import (
     attach_runtime_surface,
     clear_runtime_surface_attachments,
@@ -473,23 +476,33 @@ async def delete_model(request: Request) -> ModelDeletion:
 
 async def _load_llm_model(request: ModelLoadRequest) -> ModelLoadResponse:
     """Load an LLM model into memory with optional alias and cache eviction."""
-    canonical_model_id = resolve_runtime_model_id(request.model)
+    runtime_target = resolve_runtime_target(
+        request.model,
+        adapter_path=request.adapter_path,
+        draft_model_id=request.draft_model_id,
+    )
+    canonical_model_id = runtime_target.model_id
     alias_message = ""
     if request.alias:
-        canonical_model_id = register_runtime_alias(request.alias, canonical_model_id)
+        canonical_model_id = register_runtime_alias(
+            request.alias,
+            canonical_model_id,
+            adapter_path=runtime_target.adapter_path,
+            draft_model_id=runtime_target.draft_model_id,
+        )
         alias_message = (
             f" (runtime alias registered: {request.alias} -> {canonical_model_id})"
         )
 
     async with endpoint_runtime_session(
         model_id=canonical_model_id,
-        adapter_path=request.adapter_path,
-        draft_model_id=request.draft_model_id,
+        adapter_path=runtime_target.adapter_path,
+        draft_model_id=runtime_target.draft_model_id,
     ) as switch_result:
         result = get_models_service().load_model(
             model_id=canonical_model_id,
-            adapter_path=request.adapter_path,
-            draft_model_id=request.draft_model_id,
+            adapter_path=runtime_target.adapter_path,
+            draft_model_id=runtime_target.draft_model_id,
         )
         attach_runtime_surface(canonical_model_id, "llm")
 
@@ -530,11 +543,19 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
 
             service = get_embeddings_service()
             if service.uses_shared_vlm_runtime(request.model):
-                canonical_model_id = service.canonicalize_model_id(request.model)
+                runtime_target = resolve_runtime_target(
+                    request.model,
+                    adapter_path=request.adapter_path,
+                    draft_model_id=request.draft_model_id,
+                )
+                canonical_model_id = runtime_target.model_id
                 alias_message = ""
                 if request.alias:
                     canonical_model_id = register_runtime_alias(
-                        request.alias, canonical_model_id
+                        request.alias,
+                        canonical_model_id,
+                        adapter_path=runtime_target.adapter_path,
+                        draft_model_id=runtime_target.draft_model_id,
                     )
                     alias_message = (
                         f" (runtime alias registered: {request.alias} -> "
@@ -542,9 +563,15 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
                     )
 
                 async with endpoint_runtime_session(
-                    model_id=canonical_model_id
+                    model_id=canonical_model_id,
+                    adapter_path=runtime_target.adapter_path,
+                    draft_model_id=runtime_target.draft_model_id,
                 ) as switch_result:
-                    already_loaded = service.load_model(canonical_model_id)
+                    already_loaded = service.load_model(
+                        canonical_model_id,
+                        adapter_path=runtime_target.adapter_path,
+                        draft_model_id=runtime_target.draft_model_id,
+                    )
                     attach_runtime_surface(canonical_model_id, "embeddings")
 
                 message = (
@@ -587,11 +614,19 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
             from ....chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
             from ....embeddings.visual_router import get_visual_embedder
 
-            canonical_model_id = normalize_model_id(request.model)
+            runtime_target = resolve_runtime_target(
+                request.model,
+                adapter_path=request.adapter_path,
+                draft_model_id=request.draft_model_id,
+            )
+            canonical_model_id = normalize_model_id(runtime_target.model_id)
             alias_message = ""
             if request.alias:
                 canonical_model_id = register_runtime_alias(
-                    request.alias, canonical_model_id
+                    request.alias,
+                    canonical_model_id,
+                    adapter_path=runtime_target.adapter_path,
+                    draft_model_id=runtime_target.draft_model_id,
                 )
                 alias_message = (
                     f" (runtime alias registered: {request.alias} -> "
@@ -600,9 +635,15 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
 
             already_loaded = canonical_model_id in wrapper_cache.get_loaded_vlm_models()
             async with endpoint_runtime_session(
-                model_id=canonical_model_id
+                model_id=canonical_model_id,
+                adapter_path=runtime_target.adapter_path,
+                draft_model_id=runtime_target.draft_model_id,
             ) as switch_result:
-                get_visual_embedder(canonical_model_id)
+                get_visual_embedder(
+                    canonical_model_id,
+                    adapter_path=runtime_target.adapter_path,
+                    draft_model_id=runtime_target.draft_model_id,
+                )
                 attach_runtime_surface(canonical_model_id, "visual")
 
             message = (

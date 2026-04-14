@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import mlx.core as mx
 import pytest
 
+from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.embeddings import shared_vlm_text_embedder as embedder_module
 
 
@@ -43,7 +45,7 @@ def test_shared_vlm_text_embedder_pools_last_non_padding_token(monkeypatch):
     monkeypatch.setattr(
         embedder_module.wrapper_cache,
         "get_vlm_backend",
-        lambda model_id: (fake_model, fake_processor),
+        lambda model_id, **kwargs: (fake_model, fake_processor),
     )
     monkeypatch.setattr(
         embedder_module.wrapper_cache,
@@ -98,10 +100,61 @@ def test_shared_vlm_text_embedder_resets_nested_language_runtime_state(monkeypat
     monkeypatch.setattr(
         embedder_module.wrapper_cache,
         "get_vlm_backend",
-        lambda model_id: (fake_model, fake_processor),
+        lambda model_id, **kwargs: (fake_model, fake_processor),
     )
 
     embedder = embedder_module.SharedVLMTextEmbedder("LibraxisAI/Qwen3-VL-30B")
     result = embedder.embed_text_pooled("hello")
 
     assert result.num_tokens == 2
+
+
+def test_shared_vlm_text_embedder_resolves_alias_scoped_adapter(monkeypatch):
+    expanded_adapter_path = str(Path("~/adapters/frontier-lora").expanduser())
+    fake_model = SimpleNamespace(language_model=SimpleNamespace())
+    fake_processor = SimpleNamespace(
+        tokenizer=lambda text, return_tensors=None: {
+            "input_ids": [[1]],
+            "attention_mask": [[1]],
+        }
+    )
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    runtime_aliases_module.clear_runtime_aliases()
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="~/adapters/frontier-lora",
+    )
+
+    monkeypatch.setattr(
+        embedder_module.wrapper_cache,
+        "get_vlm_backend",
+        lambda model_id, **kwargs: (
+            seen.append(
+                (
+                    model_id,
+                    kwargs.get("adapter_path"),
+                    kwargs.get("draft_model_id"),
+                )
+            )
+            or (fake_model, fake_processor)
+        ),
+    )
+    monkeypatch.setattr(
+        embedder_module.SharedVLMTextEmbedder,
+        "_get_language_model",
+        lambda self, model: SimpleNamespace(
+            embed_tokens=lambda input_ids: mx.ones((1, input_ids.shape[1], 2)),
+            layers=[lambda hidden, position_ids=None: hidden],
+            norm=lambda hidden: hidden,
+        ),
+    )
+
+    embedder = embedder_module.SharedVLMTextEmbedder("frontier-vlm")
+    embedder.embed_text_pooled("hello")
+
+    assert seen == [
+        ("libraxisai/qwen3-vl-30b", expanded_adapter_path, None),
+    ]
+    runtime_aliases_module.clear_runtime_aliases()

@@ -6,7 +6,7 @@ import tiktoken
 from mlx_embeddings import generate, load
 
 from ..chat.mlx.model_types import resolves_to_multimodal_runtime
-from ..chat.mlx.runtime_aliases import resolve_runtime_model_id
+from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..chat.mlx.runtime_attachments import (
     attach_runtime_surface,
     get_attached_models,
@@ -42,7 +42,7 @@ class EmbeddingsService:
 
     def canonicalize_model_id(self, model_id: str) -> str:
         """Resolve aliases and normalize remote IDs for stable cache keys."""
-        return normalize_model_id(resolve_runtime_model_id(model_id))
+        return normalize_model_id(resolve_runtime_target(model_id).model_id)
 
     def _get_model(self, model_id: str) -> tuple[Any, Any]:
         """Get or load a model based on its ID"""
@@ -60,13 +60,28 @@ class EmbeddingsService:
 
         return self._models[canonical_model_id]
 
-    def load_model(self, model_id: str) -> bool:
+    def load_model(
+        self,
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> bool:
         """Preload an embeddings model. Returns True if it was already loaded."""
         if self._should_use_shared_vlm_embeddings(model_id):
-            canonical_model_id = self.canonicalize_model_id(model_id)
+            runtime_target = resolve_runtime_target(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
+            canonical_model_id = runtime_target.model_id
             already_loaded = canonical_model_id in self._shared_vlm_models
             if not already_loaded:
-                self._get_shared_vlm_embedder(canonical_model_id)
+                runtime_kwargs: dict[str, str] = {}
+                if runtime_target.adapter_path is not None:
+                    runtime_kwargs["adapter_path"] = runtime_target.adapter_path
+                if runtime_target.draft_model_id is not None:
+                    runtime_kwargs["draft_model_id"] = runtime_target.draft_model_id
+                self._get_shared_vlm_embedder(canonical_model_id, **runtime_kwargs)
                 self._shared_vlm_models.add(canonical_model_id)
             return already_loaded
 
@@ -138,9 +153,19 @@ class EmbeddingsService:
         """Return True when shared VLM embeddings models are currently attached."""
         return bool(self._shared_vlm_models)
 
-    def _get_shared_vlm_embedder(self, model_id: str) -> SharedVLMTextEmbedder:
+    def _get_shared_vlm_embedder(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> SharedVLMTextEmbedder:
         """Pool text embeddings directly from the shared resident VLM runtime."""
-        embedder = SharedVLMTextEmbedder(model_id)
+        embedder = SharedVLMTextEmbedder(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         embedder.load()
         attach_runtime_surface(model_id, "embeddings")
         return embedder
@@ -243,8 +268,17 @@ class EmbeddingsService:
         model = None
         processor = None
         if self._should_use_shared_vlm_embeddings(model_id):
-            canonical_model_id = self.canonicalize_model_id(model_id)
-            shared_vlm_embedder = self._get_shared_vlm_embedder(canonical_model_id)
+            runtime_target = resolve_runtime_target(model_id)
+            canonical_model_id = runtime_target.model_id
+            runtime_kwargs: dict[str, str] = {}
+            if runtime_target.adapter_path is not None:
+                runtime_kwargs["adapter_path"] = runtime_target.adapter_path
+            if runtime_target.draft_model_id is not None:
+                runtime_kwargs["draft_model_id"] = runtime_target.draft_model_id
+            shared_vlm_embedder = self._get_shared_vlm_embedder(
+                canonical_model_id,
+                **runtime_kwargs,
+            )
             self._shared_vlm_models.add(canonical_model_id)
             token_count = 0
         else:

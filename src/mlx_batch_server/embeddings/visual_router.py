@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     normalize_runtime_path,
+    resolve_runtime_target,
 )
 from ..chat.mlx.runtime_attachments import (
     attach_runtime_surface,
@@ -20,7 +21,10 @@ from .qwen3_vl_embedder import Qwen3VLEmbedder
 
 router = APIRouter(tags=["visual-embeddings"])
 
-_embedder_cache: dict[tuple[str, str | None, str | None], Qwen3VLEmbedder] = {}
+_embedder_cache: dict[
+    tuple[str, str | None, str | None, str | None, str | None],
+    Qwen3VLEmbedder,
+] = {}
 _embedder_lock = threading.Lock()
 
 
@@ -43,25 +47,48 @@ def _normalize_embedder_key(
     model_id: str,
     projection_path: str | None,
     processor_id: str | None,
-) -> tuple[str, str | None, str | None]:
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> tuple[str, str | None, str | None, str | None, str | None]:
+    target = resolve_runtime_target(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     return (
-        normalize_runtime_model_id(model_id),
+        target.model_id,
+        target.adapter_path,
+        target.draft_model_id,
         normalize_runtime_path(projection_path),
         normalize_runtime_model_id(processor_id) if processor_id else None,
     )
 
 
 def _get_embedder(
-    model_id: str, projection_path: str | None, processor_id: str | None
+    model_id: str,
+    projection_path: str | None,
+    processor_id: str | None,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
 ) -> Qwen3VLEmbedder:
-    key = _normalize_embedder_key(model_id, projection_path, processor_id)
+    key = _normalize_embedder_key(
+        model_id,
+        projection_path,
+        processor_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     with _embedder_lock:
         embedder = _embedder_cache.get(key)
         if embedder is None:
             embedder = Qwen3VLEmbedder(
                 model_id=key[0],
-                projection_path=key[1],
-                processor_id=key[2],
+                adapter_path=key[1],
+                draft_model_id=key[2],
+                projection_path=key[3],
+                processor_id=key[4],
             )
             embedder.load()
             embedder.log_summary()
@@ -71,10 +98,21 @@ def _get_embedder(
 
 
 def get_visual_embedder(
-    model_id: str, projection_path: str | None = None, processor_id: str | None = None
+    model_id: str,
+    projection_path: str | None = None,
+    processor_id: str | None = None,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
 ) -> Qwen3VLEmbedder:
     """Return a shared visual embedder instance for the given model."""
-    return _get_embedder(model_id, projection_path, processor_id)
+    return _get_embedder(
+        model_id,
+        projection_path,
+        processor_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
 
 
 def get_loaded_visual_models() -> list[str]:
@@ -129,10 +167,16 @@ async def create_visual_embeddings(request: VisualEmbeddingRequest) -> dict[str,
         )
 
     try:
-        canonical_model_id = normalize_runtime_model_id(request.model)
-        async with endpoint_runtime_session(canonical_model_id):
+        target = resolve_runtime_target(request.model)
+        async with endpoint_runtime_session(
+            target.model_id,
+            adapter_path=target.adapter_path,
+            draft_model_id=target.draft_model_id,
+        ):
             embedder = _get_embedder(
-                request.model, request.projection_path, request.processor_id
+                request.model,
+                request.projection_path,
+                request.processor_id,
             )
             response: dict[str, Any] = {
                 "object": "embedding_response",
