@@ -193,6 +193,10 @@ class ResponsesAdapter:
         """Build per-request extra_body overrides for text lanes."""
         extra_body: dict[str, Any] = {}
         if normalised_body.get("previous_response_id"):
+            # Reconstructed follow-ups after a multimodal turn can drift out of sync
+            # with mlx_lm prompt-cache trimming on the shared VLM language tower.
+            # Keep the conversation lane correct first; cached follow-ups can come
+            # back once that contract is explicitly stabilized.
             extra_body["enable_prompt_cache"] = False
         return extra_body or None
 
@@ -636,7 +640,7 @@ class ResponsesAdapter:
             make_event(
                 "response.output_item.done",
                 {
-                    "output_index": 0,
+                    "output_index": output_index,
                     "item": {
                         "id": message_item_id,
                         "type": "message",
