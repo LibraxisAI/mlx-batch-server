@@ -565,6 +565,40 @@ class TestMLXWrapperCacheModelManagement:
             runtime_aliases_module.clear_runtime_aliases()
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_runtime_alias_with_adapter_reuses_exact_runtime_key(self, mock_create):
+        """Alias-scoped adapter runtimes should converge on one shared wrapper."""
+        runtime_aliases_module.clear_runtime_aliases()
+        try:
+            adapter_path = "~/adapters/frontier-lora"
+            expanded_adapter_path = str(Path(adapter_path).expanduser())
+            runtime_aliases_module.register_runtime_alias(
+                "frontier-vlm",
+                "LibraxisAI/Qwen3-VL-30B",
+                adapter_path=adapter_path,
+            )
+            mock_create.return_value = MockChatGenerator(
+                "libraxisai/qwen3-vl-30b",
+                multimodal=True,
+            )
+
+            canonical = self.cache.get_wrapper(
+                "libraxisai/qwen3-vl-30b",
+                adapter_path=expanded_adapter_path,
+            )
+            alias = self.cache.get_wrapper("frontier-vlm")
+
+            assert alias is canonical
+            assert mock_create.call_count == 1
+            assert mock_create.call_args.kwargs["adapter_path"] == expanded_adapter_path
+            assert self.cache.is_runtime_loaded(
+                "frontier-vlm",
+                adapter_path=None,
+                draft_model_id=None,
+            )
+        finally:
+            runtime_aliases_module.clear_runtime_aliases()
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_home_relative_path_reuses_single_cached_wrapper(self, mock_create):
         """Home-relative model paths should collapse to one cache identity."""
         model_path = "~/models/frontier-vlm"

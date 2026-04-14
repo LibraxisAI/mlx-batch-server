@@ -18,6 +18,7 @@ from ..chat.mlx.model_types import reset_request_local_runtime_state
 from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     normalize_runtime_path,
+    resolve_runtime_target,
 )
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..utils.logger import logger
@@ -52,10 +53,19 @@ class Qwen3VLEmbedder:
     def __init__(
         self,
         model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
         projection_path: str | None = None,
         processor_id: str | None = None,
     ) -> None:
-        self.model_id = normalize_runtime_model_id(model_id)
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        self.model_id = target.model_id
+        self.adapter_path = target.adapter_path
+        self.draft_model_id = target.draft_model_id
         self.projection_path = normalize_runtime_path(
             projection_path or os.environ.get("QWEN3_VL_PROJECTION_PATH")
         )
@@ -76,7 +86,11 @@ class Qwen3VLEmbedder:
 
     def _get_backend(self) -> tuple[Any, Any]:
         """Resolve the shared resident VLM backend from the unified runtime cache."""
-        return wrapper_cache.get_vlm_backend(self.model_id)
+        return wrapper_cache.get_vlm_backend(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+        )
 
     def load(self) -> None:
         if self._loaded:

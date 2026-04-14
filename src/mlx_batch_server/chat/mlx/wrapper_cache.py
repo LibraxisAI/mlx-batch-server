@@ -18,7 +18,10 @@ from ...core.config import get_settings
 from ...utils.logger import logger
 from ...utils.memory import force_mlx_cleanup
 from .chat_generator import ChatGenerator
-from .runtime_aliases import normalize_runtime_model_id, normalize_runtime_path
+from .runtime_aliases import (
+    normalize_runtime_model_id,
+    resolve_runtime_target,
+)
 from .runtime_attachments import (
     clear_runtime_surface_attachments,
     get_runtime_surface_attachments,
@@ -36,12 +39,15 @@ def normalize_runtime_key(
     draft_model_id: str | None = None,
 ) -> WrapperCacheKey:
     """Normalize all runtime-key fields so residency checks are stable."""
-    normalized_adapter = normalize_runtime_path(adapter_path)
-    normalized_draft = normalize_model_id(draft_model_id) if draft_model_id else None
+    target = resolve_runtime_target(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     return WrapperCacheKey(
-        model_id=normalize_model_id(model_id),
-        adapter_path=normalized_adapter,
-        draft_model_id=normalized_draft,
+        model_id=target.model_id,
+        adapter_path=target.adapter_path,
+        draft_model_id=target.draft_model_id,
     )
 
 
@@ -446,17 +452,27 @@ class MLXWrapperCache:
             }
         )
 
-    def get_vlm_backend(self, model_id: str):
+    def get_vlm_backend(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
         """Return the shared multimodal backend from the cached wrapper runtime.
 
         Args:
             model_id: Model name/path
+            adapter_path: Optional adapter path tied to the resident runtime alias
+            draft_model_id: Optional speculative draft runtime identity
 
         Returns:
             ``(model, processor)`` tuple from the resident VLM runtime
         """
         wrapper = self.get_wrapper(
-            model_id=model_id, adapter_path=None, draft_model_id=None
+            model_id=model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
         )
         if (
             not getattr(wrapper.model, "supports_multimodal", False)

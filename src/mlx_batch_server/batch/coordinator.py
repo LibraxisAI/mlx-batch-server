@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     normalize_runtime_path,
+    resolve_runtime_target,
 )
 from ..utils.logger import logger
 
@@ -51,6 +52,14 @@ def _normalize_batch_model_id(model_id: str) -> str:
 
 def _normalize_batch_adapter_path(adapter_path: str | None) -> str | None:
     return normalize_runtime_path(adapter_path)
+
+
+def _resolve_batch_runtime(
+    model_id: str,
+    adapter_path: str | None = None,
+) -> tuple[str, str | None]:
+    target = resolve_runtime_target(model_id, adapter_path=adapter_path)
+    return target.model_id, target.adapter_path
 
 
 @dataclass
@@ -113,8 +122,10 @@ class BatchRequestCoordinator:
             batch_window_ms: Time window to collect requests (ms)
             max_batch_size: Maximum requests per batch
         """
-        self.model_id = _normalize_batch_model_id(model_id)
-        self.adapter_path = _normalize_batch_adapter_path(adapter_path)
+        self.model_id, self.adapter_path = _resolve_batch_runtime(
+            model_id,
+            adapter_path,
+        )
         self._completion_batch_size = completion_batch_size
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
@@ -487,8 +498,10 @@ def get_batch_coordinator(
     Returns:
         BatchRequestCoordinator instance
     """
-    normalized_model_id = _normalize_batch_model_id(model_id)
-    normalized_adapter_path = _normalize_batch_adapter_path(adapter_path)
+    normalized_model_id, normalized_adapter_path = _resolve_batch_runtime(
+        model_id,
+        adapter_path,
+    )
     cache_key = f"{normalized_model_id}:{normalized_adapter_path or ''}"
 
     with _coordinator_lock:
