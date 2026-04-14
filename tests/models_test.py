@@ -233,4 +233,4 @@ class TestModelLoadUnload:
         )
 
         # Empty model should fail
-        assert response.status_code == 500
+        assert response.status_code == 400

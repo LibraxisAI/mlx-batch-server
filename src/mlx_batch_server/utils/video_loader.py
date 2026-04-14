@@ -57,7 +57,7 @@ def prepare_video_inputs(
         - ``mask``: mx.array attention mask (optional)
     """
     try:
-        from mlx_vlm.video_generate import process_vision_info
+        from mlx_vlm.video_generate import process_vision_info  # noqa: PLC0415
     except ImportError as exc:
         raise RuntimeError(
             "mlx-vlm with video support is required for video responses"
@@ -108,8 +108,8 @@ def build_video_prompt_and_inputs(
         - ``input_ids``: mx.array
     """
     try:
-        import mlx.core as mx
-        from mlx_vlm.video_generate import process_vision_info
+        import mlx.core as mx  # noqa: PLC0415
+        from mlx_vlm.video_generate import process_vision_info  # noqa: PLC0415
     except ImportError as exc:
         raise RuntimeError(
             "mlx-vlm with video support is required for video responses"

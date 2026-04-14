@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from mlx_batch_server.chat.mlx import model_types as model_types_module
+from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx.model_types import MLXLMCompatibleLanguageModel
+from mlx_batch_server.core.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_aliases_and_settings():
+    runtime_aliases_module.clear_runtime_aliases()
+    get_settings.cache_clear()
+    yield
+    runtime_aliases_module.clear_runtime_aliases()
+    get_settings.cache_clear()
 
 
 def test_patch_transformers_auto_docstring_for_vlm_swallow_index_error(
@@ -40,3 +54,96 @@ def test_vlm_language_tower_without_cache_metadata_returns_empty_cache():
     text_model = MLXLMCompatibleLanguageModel(tower)
 
     assert text_model.make_cache() == []
+
+
+def test_load_mlx_model_rejects_non_pinned_vlm_in_pinned_only_mode(monkeypatch):
+    monkeypatch.setenv("PINNED_MODELS", "mlx-community/Qwen3-VL-30B-A3B-Instruct-8bit")
+    monkeypatch.setenv("MODEL_CACHE_MAX_SIZE", "0")
+    get_settings.cache_clear()
+
+    monkeypatch.setattr(
+        model_types_module,
+        "get_model_path",
+        lambda model_id: Path("/tmp/fake-vlm"),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "load_text_config",
+        lambda path: {"model_type": "qwen3_vl", "vision_config": {"hidden_size": 1}},
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "_should_use_vlm_runtime",
+        lambda config: True,
+    )
+
+    load_calls: list[tuple[str, str | None]] = []
+
+    def forbidden_vlm_load(model_id: str, adapter_path: str | None):
+        load_calls.append((model_id, adapter_path))
+        raise AssertionError("VLM loader should not run for forbidden pinned-only loads")
+
+    monkeypatch.setattr(model_types_module, "_load_vlm_runtime", forbidden_vlm_load)
+
+    with pytest.raises(ValueError, match="not allowed in pinned-only mode"):
+        model_types_module.load_mlx_model("Qwen/Qwen3-VL-30B-A3B-Instruct")
+
+    assert load_calls == []
+
+
+def test_load_mlx_model_allows_pinned_vlm_alias_in_pinned_only_mode(monkeypatch):
+    monkeypatch.setenv("PINNED_MODELS", "MLX-Community/Qwen3-VL-30B-A3B-Instruct-8bit")
+    monkeypatch.setenv("MODEL_CACHE_MAX_SIZE", "0")
+    get_settings.cache_clear()
+
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "mlx-community/qwen3-vl-30b-a3b-instruct-8bit",
+    )
+
+    fake_model = SimpleNamespace()
+    fake_tokenizer = SimpleNamespace()
+    fake_processor = SimpleNamespace()
+    fake_chat_template_source = SimpleNamespace()
+    seen_loads: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(
+        model_types_module,
+        "get_model_path",
+        lambda model_id: Path("/tmp/fake-vlm"),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "load_text_config",
+        lambda path: {"model_type": "qwen3_vl", "vision_config": {"hidden_size": 1}},
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "_should_use_vlm_runtime",
+        lambda config: True,
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "_load_vlm_runtime",
+        lambda model_id, adapter_path: (
+            seen_loads.append((model_id, adapter_path))
+            or (fake_model, fake_tokenizer, fake_processor, fake_chat_template_source)
+        ),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "ChatTemplate",
+        lambda model_type, source: ("chat-template", model_type, source),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "extract_context_length",
+        lambda config, tokenizer: 8192,
+    )
+
+    loaded = model_types_module.load_mlx_model("frontier-vlm")
+
+    assert seen_loads == [("mlx-community/qwen3-vl-30b-a3b-instruct-8bit", None)]
+    assert loaded.model_id == "mlx-community/qwen3-vl-30b-a3b-instruct-8bit"
+    assert loaded.processor is fake_processor
+    assert loaded.supports_multimodal is True

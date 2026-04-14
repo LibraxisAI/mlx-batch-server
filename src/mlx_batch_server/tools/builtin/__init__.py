@@ -1,9 +1,9 @@
 """
-Built-in hosted tools for MLX Batch Server.
+Built-in hosted tools for Mlx batch Server.
 
 These tools are executed server-side when the model generates tool calls.
 
-Created by M&K (c)2026 The LibraxisAI Team
+Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
 """
 
 from .code_interpreter import execute_code
