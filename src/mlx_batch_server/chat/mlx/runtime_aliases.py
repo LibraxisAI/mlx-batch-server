@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from ...core.config import get_settings
 
@@ -19,6 +20,19 @@ def _normalize_identifier(model_id: str) -> str:
         and not normalized.startswith("~")
     ):
         return normalized.lower()
+    return normalized
+
+
+def normalize_runtime_path(path: str | None) -> str | None:
+    """Normalize path-like runtime fields so cache keys stay stable."""
+    if path is None:
+        return None
+
+    normalized = path.strip()
+    if not normalized:
+        return None
+    if normalized.startswith("~"):
+        normalized = str(Path(normalized).expanduser())
     return normalized
 
 
@@ -46,13 +60,26 @@ def resolve_runtime_model_id(model_id: str) -> str:
         resolved = target
 
 
+def normalize_runtime_model_id(model_id: str) -> str:
+    """Resolve aliases and canonicalize runtime model identifiers."""
+    normalized = normalize_runtime_path(resolve_runtime_model_id(model_id)) or ""
+    if (
+        "/" in normalized
+        and not normalized.startswith("/")
+        and not normalized.startswith(".")
+        and not normalized.startswith("~")
+    ):
+        return normalized.lower()
+    return normalized
+
+
 def register_runtime_alias(alias: str, model_id: str) -> str:
     """Register an in-process alias that resolves to the canonical model id."""
     alias_key = _normalize_identifier(alias)
     if not alias_key:
         raise ValueError("alias cannot be empty")
 
-    canonical_model_id = resolve_runtime_model_id(model_id)
+    canonical_model_id = normalize_runtime_model_id(model_id)
     if not canonical_model_id:
         raise ValueError("model_id cannot be empty")
 

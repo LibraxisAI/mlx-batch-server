@@ -13,41 +13,17 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from pathlib import Path
 
 from ...core.config import get_settings
 from ...utils.logger import logger
 from ...utils.memory import force_mlx_cleanup
 from .chat_generator import ChatGenerator
-from .runtime_aliases import resolve_runtime_model_id
-
-
-def normalize_runtime_path(path: str | None) -> str | None:
-    """Normalize optional filesystem-like runtime paths for stable cache keys."""
-    if path is None:
-        return None
-
-    normalized = path.strip()
-    if not normalized:
-        return None
-    if normalized.startswith("~"):
-        normalized = str(Path(normalized).expanduser())
-    return normalized
+from .runtime_aliases import normalize_runtime_model_id, normalize_runtime_path
 
 
 def normalize_model_id(model_id: str) -> str:
     """Normalize model IDs for stable cache keys."""
-    normalized = resolve_runtime_model_id(model_id).strip()
-    if normalized.startswith("~"):
-        normalized = str(Path(normalized).expanduser())
-    if (
-        "/" in normalized
-        and not normalized.startswith("/")
-        and not normalized.startswith(".")
-        and not normalized.startswith("~")
-    ):
-        return normalized.lower()
-    return normalized
+    return normalize_runtime_model_id(model_id)
 
 
 def normalize_runtime_key(
@@ -285,8 +261,8 @@ class MLXWrapperCache:
             try:
                 wrapper = ChatGenerator.create(
                     model_id=normalized_model_id,
-                    adapter_path=adapter_path,
-                    draft_model_id=draft_model_id,
+                    adapter_path=key.adapter_path,
+                    draft_model_id=key.draft_model_id,
                 )
 
                 # Pinned models must remain tracked even in max_size=0

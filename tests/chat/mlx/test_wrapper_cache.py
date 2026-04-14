@@ -499,6 +499,21 @@ class TestMLXWrapperCacheModelManagement:
         assert mock_create.call_count == 1
         assert self.cache.get_cache_info()["cache_size"] == 1
 
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_home_relative_adapter_path_is_canonicalized_before_wrapper_creation(
+        self,
+        mock_create,
+    ):
+        """Cache identity and downstream runtime args should share one adapter path."""
+        adapter_path = "~/adapters/frontier-lora"
+        expanded_adapter_path = str(Path(adapter_path).expanduser())
+        mock_create.return_value = MockChatGenerator("model-with-adapter")
+
+        self.cache.get_wrapper("model-with-adapter", adapter_path=adapter_path)
+
+        assert mock_create.call_count == 1
+        assert mock_create.call_args.kwargs["adapter_path"] == expanded_adapter_path
+
 
 class TestMLXWrapperCachePinnedOnly:
     """Test pinned-only mode (max_size=0 + PINNED_MODELS)."""
