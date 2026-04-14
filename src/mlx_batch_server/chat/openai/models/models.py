@@ -264,6 +264,13 @@ def _format_retained_runtime_message(
     )
 
 
+def _visual_lane_retained(
+    remaining_surfaces: list[str] | tuple[str, ...],
+) -> bool:
+    """Return True while the visual surface still owns the multimodal batch lane."""
+    return "visual" in set(remaining_surfaces)
+
+
 @lru_cache(maxsize=128)
 def _load_model_config(model_id: str) -> dict | None:
     model_path = Path(model_id)
@@ -721,7 +728,7 @@ async def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadRespons
         if service.unload_model(model_id, release_runtime=not preserve_runtime)
         else []
     )
-    if unloaded and not preserve_runtime:
+    if unloaded and not _visual_lane_retained(attachment_state.remaining_surfaces):
         await shutdown_vlm_coordinator(canonical_model_id)
     if unloaded and preserve_runtime:
         status = "detached"
@@ -785,7 +792,7 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
         attachment_state = release_runtime_surface(model_id, "llm")
         preserve_runtime = bool(attachment_state.remaining_surfaces)
         await shutdown_batch_coordinator(model_id)
-        if not preserve_runtime:
+        if not _visual_lane_retained(attachment_state.remaining_surfaces):
             await shutdown_vlm_coordinator(model_id)
         result = get_models_service().unload_model(
             model_id=model_id,
@@ -874,7 +881,10 @@ async def _clear_llm_task() -> ModelUnloadResponse:
     """Clear llm surfaces while preserving shared VLM runtime ownership."""
     from ....batch.coordinator import shutdown_all_coordinators
     from ....responses.adapter import unload_vlm_model
-    from ....vision.vlm_batch import shutdown_all_vlm_coordinators
+    from ....vision.vlm_batch import (
+        shutdown_all_vlm_coordinators,
+        shutdown_vlm_coordinator,
+    )
 
     await shutdown_all_coordinators()
     llm_models = get_attached_models("llm")
@@ -901,6 +911,8 @@ async def _clear_llm_task() -> ModelUnloadResponse:
     for attached_model_id in llm_models:
         attachment_state = release_runtime_surface(attached_model_id, "llm")
         preserve_runtime = bool(attachment_state.remaining_surfaces)
+        if not _visual_lane_retained(attachment_state.remaining_surfaces):
+            await shutdown_vlm_coordinator(attached_model_id)
         result = get_models_service().unload_model(
             model_id=attached_model_id,
             release_runtime=not preserve_runtime,
@@ -944,7 +956,7 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
             preserve_runtime = bool(attachment_state.remaining_surfaces)
             if service.unload_model(model_id, release_runtime=not preserve_runtime):
                 unloaded.append(model_id)
-                if not preserve_runtime:
+                if not _visual_lane_retained(attachment_state.remaining_surfaces):
                     await shutdown_vlm_coordinator(model_id)
         return ModelUnloadResponse(
             task="embeddings",
