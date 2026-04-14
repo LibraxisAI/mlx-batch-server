@@ -245,11 +245,17 @@ class ModelsService:
             "cache_info": wrapper_cache.get_cache_info(),
         }
 
-    def unload_model(self, model_id: str | None = None) -> dict:
+    def unload_model(
+        self,
+        model_id: str | None = None,
+        *,
+        release_runtime: bool = True,
+    ) -> dict:
         """Unload a model from memory.
 
         Args:
             model_id: Model ID to unload. If None, unloads all models.
+            release_runtime: When False, keep the shared runtime resident.
 
         Returns:
             Dict with unload status and cache info
@@ -260,6 +266,23 @@ class ModelsService:
         unloaded_models = []
 
         if model_id:
+            if not release_runtime:
+                if wrapper_cache.is_model_loaded(model_id):
+                    unloaded_models.append(model_id)
+                    status = "detached"
+                    message = (
+                        f"Model {model_id} detached while shared runtime stayed hot"
+                    )
+                else:
+                    status = "not_found"
+                    message = f"Model {model_id} was not loaded"
+                return {
+                    "status": status,
+                    "message": message,
+                    "unloaded_models": unloaded_models,
+                    "cache_info": wrapper_cache.get_cache_info(),
+                }
+
             # Unload specific model
             if wrapper_cache.unload_model(model_id):
                 unloaded_models.append(model_id)
