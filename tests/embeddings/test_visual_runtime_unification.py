@@ -202,9 +202,75 @@ def test_qwen3_vl_embedder_pools_sentence_embedding_from_shared_runtime(monkeypa
     assert embedder_module.Qwen3VLEmbedder.to_numpy(result).tolist() == [0.0, 2.0]
 
 
+def test_qwen3_vl_embedder_resets_nested_language_runtime_state_before_text_embed(
+    monkeypatch,
+):
+    embedder = embedder_module.Qwen3VLEmbedder("model-vlm")
+    embedder._loaded = True
+    embedder.tomoro_processor = SimpleNamespace(
+        tokenizer=lambda text, return_tensors=None: {
+            "input_ids": [[1, 2]],
+        }
+    )
+
+    inner_model = SimpleNamespace(
+        _position_ids="stale-inner",
+        _rope_deltas="stale-inner",
+    )
+
+    def fake_embed_tokens(input_ids):
+        assert language_wrapper._position_ids is None
+        assert inner_model._position_ids is None
+        assert inner_model._rope_deltas is None
+        return mx.ones((1, input_ids.shape[1], 4))
+
+    inner_model.embed_tokens = fake_embed_tokens
+    language_wrapper = SimpleNamespace(
+        model=inner_model,
+        _position_ids="stale-outer",
+    )
+    runtime_model = SimpleNamespace(language_model=language_wrapper)
+
+    monkeypatch.setattr(
+        embedder,
+        "_get_backend",
+        lambda: (
+            runtime_model,
+            SimpleNamespace(tokenizer=embedder.tomoro_processor.tokenizer),
+        ),
+    )
+    monkeypatch.setattr(
+        embedder,
+        "_build_position_ids",
+        lambda batch_size, seq_len: mx.zeros((3, batch_size, seq_len), dtype=mx.int32),
+    )
+    monkeypatch.setattr(
+        embedder,
+        "_run_language_layers",
+        lambda inner_model, inputs_embeds, position_ids: inputs_embeds,
+    )
+    monkeypatch.setattr(
+        embedder,
+        "_project_and_normalize",
+        lambda hidden_states: hidden_states,
+    )
+
+    result = embedder.embed_text("hello")
+
+    assert result.num_tokens == 2
+    assert language_wrapper._position_ids is None
+    assert inner_model._position_ids is None
+    assert inner_model._rope_deltas is None
+
+
 def test_embeddings_service_routes_qwen3_vl_text_to_shared_runtime(monkeypatch):
     service = EmbeddingsService()
     events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
 
     class FakeEmbedder:
         def embed_text_pooled(self, text: str):
@@ -249,6 +315,11 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
     loaded: list[str] = []
     unloaded: list[str] = []
     state = {"runtime_loaded": False}
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
 
     monkeypatch.setattr(
         service,
@@ -294,6 +365,11 @@ def test_embeddings_service_clear_models_releases_shared_vlm_alias(monkeypatch):
 
     service = EmbeddingsService()
     unloaded: list[str] = []
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
 
     monkeypatch.setattr(
         service,
