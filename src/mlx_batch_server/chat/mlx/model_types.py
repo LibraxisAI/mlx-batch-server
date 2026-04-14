@@ -126,6 +126,35 @@ class _MLXLMCompatibleCacheProxy:
         self.base_cache[idx] = value
 
 
+def _iter_runtime_state_targets(model: Any):
+    """Yield unique runtime objects that may hold request-local VLM state."""
+    seen: set[int] = set()
+    language_model = getattr(model, "language_model", None)
+    nested_language_model = getattr(language_model, "model", None)
+
+    for candidate in (model, language_model, nested_language_model):
+        if candidate is None:
+            continue
+        candidate_id = id(candidate)
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        yield candidate
+
+
+def reset_request_local_runtime_state(model: Any) -> bool:
+    """Clear transient rope/position fields from nested shared VLM runtimes."""
+    cleared = False
+
+    for candidate in _iter_runtime_state_targets(model):
+        for attr in ("_position_ids", "_rope_deltas"):
+            if hasattr(candidate, attr):
+                setattr(candidate, attr, None)
+                cleared = True
+
+    return cleared
+
+
 class MLXLMCompatibleLanguageModel(nn.Module):
     """Adapt VLM language towers to the logits tensor contract used by mlx_lm.
 
@@ -139,6 +168,7 @@ class MLXLMCompatibleLanguageModel(nn.Module):
     def __init__(self, base_model: Any):
         super().__init__()
         self.base_model = base_model
+        self._cache_owner = getattr(base_model, "model", base_model)
 
     def _normalize_cache(self, cache):
         if cache is None:
@@ -167,29 +197,41 @@ class MLXLMCompatibleLanguageModel(nn.Module):
     def make_cache(self):
         if hasattr(self.base_model, "make_cache"):
             return self.base_model.make_cache()
-        if hasattr(self.base_model, "layers"):
-            return [KVCache() for _ in self.base_model.layers]
+        if self._cache_owner is not self.base_model and hasattr(
+            self._cache_owner, "make_cache"
+        ):
+            return self._cache_owner.make_cache()
+        if hasattr(self._cache_owner, "layers"):
+            return [KVCache() for _ in self._cache_owner.layers]
         # Some frontier VLM language towers keep cache ownership outside the tower
         # object. mlx_lm accepts an empty prompt-cache list for those runtimes.
         return []
 
     @property
     def layers(self):
-        return self.base_model.layers
+        return self._cache_owner.layers
 
     @property
     def head_dim(self):
-        return self.base_model.head_dim
+        return self._cache_owner.head_dim
 
     @property
     def n_kv_heads(self):
-        return self.base_model.n_kv_heads
+        return self._cache_owner.n_kv_heads
 
     def __getattr__(self, name: str):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            return getattr(object.__getattribute__(self, "base_model"), name)
+            base_model = object.__getattribute__(self, "base_model")
+            if hasattr(base_model, name):
+                return getattr(base_model, name)
+
+            cache_owner = object.__getattribute__(self, "_cache_owner")
+            if cache_owner is not base_model and hasattr(cache_owner, name):
+                return getattr(cache_owner, name)
+
+            raise
 
 
 def _fix_tokenizer_eos(tokenizer: TokenizerWrapper) -> None:
@@ -271,8 +313,7 @@ def _enforce_pinned_only_vlm_guard(model_id: str) -> None:
 
     allowed = ", ".join(sorted(pinned))
     raise ValueError(
-        "VLM model "
-        f"'{model_id}' is not allowed in pinned-only mode. Allowed: {allowed}"
+        f"VLM model '{model_id}' is not allowed in pinned-only mode. Allowed: {allowed}"
     )
 
 
@@ -313,6 +354,17 @@ def _should_use_vlm_runtime(config: dict[str, Any]) -> bool:
         return False
 
     return True
+
+
+def resolves_to_multimodal_runtime(model_id: str) -> bool:
+    """Return True when the resolved model config advertises multimodal runtime."""
+    resolved_model_id = resolve_runtime_model_id(model_id)
+    try:
+        model_path = get_model_path(resolved_model_id)
+        config = load_text_config(model_path)
+    except Exception:
+        return False
+    return _looks_multimodal_config(config)
 
 
 def _load_vlm_runtime(
@@ -500,14 +552,7 @@ class MLXModel:
 
     def reset_runtime_state(self) -> None:
         """Clear request-local transient state left behind by some VLM towers."""
-        candidate = getattr(self.model, "language_model", self.model)
-        cleared = False
-
-        for attr in ("_position_ids", "_rope_deltas"):
-            if hasattr(candidate, attr):
-                setattr(candidate, attr, None)
-                cleared = True
-
+        cleared = reset_request_local_runtime_state(self.model)
         if cleared:
             logger.debug("Cleared transient runtime state for %s", self.model_id)
 
