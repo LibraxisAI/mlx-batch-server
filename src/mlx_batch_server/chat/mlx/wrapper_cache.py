@@ -45,6 +45,15 @@ def normalize_runtime_key(
     )
 
 
+def serialize_runtime_key(key: WrapperCacheKey) -> dict[str, str | None]:
+    """Convert one runtime key into a structured operator-facing payload."""
+    return {
+        "model_id": key.model_id,
+        "adapter_path": key.adapter_path,
+        "draft_model_id": key.draft_model_id,
+    }
+
+
 @dataclass(frozen=True)
 class WrapperCacheKey:
     """Cache key for ChatGenerator instances.
@@ -403,6 +412,17 @@ class MLXWrapperCache:
         with self._lock:
             return any(key.model_id == normalized_model_id for key in self._cache)
 
+    def is_runtime_loaded(
+        self,
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> bool:
+        """Check if one exact runtime key is currently resident in cache."""
+        key = normalize_runtime_key(model_id, adapter_path, draft_model_id)
+        with self._lock:
+            return key in self._cache
+
     def get_loaded_models(self) -> list[str]:
         """Get list of currently loaded model IDs."""
         with self._lock:
@@ -526,6 +546,7 @@ class MLXWrapperCache:
                 "max_size": self._max_size,
                 "ttl_seconds": self._ttl_seconds,
                 "cached_keys": [str(key) for key in self._cache],
+                "runtime_keys": [serialize_runtime_key(key) for key in self._cache],
                 "vlm_cached_keys": self._loaded_multimodal_model_ids(),
                 "lru_order": [str(key) for key, _ in sorted_keys],  # Most recent first
                 "ttl_info": ttl_info,

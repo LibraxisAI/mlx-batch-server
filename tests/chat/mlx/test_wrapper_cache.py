@@ -468,6 +468,35 @@ class TestMLXWrapperCacheModelManagement:
         assert self.cache.is_model_loaded("model1") is False
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_is_runtime_loaded_tracks_exact_runtime_key(self, mock_create):
+        """Exact runtime checks must distinguish adapter and draft variants."""
+        mock_create.side_effect = [
+            MockChatGenerator("model1"),
+            MockChatGenerator("model1_adapter"),
+        ]
+
+        self.cache.get_wrapper("model1")
+        self.cache.get_wrapper("model1", adapter_path="/adapter")
+
+        assert self.cache.is_runtime_loaded("model1") is True
+        assert self.cache.is_runtime_loaded("model1", adapter_path="/adapter") is True
+        assert (
+            self.cache.is_runtime_loaded(
+                "model1",
+                adapter_path="/other-adapter",
+            )
+            is False
+        )
+        assert (
+            self.cache.is_runtime_loaded(
+                "model1",
+                adapter_path="/adapter",
+                draft_model_id="draft-a",
+            )
+            is False
+        )
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_get_loaded_models(self, mock_create):
         """Test getting list of loaded model IDs."""
         mock_create.side_effect = [

@@ -224,8 +224,13 @@ class ModelsService:
         # Lazy import to avoid circular dependencies and startup overhead
         from ...mlx.wrapper_cache import wrapper_cache
 
-        # Check if already loaded
-        already_loaded = wrapper_cache.is_model_loaded(model_id)
+        # Check exact runtime residency, not only the coarse model id. Operator-facing
+        # status must match the concrete cache key the runtime actually uses.
+        already_loaded = wrapper_cache.is_runtime_loaded(
+            model_id=model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
 
         # Load model (get_wrapper handles caching)
         wrapper_cache.get_wrapper(
