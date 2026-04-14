@@ -41,7 +41,10 @@ except ImportError:
 from ...core.config import get_settings
 from ...utils.logger import logger
 from ...utils.model_limits import extract_context_length
-from .runtime_aliases import resolve_runtime_model_id
+from .runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+)
 from .tools.chat_template import ChatTemplate
 
 
@@ -280,34 +283,18 @@ def _is_local_path(model_id: str) -> bool:
     )
 
 
-def _normalize_runtime_model_id(model_id: str) -> str:
-    """Normalize runtime IDs exactly like the shared residency cache."""
-    normalized = resolve_runtime_model_id(model_id).strip()
-    if normalized.startswith("~"):
-        normalized = str(Path(normalized).expanduser())
-
-    if (
-        "/" in normalized
-        and not normalized.startswith("/")
-        and not normalized.startswith(".")
-        and not normalized.startswith("~")
-    ):
-        return normalized.lower()
-    return normalized
-
-
 def _enforce_pinned_only_vlm_guard(model_id: str) -> None:
     """Reject foreign VLM loads when the runtime is configured for pinned-only."""
     settings = get_settings()
     pinned = {
-        _normalize_runtime_model_id(candidate)
+        normalize_runtime_model_id(candidate)
         for candidate in settings.get_pinned_models()
     }
 
     if settings.model_cache_max_size > 0 or not pinned:
         return
 
-    normalized = _normalize_runtime_model_id(model_id)
+    normalized = normalize_runtime_model_id(model_id)
     if normalized in pinned:
         return
 
@@ -358,7 +345,7 @@ def _should_use_vlm_runtime(config: dict[str, Any]) -> bool:
 
 def resolves_to_multimodal_runtime(model_id: str) -> bool:
     """Return True when the resolved model config advertises multimodal runtime."""
-    resolved_model_id = resolve_runtime_model_id(model_id)
+    resolved_model_id = normalize_runtime_model_id(model_id)
     try:
         model_path = get_model_path(resolved_model_id)
         config = load_text_config(model_path)
@@ -438,15 +425,10 @@ def load_mlx_model(
     if not model_id or not model_id.strip():
         raise ValueError("model_id cannot be empty")
 
-    model_id = resolve_runtime_model_id(model_id).strip()
+    model_id = normalize_runtime_model_id(model_id)
     if draft_model_id:
-        draft_model_id = resolve_runtime_model_id(draft_model_id).strip()
-
-    # Expand home directory if needed
-    if model_id.startswith("~"):
-        model_id = str(Path(model_id).expanduser())
-    if draft_model_id and draft_model_id.startswith("~"):
-        draft_model_id = str(Path(draft_model_id).expanduser())
+        draft_model_id = normalize_runtime_model_id(draft_model_id)
+    adapter_path = normalize_runtime_path(adapter_path)
 
     try:
         # Load configuration - use path directly for local models

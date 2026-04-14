@@ -24,10 +24,12 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..chat.mlx.runtime_aliases import resolve_runtime_model_id
+from ..chat.mlx.runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+)
 from ..utils.logger import logger
 
 if TYPE_CHECKING:
@@ -44,26 +46,11 @@ __all__ = [
 
 def _normalize_batch_model_id(model_id: str) -> str:
     """Canonicalize coordinator keys to the same runtime identity as the cache."""
-    normalized = resolve_runtime_model_id(model_id).strip()
-    if normalized.startswith("~"):
-        normalized = str(Path(normalized).expanduser())
-    if (
-        "/" in normalized
-        and not normalized.startswith("/")
-        and not normalized.startswith(".")
-        and not normalized.startswith("~")
-    ):
-        return normalized.lower()
-    return normalized
+    return normalize_runtime_model_id(model_id)
 
 
 def _normalize_batch_adapter_path(adapter_path: str | None) -> str | None:
-    if adapter_path is None:
-        return None
-    normalized = adapter_path.strip()
-    if normalized.startswith("~"):
-        normalized = str(Path(normalized).expanduser())
-    return normalized or None
+    return normalize_runtime_path(adapter_path)
 
 
 @dataclass
