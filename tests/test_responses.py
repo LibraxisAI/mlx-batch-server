@@ -452,6 +452,45 @@ class TestResponsesEndpoint:
 
 
 class TestResponsesRuntimeGuards:
+    def test_vision_finalize_events_keep_message_output_index(self):
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        sequence = 0
+
+        def make_event(event_type: str, data: dict):
+            nonlocal sequence
+            event = {"type": event_type, "sequence_number": sequence, **data}
+            sequence += 1
+            return event
+
+        events = adapter._vision_finalize_events(
+            make_event,
+            "resp_demo",
+            "demo-model",
+            "msg_demo",
+            "final answer",
+            output_index=1,
+            reasoning_item={
+                "id": "rs_demo",
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "thinking"}],
+            },
+        )
+
+        output_item_done = next(
+            event for event in events if event["type"] == "response.output_item.done"
+        )
+        assert output_item_done["output_index"] == 1
+
+        completed = next(
+            event for event in events if event["type"] == "response.completed"
+        )
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning",
+            "message",
+        ]
+
     @pytest.mark.asyncio
     async def test_streaming_text_with_previous_response_id_falls_back_to_single_lane(
         self,
