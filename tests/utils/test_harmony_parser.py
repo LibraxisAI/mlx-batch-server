@@ -98,12 +98,12 @@ class TestHarmonyStreamingParser:
 
         # Analysis channel
         parser.process_delta("<|channel|>analysis<|message|>")
-        event_type, clean = parser.process_delta("Thinking")
+        event_type, _clean = parser.process_delta("Thinking")
         assert event_type == "reasoning"
 
         # Switch to final
         parser.process_delta("<|channel|>final<|message|>")
-        event_type, clean = parser.process_delta("Answer")
+        event_type, _clean = parser.process_delta("Answer")
         assert event_type == "output"
 
     def test_accumulates_full_text(self):
@@ -140,11 +140,11 @@ class TestHarmonyStreamingParser:
         parser = HarmonyStreamingParser()
 
         # Send partial token
-        event_type, clean = parser.process_delta("Hello<|chan")
+        _event_type, clean = parser.process_delta("Hello<|chan")
         assert clean == "Hello"  # Partial token buffered
 
         # Complete the token
-        event_type, clean = parser.process_delta("nel|>final")
+        _event_type, clean = parser.process_delta("nel|>final")
         assert parser.current_channel == "final"
 
     def test_fragmented_channel_name(self):
@@ -178,7 +178,7 @@ class TestHarmonyStreamingParser:
         assert parser._awaiting_channel_name is True
 
         # Chunk 2: channel name + message marker
-        event_type, clean = parser.process_delta("final<|message|>Hello")
+        _event_type, clean = parser.process_delta("final<|message|>Hello")
         assert parser.current_channel == "final"
         assert parser._awaiting_channel_name is False
         # "Hello" should be the output

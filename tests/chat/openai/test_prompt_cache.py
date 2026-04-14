@@ -70,12 +70,12 @@ class TestPromptCache:
             )
 
             # Verify cache in second conversation
-            assert (
-                response.usage.prompt_tokens_details is not None
-            ), "Second conversation should have cached tokens"
-            assert (
-                response.usage.prompt_tokens_details.cached_tokens > 0
-            ), "Cached tokens count should be greater than 0"
+            assert response.usage.prompt_tokens_details is not None, (
+                "Second conversation should have cached tokens"
+            )
+            assert response.usage.prompt_tokens_details.cached_tokens > 0, (
+                "Cached tokens count should be greater than 0"
+            )
             logger.info(
                 f"Second conversation cached tokens: {response.usage.prompt_tokens_details.cached_tokens}"
             )

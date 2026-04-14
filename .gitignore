@@ -180,3 +180,5 @@ GEMINI.md
 mlx-batch-server.log
 /.ai-context
 /logs
+/*.md
+/.vibecrafted

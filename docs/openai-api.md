@@ -394,7 +394,7 @@ MLX_OMNI_LOG_LEVEL=debug mlx-batch-server
 
 For complete API specifications, see:
 - [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
-- [MLX Batch Server Source Code](https://github.com/LibraxisAI/mlx-batch-server) (fork of [madroidmaq/mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server))
+- [MLX Batch Server Source Code](https://github.com/madroidmaq/mlx-batch-server)
 
 ## 🤝 Contributing
 

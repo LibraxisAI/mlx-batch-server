@@ -3,7 +3,7 @@ import re
 from enum import Enum
 from typing import Any, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ToolType(str, Enum):
@@ -228,8 +228,7 @@ class ChatCompletionRequest(BaseModel):
     response_format: ResponseFormat | None = None
 
     # Allow any additional fields
-    class Config:
-        extra = "allow"  # This allows additional fields not defined in the model
+    model_config = ConfigDict(extra="allow")
 
     @field_validator("temperature")
     def validate_temperature(cls, v):

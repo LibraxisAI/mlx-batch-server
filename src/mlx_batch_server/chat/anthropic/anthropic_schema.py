@@ -7,7 +7,7 @@ following the official API specification.
 from enum import Enum
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # Basic Enums and Types
@@ -244,8 +244,7 @@ class MessagesRequest(BaseModel):
     service_tier: ServiceTier | None = None
 
     # Allow extra fields for compatibility
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
     @field_validator("temperature")
     def validate_temperature(cls, v):

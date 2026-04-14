@@ -210,4 +210,4 @@ except httpx.RequestError as e:
 ```
 
 ---
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders

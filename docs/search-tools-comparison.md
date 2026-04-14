@@ -264,4 +264,4 @@ loct routes --json | jq '.routes[] | select(.method=="POST")'
 
 ---
 
-*Created by M&K (c)2026 VetCoders*
+*Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders*
