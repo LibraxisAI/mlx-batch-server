@@ -92,6 +92,17 @@ def get_runtime_surface_attachments(model_id: str) -> list[str]:
         return sorted(_runtime_attachments.get(canonical_model_id, set()))
 
 
+def get_remaining_runtime_surfaces(
+    model_id: str,
+    releasing_surface: str | None = None,
+) -> list[str]:
+    """Return surfaces that would remain after one surface detaches."""
+    remaining = set(get_runtime_surface_attachments(model_id))
+    if releasing_surface is not None:
+        remaining.discard(_validate_surface(releasing_surface))
+    return sorted(remaining)
+
+
 def list_runtime_surface_attachments() -> dict[str, list[str]]:
     """Return a copy of all runtime surface attachments."""
     with _runtime_attachments_lock:

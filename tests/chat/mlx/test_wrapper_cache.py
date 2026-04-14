@@ -144,6 +144,32 @@ class TestMLXWrapperCache:
             self.cache.get_wrapper("broken_model")
         assert self.cache.get_cache_info()["cache_size"] == 0
 
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_attached_runtime_survives_lru_pressure(self, mock_create):
+        """Surface-retained VLM runtimes should not be silently evicted by LRU."""
+        cache = MLXWrapperCache(max_size=1)
+        mock_create.side_effect = [
+            MockChatGenerator("model-vlm", multimodal=True),
+            MockChatGenerator("model-b"),
+            MockChatGenerator("model-c"),
+        ]
+
+        cache.get_wrapper("model-vlm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+
+        cache.get_wrapper("model-b")
+        info = cache.get_cache_info()
+        assert info["cache_size"] == 2
+        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert any("model-b" in key for key in info["cached_keys"])
+
+        cache.get_wrapper("model-c")
+        info = cache.get_cache_info()
+        assert info["cache_size"] == 2
+        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert any("model-c" in key for key in info["cached_keys"])
+        assert all("model-b" not in key for key in info["cached_keys"])
+
 
 class TestMLXWrapperCacheThreadSafety:
     """Test thread safety of MLXWrapperCache."""
@@ -292,6 +318,23 @@ class TestMLXWrapperCacheTTL:
             info = ttl_lru_cache.get_cache_info()
             assert info["cache_size"] == 1
             assert any("model3" in key for key in info["cached_keys"])
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_ttl_does_not_expire_surface_attached_runtime(self, mock_create):
+        """TTL must not drop a runtime while a product surface still retains it."""
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+
+        self.cache.get_wrapper("model-vlm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "embeddings")
+
+        time.sleep(1.2)
+        info = self.cache.get_cache_info()
+
+        assert info["cache_size"] == 1
+        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["embeddings"]
 
 
 class TestMLXWrapperCacheEdgeCases:
