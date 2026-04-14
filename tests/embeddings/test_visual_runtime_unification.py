@@ -246,13 +246,15 @@ def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
 
     fake_model = SimpleNamespace(config=SimpleNamespace(image_token_id=777))
     fake_processor = SimpleNamespace(tokenizer=SimpleNamespace(image_token_id=888))
-    backend_calls: list[str] = []
+    backend_calls: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr(embedder_module, "get_model_path", lambda model_id: tmp_path)
     monkeypatch.setattr(
         embedder_module.wrapper_cache,
         "get_vlm_backend",
-        lambda model_id, **kwargs: backend_calls.append(model_id)
+        lambda model_id, **kwargs: backend_calls.append(
+            (model_id, kwargs.get("surface"))
+        )
         or (fake_model, fake_processor),
     )
     monkeypatch.setattr(
@@ -264,7 +266,7 @@ def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
     embedder = embedder_module.Qwen3VLEmbedder("LibraxisAI/Qwen3-VL-30B")
     embedder.load()
 
-    assert backend_calls == ["libraxisai/qwen3-vl-30b"]
+    assert backend_calls == [("libraxisai/qwen3-vl-30b", "visual")]
     assert embedder.model is None
     assert embedder.processor is None
     assert embedder._image_token_id == 777

@@ -118,7 +118,7 @@ def test_shared_vlm_text_embedder_resolves_alias_scoped_adapter(monkeypatch):
             "attention_mask": [[1]],
         }
     )
-    seen: list[tuple[str, str | None, str | None]] = []
+    seen: list[tuple[str, str | None, str | None, str | None]] = []
 
     runtime_aliases_module.clear_runtime_aliases()
     runtime_aliases_module.register_runtime_alias(
@@ -136,6 +136,7 @@ def test_shared_vlm_text_embedder_resolves_alias_scoped_adapter(monkeypatch):
                     model_id,
                     kwargs.get("adapter_path"),
                     kwargs.get("draft_model_id"),
+                    kwargs.get("surface"),
                 )
             )
             or (fake_model, fake_processor)
@@ -155,6 +156,6 @@ def test_shared_vlm_text_embedder_resolves_alias_scoped_adapter(monkeypatch):
     embedder.embed_text_pooled("hello")
 
     assert seen == [
-        ("libraxisai/qwen3-vl-30b", expanded_adapter_path, None),
+        ("libraxisai/qwen3-vl-30b", expanded_adapter_path, None, "embeddings"),
     ]
     runtime_aliases_module.clear_runtime_aliases()
