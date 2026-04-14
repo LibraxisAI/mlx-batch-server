@@ -6,6 +6,7 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
+from ..chat.mlx.model_types import reset_request_local_runtime_state
 from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 
 
@@ -134,6 +135,7 @@ class SharedVLMTextEmbedder:
     def embed_text_pooled(self, text: str) -> SharedTextEmbeddingResult:
         with wrapper_cache.vlm_execution(self.model_id):
             model, processor = self._get_backend()
+            reset_request_local_runtime_state(model)
             tokenizer = getattr(processor, "tokenizer", processor)
             inputs = self._tokenize_text(tokenizer, text)
 

@@ -62,3 +62,46 @@ def test_shared_vlm_text_embedder_pools_last_non_padding_token(monkeypatch):
         ("enter", "mlx-community/pixtral-12b-4bit"),
         ("exit", "mlx-community/pixtral-12b-4bit"),
     ]
+
+
+def test_shared_vlm_text_embedder_resets_nested_language_runtime_state(monkeypatch):
+    inner_model = SimpleNamespace(
+        _position_ids="stale-inner",
+        _rope_deltas="stale-inner",
+    )
+
+    def fake_embed_tokens(input_ids):
+        assert language_wrapper._position_ids is None
+        assert inner_model._position_ids is None
+        assert inner_model._rope_deltas is None
+        return mx.array(
+            [[[1.0, 0.0], [0.0, 2.0]]],
+            dtype=mx.float32,
+        )
+
+    inner_model.embed_tokens = fake_embed_tokens
+    inner_model.layers = [lambda hidden, position_ids=None: hidden]
+    inner_model.norm = lambda hidden: hidden
+
+    language_wrapper = SimpleNamespace(
+        model=inner_model,
+        _position_ids="stale-outer",
+    )
+    fake_model = SimpleNamespace(language_model=language_wrapper)
+    fake_processor = SimpleNamespace(
+        tokenizer=lambda text, return_tensors=None: {
+            "input_ids": [[1, 2]],
+            "attention_mask": [[1, 1]],
+        }
+    )
+
+    monkeypatch.setattr(
+        embedder_module.wrapper_cache,
+        "get_vlm_backend",
+        lambda model_id: (fake_model, fake_processor),
+    )
+
+    embedder = embedder_module.SharedVLMTextEmbedder("LibraxisAI/Qwen3-VL-30B")
+    result = embedder.embed_text_pooled("hello")
+
+    assert result.num_tokens == 2
