@@ -71,12 +71,30 @@ class EmbeddingsService:
         self._get_model(canonical_model_id)
         return already_loaded
 
-    def unload_model(self, model_id: str) -> bool:
+    def get_loaded_native_models(self) -> list[str]:
+        """Return non-shared embeddings model ids currently cached privately."""
+        return list(self._models.keys())
+
+    def clear_native_models(self) -> list[str]:
+        """Clear only the private embeddings cache, leaving shared VLM runtime alone."""
+        unloaded = list(self._models.keys())
+        if unloaded:
+            self._models.clear()
+            mx.clear_cache()
+        return unloaded
+
+    def get_shared_vlm_models(self) -> list[str]:
+        """Return canonical shared-runtime VLM model ids seen by the service."""
+        return sorted(self._shared_vlm_models)
+
+    def unload_model(self, model_id: str, *, release_runtime: bool = True) -> bool:
         """Unload a specific embeddings model. Returns True if it was loaded."""
         if self._should_use_shared_vlm_embeddings(model_id):
             canonical_model_id = self.canonicalize_model_id(model_id)
             was_loaded = canonical_model_id in self._shared_vlm_models
             self._shared_vlm_models.discard(canonical_model_id)
+            if not release_runtime:
+                return was_loaded
             unloaded = self._unload_shared_vlm_embedder(canonical_model_id)
             return was_loaded or bool(unloaded)
 
@@ -87,16 +105,14 @@ class EmbeddingsService:
             return True
         return False
 
-    def clear_models(self) -> list[str]:
+    def clear_models(self, *, release_runtime: bool = True) -> list[str]:
         """Unload all embeddings models and return the unloaded model IDs."""
-        unloaded = list(self._models.keys())
-        if unloaded:
-            self._models.clear()
-            mx.clear_cache()
-        shared_vlm_models = sorted(self._shared_vlm_models)
+        unloaded = self.clear_native_models()
+        shared_vlm_models = self.get_shared_vlm_models()
         self._shared_vlm_models.clear()
-        for model_id in shared_vlm_models:
-            self._unload_shared_vlm_embedder(model_id)
+        if release_runtime:
+            for model_id in shared_vlm_models:
+                self._unload_shared_vlm_embedder(model_id)
         return list(dict.fromkeys([*unloaded, *shared_vlm_models]))
 
     def _should_use_shared_vlm_embeddings(self, model_id: str) -> bool:
