@@ -171,6 +171,28 @@ class TestGetBatchCoordinator:
         assert coord1 is coord2
         assert coord1.model_id == expanded
 
+    def test_runtime_alias_with_adapter_reuses_exact_batch_lane(self):
+        """Alias-scoped adapter runtimes should converge on one batch coordinator."""
+        adapter_path = "~/adapters/frontier-lora"
+        expanded_adapter_path = str(Path(adapter_path).expanduser())
+        runtime_aliases_module.register_runtime_alias(
+            "frontier-vlm",
+            "LibraxisAI/Qwen3-VL-30B",
+            adapter_path=adapter_path,
+        )
+
+        coord1 = get_batch_coordinator(
+            "frontier-vlm",
+        )
+        coord2 = get_batch_coordinator(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path=expanded_adapter_path,
+        )
+
+        assert coord1 is coord2
+        assert coord1.model_id == "libraxisai/qwen3-vl-30b"
+        assert coord1.adapter_path == expanded_adapter_path
+
     def test_home_relative_adapter_path_reuses_canonical_coordinator(self):
         """Home-relative adapter paths should collapse to one batch lane."""
         home_relative = "~/adapters/frontier-lora"
