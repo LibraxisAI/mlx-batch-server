@@ -170,6 +170,38 @@ class TestMLXWrapperCache:
         assert any("model-c" in key for key in info["cached_keys"])
         assert all("model-b" not in key for key in info["cached_keys"])
 
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_runtime_is_cached_even_when_max_size_zero(self, mock_create):
+        """Surface-owned runtimes must stay resident even in pinned-only mode."""
+        cache = MLXWrapperCache(max_size=0)
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+
+        first = cache.get_wrapper("model-vlm", surface="visual")
+        second = cache.get_wrapper("model-vlm", surface="visual")
+
+        assert second is first
+        assert cache.get_cache_info()["cache_size"] == 1
+        assert cache.is_model_loaded("model-vlm") is True
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["visual"]
+        assert mock_create.call_count == 1
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_attachment_rolls_back_when_runtime_load_fails(self, mock_create):
+        """Failed retained loads must not leave a fake attachment behind."""
+        cache = MLXWrapperCache(max_size=0)
+        mock_create.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            cache.get_wrapper("model-vlm", surface="embeddings")
+
+        assert cache.get_cache_info()["cache_size"] == 0
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments("model-vlm")
+            == []
+        )
+
 
 class TestMLXWrapperCacheThreadSafety:
     """Test thread safety of MLXWrapperCache."""
