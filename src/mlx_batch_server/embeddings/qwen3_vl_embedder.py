@@ -14,6 +14,7 @@ from PIL import Image
 from safetensors import safe_open
 from transformers import AutoProcessor
 
+from ..chat.mlx.model_types import reset_request_local_runtime_state
 from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 from ..utils.logger import logger
 
@@ -380,6 +381,7 @@ class Qwen3VLEmbedder:
         self.load()
 
         model, processor = self._get_backend()
+        reset_request_local_runtime_state(model)
 
         tokenizer = getattr(self.tomoro_processor, "tokenizer", None)
         if tokenizer is None:
@@ -460,6 +462,7 @@ class Qwen3VLEmbedder:
 
         with wrapper_cache.vlm_execution(self.model_id):
             model, processor = self._get_backend()
+            reset_request_local_runtime_state(model)
 
             pil_image = self._decode_image(image)
             input_ids, pixel_values, image_grid_thw = self._prepare_image_inputs(

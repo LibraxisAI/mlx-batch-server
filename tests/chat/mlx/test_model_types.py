@@ -56,6 +56,48 @@ def test_vlm_language_tower_without_cache_metadata_returns_empty_cache():
     assert text_model.make_cache() == []
 
 
+def test_vlm_language_wrapper_uses_nested_model_cache_metadata():
+    inner_tower = SimpleNamespace(
+        layers=[object(), object()],
+        head_dim=16,
+        n_kv_heads=2,
+    )
+
+    class WrappedLanguageTower:
+        def __init__(self):
+            self.model = inner_tower
+
+        def __call__(self, inputs, cache=None, **kwargs):
+            del cache, kwargs
+            return SimpleNamespace(logits=inputs)
+
+    text_model = MLXLMCompatibleLanguageModel(WrappedLanguageTower())
+
+    assert len(text_model.make_cache()) == 2
+    assert text_model.layers == inner_tower.layers
+    assert text_model.head_dim == 16
+    assert text_model.n_kv_heads == 2
+
+
+def test_reset_request_local_runtime_state_clears_nested_language_model():
+    inner_tower = SimpleNamespace(
+        _position_ids="stale-inner",
+        _rope_deltas="stale-inner",
+    )
+    language_model = SimpleNamespace(
+        model=inner_tower,
+        _position_ids="stale-outer",
+    )
+    runtime = SimpleNamespace(language_model=language_model)
+
+    cleared = model_types_module.reset_request_local_runtime_state(runtime)
+
+    assert cleared is True
+    assert language_model._position_ids is None
+    assert inner_tower._position_ids is None
+    assert inner_tower._rope_deltas is None
+
+
 def test_load_mlx_model_rejects_non_pinned_vlm_in_pinned_only_mode(monkeypatch):
     monkeypatch.setenv("PINNED_MODELS", "mlx-community/Qwen3-VL-30B-A3B-Instruct-8bit")
     monkeypatch.setenv("MODEL_CACHE_MAX_SIZE", "0")
@@ -149,3 +191,34 @@ def test_load_mlx_model_allows_pinned_vlm_alias_in_pinned_only_mode(monkeypatch)
     assert loaded.model_id == "mlx-community/qwen3-vl-30b-a3b-instruct-8bit"
     assert loaded.processor is fake_processor
     assert loaded.supports_multimodal is True
+
+
+def test_resolves_to_multimodal_runtime_honors_alias(monkeypatch):
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "mlx-community/pixtral-12b-4bit",
+    )
+
+    monkeypatch.setattr(
+        model_types_module,
+        "get_model_path",
+        lambda model_id: Path("/tmp/fake-vlm")
+        if model_id == "mlx-community/pixtral-12b-4bit"
+        else Path("/tmp/other"),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "load_text_config",
+        lambda path: {
+            "model_type": "pixtral",
+            "vision_config": {"hidden_size": 1},
+        }
+        if path == Path("/tmp/fake-vlm")
+        else {"model_type": "llama"},
+    )
+
+    assert model_types_module.resolves_to_multimodal_runtime("frontier-vlm") is True
+    assert (
+        model_types_module.resolves_to_multimodal_runtime("mlx-community/llama-3.1-8b")
+        is False
+    )
