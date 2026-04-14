@@ -112,7 +112,12 @@ def get_attached_models(surface: str) -> list[str]:
         )
 
 
-def clear_runtime_surface_attachments() -> None:
-    """Clear all tracked runtime attachments (test helper)."""
+def clear_runtime_surface_attachments(model_id: str | None = None) -> None:
+    """Clear tracked runtime attachments globally or for one canonical model."""
     with _runtime_attachments_lock:
-        _runtime_attachments.clear()
+        if model_id is None:
+            _runtime_attachments.clear()
+            return
+
+        canonical_model_id = normalize_runtime_model_id(model_id)
+        _runtime_attachments.pop(canonical_model_id, None)
