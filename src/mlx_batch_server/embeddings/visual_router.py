@@ -14,6 +14,7 @@ from ..chat.mlx.runtime_attachments import (
     attach_runtime_surface,
     release_runtime_surface,
 )
+from ..chat.mlx.runtime_policy import endpoint_runtime_session
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 
@@ -128,67 +129,72 @@ async def create_visual_embeddings(request: VisualEmbeddingRequest) -> dict[str,
         )
 
     try:
-        embedder = _get_embedder(
-            request.model, request.projection_path, request.processor_id
-        )
-        response: dict[str, Any] = {
-            "object": "embedding_response",
-            "model": request.model,
-            "dim": embedder.embedding_dim,
-        }
-
-        if request.texts:
-            text_embeddings = []
-            for text in request.texts:
-                result = embedder.embed_text(text)
-                text_embeddings.append(
-                    {
-                        "embedding": embedder.to_numpy(result).tolist(),
-                        "num_tokens": result.num_tokens,
-                        "source_type": "text",
-                    }
-                )
-            response["text_embeddings"] = text_embeddings
-
-        if request.images:
-            image_embeddings = []
-            for img in request.images:
-                result = embedder.embed_image(img)
-                image_embeddings.append(
-                    {
-                        "embedding": embedder.to_numpy(result).tolist(),
-                        "num_tokens": result.num_tokens,
-                        "source_type": "image",
-                    }
-                )
-            response["image_embeddings"] = image_embeddings
-
-        if request.pdf_path:
-            pdf_embeddings = embedder.embed_pdf(
-                request.pdf_path, max_pages=request.max_pages
+        canonical_model_id = normalize_runtime_model_id(request.model)
+        async with endpoint_runtime_session(canonical_model_id):
+            embedder = _get_embedder(
+                request.model, request.projection_path, request.processor_id
             )
-            response["pdf_embeddings"] = [
-                {
-                    "page": i,
-                    "embedding": embedder.to_numpy(result).tolist(),
-                    "num_tokens": result.num_tokens,
-                    "source_type": result.source_type,
-                }
-                for i, result in enumerate(pdf_embeddings)
-            ]
+            response: dict[str, Any] = {
+                "object": "embedding_response",
+                "model": request.model,
+                "dim": embedder.embedding_dim,
+            }
 
-        if response["dim"] is None:
-            sample = (
-                (response.get("text_embeddings") or response.get("image_embeddings"))
-                or response.get("pdf_embeddings")
-                or [{}]
-            )[0]
-            if isinstance(sample.get("embedding"), list):
-                response["dim"] = (
-                    len(sample["embedding"][0]) if sample["embedding"] else None
+            if request.texts:
+                text_embeddings = []
+                for text in request.texts:
+                    result = embedder.embed_text(text)
+                    text_embeddings.append(
+                        {
+                            "embedding": embedder.to_numpy(result).tolist(),
+                            "num_tokens": result.num_tokens,
+                            "source_type": "text",
+                        }
+                    )
+                response["text_embeddings"] = text_embeddings
+
+            if request.images:
+                image_embeddings = []
+                for img in request.images:
+                    result = embedder.embed_image(img)
+                    image_embeddings.append(
+                        {
+                            "embedding": embedder.to_numpy(result).tolist(),
+                            "num_tokens": result.num_tokens,
+                            "source_type": "image",
+                        }
+                    )
+                response["image_embeddings"] = image_embeddings
+
+            if request.pdf_path:
+                pdf_embeddings = embedder.embed_pdf(
+                    request.pdf_path, max_pages=request.max_pages
                 )
+                response["pdf_embeddings"] = [
+                    {
+                        "page": i,
+                        "embedding": embedder.to_numpy(result).tolist(),
+                        "num_tokens": result.num_tokens,
+                        "source_type": result.source_type,
+                    }
+                    for i, result in enumerate(pdf_embeddings)
+                ]
 
-        return response
+            if response["dim"] is None:
+                sample = (
+                    (
+                        response.get("text_embeddings")
+                        or response.get("image_embeddings")
+                    )
+                    or response.get("pdf_embeddings")
+                    or [{}]
+                )[0]
+                if isinstance(sample.get("embedding"), list):
+                    response["dim"] = (
+                        len(sample["embedding"][0]) if sample["embedding"] else None
+                    )
+
+            return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
