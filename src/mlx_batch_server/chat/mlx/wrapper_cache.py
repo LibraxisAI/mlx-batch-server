@@ -23,8 +23,10 @@ from .runtime_aliases import (
     resolve_runtime_target,
 )
 from .runtime_attachments import (
+    attach_runtime_surface,
     clear_runtime_surface_attachments,
     get_runtime_surface_attachments,
+    release_runtime_surface,
 )
 
 
@@ -136,6 +138,14 @@ class MLXWrapperCache:
         """
         return self._is_pinned(key) or bool(
             get_runtime_surface_attachments(key.model_id)
+        )
+
+    def _should_cache_runtime(self, key: WrapperCacheKey) -> bool:
+        """Return True when one runtime must stay resident after creation."""
+        return (
+            self._is_pinned(key)
+            or self._max_size > 0
+            or bool(get_runtime_surface_attachments(key.model_id))
         )
 
     def _release_memory(
@@ -255,6 +265,7 @@ class MLXWrapperCache:
         model_id: str,
         adapter_path: str | None = None,
         draft_model_id: str | None = None,
+        surface: str | None = None,
     ) -> ChatGenerator:
         """Get or create ChatGenerator instance.
 
@@ -262,6 +273,7 @@ class MLXWrapperCache:
             model_id: Model name/path (HuggingFace model ID or local path)
             adapter_path: Optional path to LoRA adapter
             draft_model_id: Optional draft model name/path for speculative decoding
+            surface: Optional product surface requesting sticky residency
 
         Returns:
             Cached or newly created ChatGenerator instance
@@ -272,6 +284,11 @@ class MLXWrapperCache:
         """
         key = normalize_runtime_key(model_id, adapter_path, draft_model_id)
         normalized_model_id = key.model_id
+        attachment_state = (
+            attach_runtime_surface(key.model_id, surface)
+            if surface is not None
+            else None
+        )
 
         # Double-checked locking pattern for performance
         if key in self._cache:
@@ -309,8 +326,9 @@ class MLXWrapperCache:
                 )
 
                 # Pinned models must remain tracked even in max_size=0
-                # deployments. Non-pinned models respect max_size.
-                if self._is_pinned(key) or self._max_size > 0:
+                # deployments. Surface-retained runtimes must also stay cached,
+                # otherwise ownership/observability lies when max_size=0.
+                if self._should_cache_runtime(key):
                     self._cache[key] = wrapper
                     self._update_access_time(key)
                     logger.info(
@@ -325,6 +343,8 @@ class MLXWrapperCache:
 
                 return wrapper
             except Exception as e:
+                if attachment_state is not None and not attachment_state.was_attached:
+                    release_runtime_surface(key.model_id, attachment_state.surface)
                 logger.error(f"Failed to create ChatGenerator for {key}: {e}")
                 raise
 
@@ -458,6 +478,7 @@ class MLXWrapperCache:
         *,
         adapter_path: str | None = None,
         draft_model_id: str | None = None,
+        surface: str | None = None,
     ):
         """Return the shared multimodal backend from the cached wrapper runtime.
 
@@ -465,6 +486,7 @@ class MLXWrapperCache:
             model_id: Model name/path
             adapter_path: Optional adapter path tied to the resident runtime alias
             draft_model_id: Optional speculative draft runtime identity
+            surface: Optional product surface requesting sticky residency
 
         Returns:
             ``(model, processor)`` tuple from the resident VLM runtime
@@ -473,6 +495,7 @@ class MLXWrapperCache:
             model_id=model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
+            surface=surface,
         )
         if (
             not getattr(wrapper.model, "supports_multimodal", False)
