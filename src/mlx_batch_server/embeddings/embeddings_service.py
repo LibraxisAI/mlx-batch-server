@@ -10,6 +10,7 @@ from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..chat.mlx.runtime_attachments import (
     attach_runtime_surface,
     get_attached_models,
+    get_attached_runtime_targets,
     release_runtime_surface,
 )
 from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
@@ -27,6 +28,7 @@ class EmbeddingsService:
         # Qwen3-VL embeddings reuse the shared visual/VLM runtime instead of
         # loading a second text-only fallback into a private cache.
         self._shared_vlm_models: set[str] = set()
+        self._shared_vlm_runtime_keys: set[tuple[str, str | None, str | None]] = set()
         # Default encoder for token counting
         try:
             self._default_tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -43,6 +45,20 @@ class EmbeddingsService:
     def canonicalize_model_id(self, model_id: str) -> str:
         """Resolve aliases and normalize remote IDs for stable cache keys."""
         return normalize_model_id(resolve_runtime_target(model_id).model_id)
+
+    @staticmethod
+    def _shared_runtime_key(
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        return (target.model_id, target.adapter_path, target.draft_model_id)
 
     def _get_model(self, model_id: str) -> tuple[Any, Any]:
         """Get or load a model based on its ID"""
@@ -73,8 +89,13 @@ class EmbeddingsService:
                 adapter_path=adapter_path,
                 draft_model_id=draft_model_id,
             )
-            canonical_model_id = runtime_target.model_id
-            already_loaded = canonical_model_id in self._shared_vlm_models
+            runtime_key = (
+                runtime_target.model_id,
+                runtime_target.adapter_path,
+                runtime_target.draft_model_id,
+            )
+            canonical_model_id = runtime_key[0]
+            already_loaded = runtime_key in self._shared_vlm_runtime_keys
             if not already_loaded:
                 runtime_kwargs: dict[str, str] = {}
                 if runtime_target.adapter_path is not None:
@@ -83,6 +104,7 @@ class EmbeddingsService:
                     runtime_kwargs["draft_model_id"] = runtime_target.draft_model_id
                 self._get_shared_vlm_embedder(canonical_model_id, **runtime_kwargs)
                 self._shared_vlm_models.add(canonical_model_id)
+                self._shared_vlm_runtime_keys.add(runtime_key)
             return already_loaded
 
         canonical_model_id = self.canonicalize_model_id(model_id)
@@ -106,20 +128,60 @@ class EmbeddingsService:
         """Return canonical shared-runtime VLM model ids seen by the service."""
         return sorted(self._shared_vlm_models)
 
+    def get_shared_vlm_runtime_keys(self) -> list[tuple[str, str | None, str | None]]:
+        """Return exact shared-runtime VLM keys currently tracked by embeddings."""
+        return sorted(self._shared_vlm_runtime_keys)
+
     def unload_model(self, model_id: str, *, release_runtime: bool = True) -> bool:
         """Unload a specific embeddings model. Returns True if it was loaded."""
         if self._should_use_shared_vlm_embeddings(model_id):
             canonical_model_id = self.canonicalize_model_id(model_id)
-            was_loaded = canonical_model_id in self._shared_vlm_models
-            self._shared_vlm_models.discard(canonical_model_id)
-            attachment_state = release_runtime_surface(
-                canonical_model_id,
-                "embeddings",
+            runtime_keys = {
+                key
+                for key in self._shared_vlm_runtime_keys
+                if key[0] == canonical_model_id
+            }
+            was_loaded = (
+                bool(runtime_keys) or canonical_model_id in self._shared_vlm_models
             )
-            if not release_runtime or attachment_state.remaining_surfaces:
-                return was_loaded or attachment_state.was_attached
-            unloaded = self._unload_shared_vlm_embedder(canonical_model_id)
-            return was_loaded or bool(unloaded)
+            self._shared_vlm_runtime_keys = {
+                key
+                for key in self._shared_vlm_runtime_keys
+                if key[0] != canonical_model_id
+            }
+            if not any(
+                key[0] == canonical_model_id for key in self._shared_vlm_runtime_keys
+            ):
+                self._shared_vlm_models.discard(canonical_model_id)
+
+            unloaded_any = False
+            attachment_found = False
+            runtime_targets = runtime_keys or {
+                self._shared_runtime_key(canonical_model_id)
+            }
+
+            for (
+                runtime_model_id,
+                runtime_adapter_path,
+                runtime_draft_model_id,
+            ) in sorted(runtime_targets):
+                attachment_state = release_runtime_surface(
+                    runtime_model_id,
+                    "embeddings",
+                    adapter_path=runtime_adapter_path,
+                    draft_model_id=runtime_draft_model_id,
+                )
+                attachment_found = attachment_found or attachment_state.was_attached
+                if not release_runtime or attachment_state.remaining_surfaces:
+                    continue
+                unloaded = self._unload_shared_vlm_embedder(
+                    runtime_model_id,
+                    adapter_path=runtime_adapter_path,
+                    draft_model_id=runtime_draft_model_id,
+                )
+                unloaded_any = unloaded_any or bool(unloaded)
+
+            return was_loaded or attachment_found or unloaded_any
 
         canonical_model_id = self.canonicalize_model_id(model_id)
         if canonical_model_id in self._models:
@@ -135,10 +197,38 @@ class EmbeddingsService:
             set(self.get_shared_vlm_models()).union(get_attached_models("embeddings"))
         )
         self._shared_vlm_models.clear()
-        for model_id in shared_vlm_models:
-            attachment_state = release_runtime_surface(model_id, "embeddings")
+        runtime_targets = {
+            *{
+                resolve_runtime_target(
+                    model_id,
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                )
+                for model_id, adapter_path, draft_model_id in self._shared_vlm_runtime_keys
+            },
+            *get_attached_runtime_targets("embeddings"),
+        }
+        self._shared_vlm_runtime_keys.clear()
+        for target in sorted(
+            runtime_targets,
+            key=lambda target: (
+                target.model_id,
+                target.adapter_path or "",
+                target.draft_model_id or "",
+            ),
+        ):
+            attachment_state = release_runtime_surface(
+                target.model_id,
+                "embeddings",
+                adapter_path=target.adapter_path,
+                draft_model_id=target.draft_model_id,
+            )
             if release_runtime and not attachment_state.remaining_surfaces:
-                self._unload_shared_vlm_embedder(model_id)
+                self._unload_shared_vlm_embedder(
+                    target.model_id,
+                    adapter_path=target.adapter_path,
+                    draft_model_id=target.draft_model_id,
+                )
         return list(dict.fromkeys([*unloaded, *shared_vlm_models]))
 
     def _should_use_shared_vlm_embeddings(self, model_id: str) -> bool:
@@ -167,12 +257,28 @@ class EmbeddingsService:
             draft_model_id=draft_model_id,
         )
         embedder.load()
-        attach_runtime_surface(model_id, "embeddings")
+        attach_runtime_surface(
+            model_id,
+            "embeddings",
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         return embedder
 
-    def _unload_shared_vlm_embedder(self, model_id: str) -> list[str]:
+    def _unload_shared_vlm_embedder(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> list[str]:
         """Release the shared VLM runtime backing multimodal text embeddings."""
-        return wrapper_cache.unload_vlm_model(model_id)
+        unload_kwargs: dict[str, str] = {}
+        if adapter_path is not None:
+            unload_kwargs["adapter_path"] = adapter_path
+        if draft_model_id is not None:
+            unload_kwargs["draft_model_id"] = draft_model_id
+        return wrapper_cache.unload_vlm_model(model_id, **unload_kwargs)
 
     def _count_tokens(self, text: str | list[str]) -> int:
         """Count tokens in input text"""
