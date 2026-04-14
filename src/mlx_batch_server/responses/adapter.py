@@ -11,6 +11,7 @@ Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -42,6 +43,11 @@ from ..utils.harmony_parser import (
     parse_reasoning_like_output,
 )
 from ..utils.logger import logger
+from ..utils.video_loader import build_video_prompt_and_inputs
+from ..vision.vlm_batch import (
+    get_vlm_batch_coordinator,
+    get_vlm_stream_coordinator,
+)
 from .normalizer import (
     collect_system_preamble,
     has_media_content,
@@ -59,6 +65,30 @@ from .schema import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+try:  # Optional dependency for multimodal lanes.
+    from mlx_vlm import apply_chat_template as _mlx_vlm_apply_chat_template
+except Exception as exc:  # pragma: no cover - optional dependency
+    _mlx_vlm_apply_chat_template = None
+    _mlx_vlm_apply_chat_template_error = exc
+else:  # pragma: no cover - exercised indirectly
+    _mlx_vlm_apply_chat_template_error = None
+
+try:  # Optional dependency for multimodal non-stream generation.
+    from mlx_vlm.generate import generate as _mlx_vlm_generate
+except Exception as exc:  # pragma: no cover - optional dependency
+    _mlx_vlm_generate = None
+    _mlx_vlm_generate_error = exc
+else:  # pragma: no cover - exercised indirectly
+    _mlx_vlm_generate_error = None
+
+try:  # Optional dependency for multimodal streaming generation.
+    from mlx_vlm.generate import stream_generate as _mlx_vlm_stream_generate
+except Exception as exc:  # pragma: no cover - optional dependency
+    _mlx_vlm_stream_generate = None
+    _mlx_vlm_stream_generate_error = exc
+else:  # pragma: no cover - exercised indirectly
+    _mlx_vlm_stream_generate_error = None
 
 # ChatML special tokens to filter from non-Harmony model outputs
 _CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
@@ -136,6 +166,26 @@ class ResponsesAdapter:
         settings = get_settings()
         return settings.enable_batch_inference
 
+    def _should_use_vlm_batch(
+        self,
+        normalised_body: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> bool:
+        """Return True when this vision request is eligible for the VLM batch lane."""
+        settings = get_settings()
+        enabled = (
+            settings.vlm_stream_batch_enabled if stream else settings.vlm_batch_enabled
+        )
+        if not enabled:
+            return False
+
+        if self._has_video_content(normalised_body):
+            return False
+
+        images = self._extract_image_inputs(normalised_body)
+        return len(images) == 1
+
     def _multimodal_validation_error(
         self,
         normalised_body: dict[str, Any],
@@ -203,6 +253,30 @@ class ResponsesAdapter:
     def _get_vlm_backend(self, model_id: str) -> tuple[Any, Any]:
         """Load or reuse a vision-language model (via unified wrapper_cache)."""
         return wrapper_cache.get_vlm_backend(model_id)
+
+    def _require_vlm_chat_template(self):
+        if _mlx_vlm_apply_chat_template is None:
+            raise RuntimeError(
+                "mlx-vlm is required for vision responses: "
+                f"{_mlx_vlm_apply_chat_template_error}"
+            )
+        return _mlx_vlm_apply_chat_template
+
+    def _require_vlm_generate(self):
+        if _mlx_vlm_generate is None:
+            raise RuntimeError(
+                "mlx-vlm is required for vision responses: "
+                f"{_mlx_vlm_generate_error}"
+            )
+        return _mlx_vlm_generate
+
+    def _require_vlm_stream_generate(self):
+        if _mlx_vlm_stream_generate is None:
+            raise RuntimeError(
+                "mlx-vlm is required for vision responses: "
+                f"{_mlx_vlm_stream_generate_error}"
+            )
+        return _mlx_vlm_stream_generate
 
     def _decode_base64_image(self, data: str) -> Image.Image:
         """Decode a base64 or data URL image into a PIL image."""
@@ -471,8 +545,8 @@ class ResponsesAdapter:
             )
 
         try:
-            from mlx_vlm import apply_chat_template
-        except Exception as exc:
+            apply_chat_template = self._require_vlm_chat_template()
+        except RuntimeError as exc:
             return (
                 None,
                 None,
@@ -488,10 +562,6 @@ class ResponsesAdapter:
         kwargs = self._vlm_generation_kwargs(normalised_body)
 
         if videos:
-            from mlx_batch_server.utils.video_loader import (
-                build_video_prompt_and_inputs,
-            )
-
             text_prompt = self._extract_text_content(
                 normalised_body.get("input", [{}])[-1].get("content")
             )
@@ -956,11 +1026,46 @@ class ResponsesAdapter:
             )
             return await self._generate_text(model_id, normalised_body, request_model)
 
-        try:
-            from mlx_vlm import apply_chat_template
-            from mlx_vlm.generate import generate as vlm_generate
-        except Exception as exc:
-            raise RuntimeError("mlx-vlm is required for vision responses") from exc
+        if self._should_use_vlm_batch(normalised_body, stream=False):
+            settings = get_settings()
+            coordinator = get_vlm_batch_coordinator(
+                model_id=model_id,
+                batch_window_ms=settings.vlm_batch_window_ms,
+                max_batch_size=settings.vlm_max_batch_size,
+                group_by_shape=settings.vlm_batch_group_by_shape,
+            )
+            result = await coordinator.submit_request(
+                messages=self._build_vlm_messages(normalised_body),
+                images=images,
+                max_tokens=normalised_body.get("max_output_tokens")
+                or normalised_body.get("max_tokens"),
+                temperature=normalised_body.get("temperature"),
+                top_p=normalised_body.get("top_p"),
+            )
+
+            content_text = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
+            parsed = parse_reasoning_like_output(content_text)
+            output_items = build_text_output(
+                parsed["final_text"],
+                parsed["reasoning"],
+            )
+
+            return ResponseResponse(
+                id=f"resp_{uuid.uuid4().hex}",
+                created_at=int(time.time()),
+                model=response_model,
+                status=ResponseStatus.COMPLETED,
+                output=output_items,
+                usage=ResponseUsage(
+                    input_tokens=result.prompt_tokens,
+                    output_tokens=result.generation_tokens,
+                    total_tokens=result.total_tokens,
+                ),
+                _provider="mlx-batch-server",
+            )
+
+        apply_chat_template = self._require_vlm_chat_template()
+        vlm_generate = self._require_vlm_generate()
 
         model, processor = self._get_vlm_backend(model_id)
         gen_kwargs = self._vlm_generation_kwargs(normalised_body)
@@ -968,10 +1073,6 @@ class ResponsesAdapter:
         with wrapper_cache.vlm_execution(model_id):
             if videos:
                 # --- Video path: use mlx-vlm video pipeline ---
-                from mlx_batch_server.utils.video_loader import (
-                    build_video_prompt_and_inputs,
-                )
-
                 text_prompt = self._extract_text_content(
                     normalised_body.get("input", [{}])[-1].get("content")
                 )
@@ -1058,30 +1159,6 @@ class ResponsesAdapter:
         for event in self._vision_start_events(make_event, response_obj):
             yield event
 
-        try:
-            from mlx_vlm.generate import (
-                stream_generate as vlm_stream_generate,
-            )
-        except Exception as exc:
-            yield make_event(
-                "error",
-                {
-                    "error": {
-                        "message": f"mlx-vlm is required for vision responses: {exc}",
-                        "code": "internal_error",
-                    }
-                },
-            )
-            return
-
-        model, processor, prompt, images, kwargs = self._prepare_vlm_stream_request(
-            model_id,
-            normalised_body,
-        )
-        if model is None:
-            yield make_event("error", {"error": kwargs})
-            return
-
         reasoning_parser = ReasoningStreamingParser(assume_initial_reasoning=True)
         reasoning_text_parts: list[str] = []
         output_text_parts: list[str] = []
@@ -1089,75 +1166,121 @@ class ResponsesAdapter:
         reasoning_done_emitted = False
         message_item_emitted = False
 
-        with wrapper_cache.vlm_execution(model_id):
-            for result in vlm_stream_generate(
-                model,
-                processor,
-                prompt,
-                image=images or None,
-                **kwargs,
-            ):
-                delta = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
-                if not delta:
+        if self._should_use_vlm_batch(normalised_body, stream=True):
+            settings = get_settings()
+            stream_results = get_vlm_stream_coordinator(
+                model_id=model_id,
+                batch_window_ms=settings.vlm_batch_window_ms,
+                max_batch_size=settings.vlm_max_batch_size,
+            ).stream_request(
+                messages=self._build_vlm_messages(normalised_body),
+                images=self._extract_image_inputs(normalised_body),
+                max_tokens=normalised_body.get("max_output_tokens")
+                or normalised_body.get("max_tokens"),
+                temperature=normalised_body.get("temperature"),
+                top_p=normalised_body.get("top_p"),
+            )
+        else:
+            try:
+                vlm_stream_generate = self._require_vlm_stream_generate()
+            except RuntimeError as exc:
+                yield make_event(
+                    "error",
+                    {
+                        "error": {
+                            "message": (
+                                "mlx-vlm is required for vision responses: " f"{exc}"
+                            ),
+                            "code": "internal_error",
+                        }
+                    },
+                )
+                return
+
+            model, processor, prompt, images, kwargs = self._prepare_vlm_stream_request(
+                model_id,
+                normalised_body,
+            )
+            if model is None:
+                yield make_event("error", {"error": kwargs})
+                return
+
+            async def _direct_stream_results():
+                with wrapper_cache.vlm_execution(model_id):
+                    for result in vlm_stream_generate(
+                        model,
+                        processor,
+                        prompt,
+                        image=images or None,
+                        **kwargs,
+                    ):
+                        yield result
+                        await asyncio.sleep(0)
+
+            stream_results = _direct_stream_results()
+
+        async for result in stream_results:
+            delta = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
+            if not delta and getattr(result, "finish_reason", None) is None:
+                continue
+
+            for event_type, clean_text in reasoning_parser.process_delta(delta):
+                if not clean_text:
                     continue
 
-                for event_type, clean_text in reasoning_parser.process_delta(delta):
-                    if not clean_text:
-                        continue
-
-                    if event_type == "reasoning":
-                        if not reasoning_item_emitted:
-                            for event in self._reasoning_start_events(
-                                make_event,
-                                reasoning_item_id,
-                                output_index=0,
-                            ):
-                                yield event
-                            reasoning_item_emitted = True
-
-                        reasoning_text_parts.append(clean_text)
-                        yield make_event(
-                            "response.reasoning_summary_text.delta",
-                            {
-                                "item_id": reasoning_item_id,
-                                "output_index": 0,
-                                "delta": clean_text,
-                            },
-                        )
-                        continue
-
-                    if (
-                        reasoning_item_emitted
-                        and not reasoning_done_emitted
-                        and reasoning_text_parts
-                    ):
-                        for event in self._reasoning_done_events(
+                if event_type == "reasoning":
+                    if not reasoning_item_emitted:
+                        for event in self._reasoning_start_events(
                             make_event,
                             reasoning_item_id,
-                            "".join(reasoning_text_parts),
                             output_index=0,
                         ):
                             yield event
-                        reasoning_done_emitted = True
+                        reasoning_item_emitted = True
 
-                    if not message_item_emitted:
-                        for event in self._vision_message_start_events(
-                            make_event,
-                            message_item_id,
-                            output_index=1 if reasoning_text_parts else 0,
-                        ):
-                            yield event
-                        message_item_emitted = True
-
-                    output_text_parts.append(clean_text)
+                    reasoning_text_parts.append(clean_text)
                     yield make_event(
-                        "response.output_text.delta",
+                        "response.reasoning_summary_text.delta",
                         {
-                            "output_index": 1 if reasoning_text_parts else 0,
-                            "content_index": 0,
+                            "item_id": reasoning_item_id,
+                            "output_index": 0,
                             "delta": clean_text,
                         },
                     )
+                    continue
+
+                if (
+                    reasoning_item_emitted
+                    and not reasoning_done_emitted
+                    and reasoning_text_parts
+                ):
+                    for event in self._reasoning_done_events(
+                        make_event,
+                        reasoning_item_id,
+                        "".join(reasoning_text_parts),
+                        output_index=0,
+                    ):
+                        yield event
+                    reasoning_done_emitted = True
+
+                if not message_item_emitted:
+                    for event in self._vision_message_start_events(
+                        make_event,
+                        message_item_id,
+                        output_index=1 if reasoning_text_parts else 0,
+                    ):
+                        yield event
+                    message_item_emitted = True
+
+                output_text_parts.append(clean_text)
+                yield make_event(
+                    "response.output_text.delta",
+                    {
+                        "output_index": 1 if reasoning_text_parts else 0,
+                        "content_index": 0,
+                        "delta": clean_text,
+                    },
+                )
 
         parsed = parse_reasoning_like_output(
             reasoning_parser.full_text,
