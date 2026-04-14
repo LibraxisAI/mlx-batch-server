@@ -267,8 +267,7 @@ class EmbeddingsService:
                     logger.error(f"Error generating embedding: {e!s}", exc_info=True)
                     raise RuntimeError(f"Failed to generate embedding: {e!s}") from e
         finally:
-            if shared_vlm_embedder is None:
-                mx.clear_cache()
+            mx.clear_cache()
 
         # Create the full response
         response = EmbeddingResponse(
