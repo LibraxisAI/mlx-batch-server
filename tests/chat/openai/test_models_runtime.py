@@ -12,6 +12,7 @@ from mlx_batch_server.chat.openai.models.schema import (
     ModelLoadRequest,
     ModelUnloadRequest,
 )
+from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
 from mlx_batch_server.embeddings import visual_router as visual_router_module
 from mlx_batch_server.responses import adapter as responses_adapter_module
 
@@ -43,7 +44,7 @@ class TestLoadedModelsRuntime:
         monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
             "get_loaded_models",
-            lambda: ["model-a"],
+            lambda: ["model-a", "model-b"],
         )
         monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
@@ -67,10 +68,14 @@ class TestLoadedModelsRuntime:
         assert payload["data"][0]["backends"] == ["wrapper"]
         assert payload["data"][0]["runtime"]["active_lanes"] == ["text"]
         assert payload["data"][0]["runtime"]["text"]["batch_resident"] is True
-        assert payload["data"][1]["backends"] == ["vlm"]
-        assert payload["data"][1]["runtime"]["active_lanes"] == ["multimodal"]
+        assert payload["data"][1]["backends"] == ["wrapper"]
+        assert payload["data"][1]["runtime"]["active_lanes"] == [
+            "text",
+            "multimodal",
+        ]
+        assert payload["data"][1]["runtime"]["text"]["batch_resident"] is False
         assert payload["coordinators"] == {"llm_batch": ["model-a"]}
-        assert payload["caches"] == {"wrapper": ["model-a"], "vlm": ["model-b"]}
+        assert payload["caches"] == {"wrapper": ["model-a", "model-b"]}
         assert payload["cache_info"] == {"cache_size": 1}
         assert payload["runtime_contract"]["text"]["tool_capable"] is True
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
@@ -114,7 +119,7 @@ class TestLoadedModelsRuntime:
         assert len(payload["data"]) == 1
         runtime_entry = payload["data"][0]
         assert runtime_entry["id"] == "model-a"
-        assert runtime_entry["backends"] == ["wrapper", "vlm"]
+        assert runtime_entry["backends"] == ["wrapper"]
         assert runtime_entry["runtime"]["product_residency"] == "single_model"
         assert runtime_entry["runtime"]["active_lanes"] == ["text", "multimodal"]
         assert runtime_entry["runtime"]["text"]["resident"] is True
@@ -150,7 +155,7 @@ class TestLoadedModelsRuntime:
         assert len(payload["data"]) == 1
         entry = payload["data"][0]
         assert entry["id"] == "libraxisai/gpt-oss-120b-mlx-mxfp4"
-        assert entry["backends"] == ["wrapper", "vlm"]
+        assert entry["backends"] == ["wrapper"]
         assert entry["runtime"]["text"]["batch_resident"] is True
 
     @pytest.mark.asyncio
@@ -198,7 +203,6 @@ class TestLoadedModelsRuntime:
         assert payload["loaded_models"] == ["model-a"]
         assert payload["loaded_models_by_backend"] == {
             "wrapper": ["model-a"],
-            "vlm": ["model-a"],
             "batch": ["model-a"],
         }
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
@@ -353,7 +357,6 @@ class TestUnloadRuntime:
         assert response.unloaded_models == ["model-a"]
         assert response.cache_info["loaded_models_by_backend"] == {
             "wrapper": [],
-            "vlm": [],
             "batch": [],
         }
 
@@ -610,6 +613,64 @@ class TestLoadRuntime:
         assert response.cache_info["loaded_models_count"] == 1
 
     @pytest.mark.asyncio
+    async def test_load_embeddings_qwen3_vl_uses_shared_runtime_session(
+        self, monkeypatch
+    ):
+        state = {"switch_called": False, "loaded_model": None}
+
+        @asynccontextmanager
+        async def fake_runtime_session(
+            model_id, adapter_path=None, draft_model_id=None
+        ):
+            assert model_id == "libraxisai/qwen3-vl-30b"
+            assert adapter_path is None
+            assert draft_model_id is None
+            state["switch_called"] = True
+            yield {
+                "switched": True,
+                "evicted_models": ["model-old"],
+            }
+
+        class FakeEmbeddingsService:
+            def uses_shared_vlm_runtime(self, model_id):
+                return True
+
+            def canonicalize_model_id(self, model_id):
+                return "libraxisai/qwen3-vl-30b"
+
+            def load_model(self, model_id):
+                assert state["switch_called"] is True
+                state["loaded_model"] = model_id
+                return False
+
+        monkeypatch.setattr(
+            models_module,
+            "endpoint_runtime_session",
+            fake_runtime_session,
+        )
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            lambda: FakeEmbeddingsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.load_model(
+            ModelLoadRequest(model="LibraxisAI/Qwen3-VL-30B", task="embeddings")
+        )
+
+        assert response.id == "libraxisai/qwen3-vl-30b"
+        assert response.task == "embeddings"
+        assert response.status == "loaded"
+        assert state["loaded_model"] == "libraxisai/qwen3-vl-30b"
+        assert "after evicting 1 prior model(s): model-old" in response.message
+        assert response.cache_info["loaded_models_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_unload_visual_returns_shared_runtime_cache_info(self, monkeypatch):
         monkeypatch.setattr(
             visual_router_module,
@@ -629,4 +690,38 @@ class TestLoadRuntime:
         assert response.task == "visual"
         assert response.status == "unloaded"
         assert response.unloaded_models == ["model-vlm"]
+        assert response.cache_info["loaded_models_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unload_embeddings_qwen3_vl_returns_shared_runtime_cache_info(
+        self, monkeypatch
+    ):
+        class FakeEmbeddingsService:
+            def uses_shared_vlm_runtime(self, model_id):
+                return True
+
+            def canonicalize_model_id(self, model_id):
+                return "libraxisai/qwen3-vl-30b"
+
+            def unload_model(self, model_id):
+                return True
+
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            lambda: FakeEmbeddingsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 0},
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="LibraxisAI/Qwen3-VL-30B", task="embeddings")
+        )
+
+        assert response.task == "embeddings"
+        assert response.status == "unloaded"
+        assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
         assert response.cache_info["loaded_models_count"] == 0

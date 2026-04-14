@@ -149,20 +149,23 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     wrapper_loaded_set = set(wrapper_loaded)
     vlm_loaded_set = set(vlm_loaded)
     batch_loaded_set = set(batch_loaded)
+    shared_wrapper_residency = sorted(wrapper_loaded_set | vlm_loaded_set)
 
     data = []
-    for model_id in sorted(wrapper_loaded_set | vlm_loaded_set | batch_loaded_set):
-        text_resident = model_id in wrapper_loaded_set or model_id in batch_loaded_set
+    for model_id in sorted(set(shared_wrapper_residency).union(batch_loaded_set)):
         multimodal_resident = model_id in vlm_loaded_set
+        text_resident = (
+            model_id in wrapper_loaded_set
+            or model_id in batch_loaded_set
+            or multimodal_resident
+        )
         active_lanes = []
         if text_resident:
             active_lanes.append("text")
         if multimodal_resident:
             active_lanes.append("multimodal")
 
-        backends = []
-        if text_resident or multimodal_resident:
-            backends.append("wrapper")
+        backends = ["wrapper"] if (text_resident or multimodal_resident) else []
 
         data.append(
             {
@@ -194,7 +197,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
         "data": data,
         "loaded_models": [entry["id"] for entry in data],
         "coordinators": {"llm_batch": batch_loaded},
-        "caches": {"wrapper": wrapper_loaded},
+        "caches": {"wrapper": shared_wrapper_residency},
         "cache_info": cache_info,
         "runtime_contract": contract,
     }
@@ -446,7 +449,7 @@ async def _load_llm_model(request: ModelLoadRequest) -> ModelLoadResponse:
 
 @router.post("/models/load", response_model=ModelLoadResponse)
 @router.post("/v1/models/load", response_model=ModelLoadResponse)
-async def load_model(  # noqa: PLR0912
+async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
     request: ModelLoadRequest,
 ) -> ModelLoadResponse:
     """
@@ -468,6 +471,46 @@ async def load_model(  # noqa: PLR0912
             from ....embeddings.embeddings_service import get_embeddings_service
 
             service = get_embeddings_service()
+            if service.uses_shared_vlm_runtime(request.model):
+                canonical_model_id = service.canonicalize_model_id(request.model)
+                alias_message = ""
+                if request.alias:
+                    canonical_model_id = register_runtime_alias(
+                        request.alias, canonical_model_id
+                    )
+                    alias_message = (
+                        f" (runtime alias registered: {request.alias} -> "
+                        f"{canonical_model_id})"
+                    )
+
+                async with endpoint_runtime_session(
+                    model_id=canonical_model_id
+                ) as switch_result:
+                    already_loaded = service.load_model(canonical_model_id)
+
+                message = (
+                    f"Embeddings model {canonical_model_id} was already loaded"
+                    if already_loaded
+                    else f"Embeddings model {canonical_model_id} loaded successfully"
+                )
+                if alias_message:
+                    message = message + alias_message
+                if switch_result["switched"]:
+                    evicted = switch_result["evicted_models"]
+                    message = (
+                        message
+                        + f" after evicting {len(evicted)} prior model(s): "
+                        + ", ".join(evicted)
+                    )
+
+                return ModelLoadResponse(
+                    id=canonical_model_id,
+                    task="embeddings",
+                    status="already_loaded" if already_loaded else "loaded",
+                    message=message,
+                    cache_info=_build_llm_cache_info(),
+                )
+
             already_loaded = service.load_model(request.model)
             return ModelLoadResponse(
                 id=request.model,
@@ -632,18 +675,23 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
         from ....embeddings.embeddings_service import get_embeddings_service
 
         service = get_embeddings_service()
-        unloaded = [model_id] if service.unload_model(model_id) else []
+        shared_runtime = service.uses_shared_vlm_runtime(model_id)
+        canonical_model_id = (
+            service.canonicalize_model_id(model_id) if shared_runtime else model_id
+        )
+        unloaded = [canonical_model_id] if service.unload_model(model_id) else []
         status = "unloaded" if unloaded else "not_found"
         message = (
-            f"Embeddings model {model_id} unloaded successfully"
+            f"Embeddings model {canonical_model_id} unloaded successfully"
             if unloaded
-            else f"Embeddings model {model_id} was not loaded"
+            else f"Embeddings model {canonical_model_id} was not loaded"
         )
-        return _build_unload_response(
+        return ModelUnloadResponse(
             task="embeddings",
             status=status,
             message=message,
             unloaded_models=unloaded,
+            cache_info=_build_llm_cache_info() if shared_runtime else None,
         )
 
     if task == "visual":
@@ -740,12 +788,14 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
         from ....embeddings.embeddings_service import get_embeddings_service
 
         service = get_embeddings_service()
+        shared_runtime = service.has_shared_vlm_runtime_models()
         unloaded = service.clear_models()
-        return _build_unload_response(
+        return ModelUnloadResponse(
             task="embeddings",
             status="cleared",
             message=f"Cleared {len(unloaded)} embeddings model(s) from cache",
             unloaded_models=unloaded,
+            cache_info=_build_llm_cache_info() if shared_runtime else None,
         )
 
     if task == "visual":
