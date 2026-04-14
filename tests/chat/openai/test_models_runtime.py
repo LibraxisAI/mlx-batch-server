@@ -6,6 +6,7 @@ import pytest
 
 from mlx_batch_server.batch import coordinator as batch_coordinator_module
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
+from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.chat.mlx import wrapper_cache as wrapper_cache_module
 from mlx_batch_server.chat.openai.models import models as models_module
 from mlx_batch_server.chat.openai.models.schema import (
@@ -20,8 +21,10 @@ from mlx_batch_server.responses import adapter as responses_adapter_module
 @pytest.fixture(autouse=True)
 def clear_runtime_aliases():
     runtime_aliases_module.clear_runtime_aliases()
+    runtime_attachments_module.clear_runtime_surface_attachments()
     yield
     runtime_aliases_module.clear_runtime_aliases()
+    runtime_attachments_module.clear_runtime_surface_attachments()
 
 
 class TestLoadedModelsRuntime:
@@ -675,7 +678,9 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             visual_router_module,
             "unload_visual_embedder",
-            lambda model_id=None: ["model-vlm"] if model_id == "model-vlm" else [],
+            lambda model_id=None, release_runtime=True: (
+                ["model-vlm"] if model_id == "model-vlm" else []
+            ),
         )
         monkeypatch.setattr(
             models_module,
@@ -693,6 +698,44 @@ class TestLoadRuntime:
         assert response.cache_info["loaded_models_count"] == 0
 
     @pytest.mark.asyncio
+    async def test_unload_visual_detaches_surface_when_llm_still_holds_runtime(
+        self,
+        monkeypatch,
+    ):
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "llm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+
+        release_runtime_flags: list[bool] = []
+        monkeypatch.setattr(
+            visual_router_module,
+            "unload_visual_embedder",
+            lambda model_id=None, release_runtime=True: (
+                release_runtime_flags.append(release_runtime) or ["model-vlm"]
+            ),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {
+                "loaded_models_count": 1,
+                "surface_attachments": {"model-vlm": ["llm"]},
+            },
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="model-vlm", task="visual")
+        )
+
+        assert response.task == "visual"
+        assert response.status == "detached"
+        assert response.unloaded_models == ["model-vlm"]
+        assert "retained by llm" in response.message
+        assert release_runtime_flags == [False]
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["llm"]
+
+    @pytest.mark.asyncio
     async def test_unload_embeddings_qwen3_vl_returns_shared_runtime_cache_info(
         self, monkeypatch
     ):
@@ -703,7 +746,8 @@ class TestLoadRuntime:
             def canonicalize_model_id(self, model_id):
                 return "libraxisai/qwen3-vl-30b"
 
-            def unload_model(self, model_id):
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert release_runtime is True
                 return True
 
         monkeypatch.setattr(
@@ -725,3 +769,52 @@ class TestLoadRuntime:
         assert response.status == "unloaded"
         assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
         assert response.cache_info["loaded_models_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unload_embeddings_detaches_surface_when_llm_still_holds_runtime(
+        self,
+        monkeypatch,
+    ):
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b", "llm"
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b", "embeddings"
+        )
+
+        class FakeEmbeddingsService:
+            def uses_shared_vlm_runtime(self, model_id):
+                return True
+
+            def canonicalize_model_id(self, model_id):
+                return "libraxisai/qwen3-vl-30b"
+
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert release_runtime is False
+                return True
+
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            lambda: FakeEmbeddingsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {
+                "loaded_models_count": 1,
+                "surface_attachments": {"libraxisai/qwen3-vl-30b": ["llm"]},
+            },
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="LibraxisAI/Qwen3-VL-30B", task="embeddings")
+        )
+
+        assert response.task == "embeddings"
+        assert response.status == "detached"
+        assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
+        assert "retained by llm" in response.message
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b"
+        ) == ["llm"]

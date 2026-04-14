@@ -11,6 +11,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from ...mlx.runtime_aliases import register_runtime_alias, resolve_runtime_model_id
+from ...mlx.runtime_attachments import (
+    attach_runtime_surface,
+    clear_runtime_surface_attachments,
+    get_attached_models,
+    list_runtime_surface_attachments,
+    release_runtime_surface,
+)
 from ...mlx.runtime_policy import endpoint_runtime_session
 from .models_service import ModelsService
 from .schema import (
@@ -131,6 +138,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     from ....batch.coordinator import get_loaded_batch_models
     from ....chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 
+    surface_attachments = list_runtime_surface_attachments()
     wrapper_loaded = sorted(
         {normalize_model_id(model_id) for model_id in wrapper_cache.get_loaded_models()}
     )
@@ -173,6 +181,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
                 "loaded": True,
                 "task": "llm",
                 "backends": backends,
+                "attached_tasks": surface_attachments.get(model_id, []),
                 "runtime": {
                     "product_residency": "single_model",
                     "active_lanes": active_lanes,
@@ -198,6 +207,7 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
         "loaded_models": [entry["id"] for entry in data],
         "coordinators": {"llm_batch": batch_loaded},
         "caches": {"wrapper": shared_wrapper_residency},
+        "surface_attachments": surface_attachments,
         "cache_info": cache_info,
         "runtime_contract": contract,
     }
@@ -212,8 +222,22 @@ def _build_llm_cache_info() -> dict[str, Any]:
         "wrapper": runtime["caches"]["wrapper"],
         "batch": runtime["coordinators"]["llm_batch"],
     }
+    cache_info["surface_attachments"] = runtime["surface_attachments"]
     cache_info["runtime_contract"] = runtime["runtime_contract"]
     return cache_info
+
+
+def _format_retained_runtime_message(
+    *,
+    label: str,
+    model_id: str,
+    remaining_surfaces: list[str] | tuple[str, ...],
+) -> str:
+    retained_by = ", ".join(remaining_surfaces)
+    return (
+        f"{label} model {model_id} detached successfully; shared runtime retained by "
+        f"{retained_by}"
+    )
 
 
 @lru_cache(maxsize=128)
@@ -385,6 +409,7 @@ async def list_loaded_models() -> dict:
         "data": runtime["data"],
         "coordinators": runtime["coordinators"],
         "caches": runtime["caches"],
+        "surface_attachments": runtime["surface_attachments"],
         "cache_info": runtime["cache_info"],
         "runtime_contract": runtime["runtime_contract"],
         "runtime": _get_runtime_memory_snapshot(),
@@ -434,6 +459,7 @@ async def _load_llm_model(request: ModelLoadRequest) -> ModelLoadResponse:
             adapter_path=request.adapter_path,
             draft_model_id=request.draft_model_id,
         )
+        attach_runtime_surface(canonical_model_id, "llm")
 
     result["id"] = canonical_model_id
     result["task"] = "llm"
@@ -487,6 +513,7 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
                     model_id=canonical_model_id
                 ) as switch_result:
                     already_loaded = service.load_model(canonical_model_id)
+                    attach_runtime_surface(canonical_model_id, "embeddings")
 
                 message = (
                     f"Embeddings model {canonical_model_id} was already loaded"
@@ -544,6 +571,7 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
                 model_id=canonical_model_id
             ) as switch_result:
                 get_visual_embedder(canonical_model_id)
+                attach_runtime_surface(canonical_model_id, "visual")
 
             message = (
                 f"Visual embeddings model {canonical_model_id} was already loaded"
@@ -652,11 +680,79 @@ def _build_unload_response(
     )
 
 
+def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadResponse:
+    from ....embeddings.embeddings_service import get_embeddings_service
+
+    service = get_embeddings_service()
+    shared_runtime = service.uses_shared_vlm_runtime(model_id)
+    canonical_model_id = (
+        service.canonicalize_model_id(model_id) if shared_runtime else model_id
+    )
+    attachment_state = release_runtime_surface(canonical_model_id, "embeddings")
+    preserve_runtime = bool(attachment_state.remaining_surfaces)
+    unloaded = (
+        [canonical_model_id]
+        if service.unload_model(model_id, release_runtime=not preserve_runtime)
+        else []
+    )
+    if unloaded and preserve_runtime:
+        status = "detached"
+        message = _format_retained_runtime_message(
+            label="Embeddings",
+            model_id=canonical_model_id,
+            remaining_surfaces=attachment_state.remaining_surfaces,
+        )
+    else:
+        status = "unloaded" if unloaded else "not_found"
+        message = (
+            f"Embeddings model {canonical_model_id} unloaded successfully"
+            if unloaded
+            else f"Embeddings model {canonical_model_id} was not loaded"
+        )
+    return ModelUnloadResponse(
+        task="embeddings",
+        status=status,
+        message=message,
+        unloaded_models=unloaded,
+        cache_info=_build_llm_cache_info() if shared_runtime else None,
+    )
+
+
+def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
+    from ....embeddings.visual_router import unload_visual_embedder
+
+    attachment_state = release_runtime_surface(model_id, "visual")
+    preserve_runtime = bool(attachment_state.remaining_surfaces)
+    unloaded = unload_visual_embedder(model_id, release_runtime=not preserve_runtime)
+    if unloaded and preserve_runtime:
+        status = "detached"
+        message = _format_retained_runtime_message(
+            label="Visual",
+            model_id=attachment_state.model_id,
+            remaining_surfaces=attachment_state.remaining_surfaces,
+        )
+    else:
+        status = "unloaded" if unloaded else "not_found"
+        message = (
+            f"Visual model {attachment_state.model_id} unloaded successfully"
+            if unloaded
+            else f"Visual model {attachment_state.model_id} was not loaded"
+        )
+    return ModelUnloadResponse(
+        task="visual",
+        status=status,
+        message=message,
+        unloaded_models=unloaded,
+        cache_info=_build_llm_cache_info(),
+    )
+
+
 async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
     if task == "llm":
         from ....batch.coordinator import shutdown_batch_coordinator
         from ....responses.adapter import unload_vlm_model
 
+        release_runtime_surface(model_id, "llm")
         await shutdown_batch_coordinator(model_id)
         result = get_models_service().unload_model(model_id=model_id)
         unloaded_models = list(result.get("unloaded_models", []))
@@ -672,45 +768,10 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
         return ModelUnloadResponse(**result)
 
     if task == "embeddings":
-        from ....embeddings.embeddings_service import get_embeddings_service
-
-        service = get_embeddings_service()
-        shared_runtime = service.uses_shared_vlm_runtime(model_id)
-        canonical_model_id = (
-            service.canonicalize_model_id(model_id) if shared_runtime else model_id
-        )
-        unloaded = [canonical_model_id] if service.unload_model(model_id) else []
-        status = "unloaded" if unloaded else "not_found"
-        message = (
-            f"Embeddings model {canonical_model_id} unloaded successfully"
-            if unloaded
-            else f"Embeddings model {canonical_model_id} was not loaded"
-        )
-        return ModelUnloadResponse(
-            task="embeddings",
-            status=status,
-            message=message,
-            unloaded_models=unloaded,
-            cache_info=_build_llm_cache_info() if shared_runtime else None,
-        )
+        return _unload_shared_embeddings_surface(model_id)
 
     if task == "visual":
-        from ....embeddings.visual_router import unload_visual_embedder
-
-        unloaded = unload_visual_embedder(model_id)
-        status = "unloaded" if unloaded else "not_found"
-        message = (
-            f"Visual model {model_id} unloaded successfully"
-            if unloaded
-            else f"Visual model {model_id} was not loaded"
-        )
-        return ModelUnloadResponse(
-            task="visual",
-            status=status,
-            message=message,
-            unloaded_models=unloaded,
-            cache_info=_build_llm_cache_info(),
-        )
+        return _unload_visual_surface(model_id)
 
     if task == "stt":
         from ....stt.whisper_model import unload_whisper_model
@@ -772,6 +833,8 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
         from ....batch.coordinator import shutdown_all_coordinators
         from ....responses.adapter import unload_vlm_model
 
+        for attached_model_id in get_attached_models("llm"):
+            release_runtime_surface(attached_model_id, "llm")
         await shutdown_all_coordinators()
         result = get_models_service().unload_model(model_id=None)
         unloaded_models = list(result.get("unloaded_models", []))
@@ -789,7 +852,17 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
 
         service = get_embeddings_service()
         shared_runtime = service.has_shared_vlm_runtime_models()
-        unloaded = service.clear_models()
+        unloaded = service.clear_native_models()
+        shared_models = sorted(
+            set(service.get_shared_vlm_models()).union(
+                get_attached_models("embeddings")
+            )
+        )
+        for model_id in shared_models:
+            attachment_state = release_runtime_surface(model_id, "embeddings")
+            preserve_runtime = bool(attachment_state.remaining_surfaces)
+            if service.unload_model(model_id, release_runtime=not preserve_runtime):
+                unloaded.append(model_id)
         return ModelUnloadResponse(
             task="embeddings",
             status="cleared",
@@ -799,9 +872,25 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
         )
 
     if task == "visual":
-        from ....embeddings.visual_router import unload_visual_embedder
+        from ....embeddings.visual_router import (
+            get_loaded_visual_models,
+            unload_visual_embedder,
+        )
 
-        unloaded = unload_visual_embedder()
+        unloaded: list[str] = []
+        visual_models = sorted(
+            set(get_loaded_visual_models()).union(get_attached_models("visual"))
+        )
+        for model_id in visual_models:
+            attachment_state = release_runtime_surface(model_id, "visual")
+            preserve_runtime = bool(attachment_state.remaining_surfaces)
+            unloaded.extend(
+                unload_visual_embedder(
+                    model_id,
+                    release_runtime=not preserve_runtime,
+                )
+            )
+        unloaded = list(dict.fromkeys(unloaded))
         return ModelUnloadResponse(
             task="visual",
             status="cleared",
@@ -851,6 +940,7 @@ async def _clear_all_models() -> ModelUnloadResponse:
     from ....batch.coordinator import shutdown_all_coordinators
 
     await shutdown_all_coordinators()
+    clear_runtime_surface_attachments()
     result = get_models_service().unload_model(model_id=None)
     unloaded_models = list(result.get("unloaded_models", []))
 
@@ -936,6 +1026,7 @@ async def health_check() -> dict:
             "batch": runtime["coordinators"]["llm_batch"],
         },
         "loaded_models_runtime": runtime["data"],
+        "surface_attachments": runtime["surface_attachments"],
         "runtime_contract": runtime["runtime_contract"],
         "cache_max_size": cache_info.get("max_size", 1),
         "cache_ttl_seconds": cache_info.get("ttl_seconds", 600),
