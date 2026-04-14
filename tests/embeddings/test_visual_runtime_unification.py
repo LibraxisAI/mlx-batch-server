@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
+from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
 from mlx_batch_server.embeddings import qwen3_vl_embedder as embedder_module
 from mlx_batch_server.embeddings import visual_router as visual_router_module
@@ -18,6 +19,7 @@ from mlx_batch_server.embeddings.schema import EmbeddingRequest
 
 def _clear_visual_state() -> None:
     runtime_aliases_module.clear_runtime_aliases()
+    runtime_attachments_module.clear_runtime_surface_attachments()
     visual_router_module._embedder_cache.clear()
 
 
@@ -49,6 +51,9 @@ def test_visual_router_reuses_canonical_runtime_alias(monkeypatch):
     assert alias_embedder is canonical_embedder
     assert created_ids == ["libraxisai/qwen3-vl-30b"]
     assert len(visual_router_module._embedder_cache) == 1
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "frontier-vlm"
+    ) == ["visual"]
 
     _clear_visual_state()
 
@@ -98,6 +103,9 @@ def test_visual_router_canonicalizes_projection_and_processor_identity(monkeypat
         )
     ]
     assert len(visual_router_module._embedder_cache) == 1
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "LibraxisAI/Qwen3-VL-30B"
+    ) == ["visual"]
 
     _clear_visual_state()
 
@@ -217,6 +225,32 @@ def test_qwen3_vl_embedder_serializes_shared_runtime_on_text_embed(monkeypatch):
 
     assert result.num_tokens == 2
     assert events == [("enter", "model-vlm"), ("exit", "model-vlm")]
+
+
+def test_embeddings_service_attaches_shared_runtime_surface_on_lazy_load(monkeypatch):
+    _clear_visual_state()
+
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
+    monkeypatch.setattr(
+        embeddings_service_module.SharedVLMTextEmbedder,
+        "load",
+        lambda self: None,
+    )
+
+    service = EmbeddingsService()
+    embedder = service._get_shared_vlm_embedder("LibraxisAI/Qwen3-VL-30B")
+
+    assert embedder.model_id == "libraxisai/qwen3-vl-30b"
+    assert (
+        runtime_attachments_module.get_runtime_surface_attachments("frontier-vlm") == []
+    )
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "LibraxisAI/Qwen3-VL-30B"
+    ) == ["embeddings"]
 
 
 def test_qwen3_vl_embedder_pools_sentence_embedding_from_shared_runtime(monkeypatch):

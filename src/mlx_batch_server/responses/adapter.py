@@ -17,12 +17,12 @@ import json
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
 from ..batch import BatchStreamChunk, get_batch_coordinator
+from ..chat.mlx.chat_generator import ChatGenerator
 from ..chat.mlx.runtime_policy import endpoint_runtime_session
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..chat.openai.openai_adapter import OpenAIAdapter
@@ -58,7 +58,7 @@ from .schema import (
 )
 
 if TYPE_CHECKING:
-    from ..chat.mlx.chat_generator import ChatGenerator
+    from collections.abc import AsyncGenerator
 
 # ChatML special tokens to filter from non-Harmony model outputs
 _CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
@@ -101,7 +101,7 @@ class ResponsesAdapter:
 
     def _get_chat_generator(self, model_id: str) -> ChatGenerator:
         """Get or create ChatGenerator for model (uses shared cache)."""
-        return wrapper_cache.get_wrapper(model_id, None, None)
+        return ChatGenerator.get_or_create(model_id, None, None)
 
     def _get_openai_adapter(self, model_id: str) -> OpenAIAdapter:
         """Get OpenAI adapter wrapping ChatGenerator."""
