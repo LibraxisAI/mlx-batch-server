@@ -193,6 +193,64 @@ def test_load_mlx_model_allows_pinned_vlm_alias_in_pinned_only_mode(monkeypatch)
     assert loaded.supports_multimodal is True
 
 
+def test_load_mlx_model_expands_home_relative_adapter_path_before_loader(monkeypatch):
+    fake_model = SimpleNamespace()
+    fake_tokenizer = SimpleNamespace()
+    seen_loads: list[tuple[str, str | None]] = []
+    expanded_adapter = str(Path("~/adapters/frontier-lora").expanduser())
+
+    monkeypatch.setattr(
+        model_types_module,
+        "get_model_path",
+        lambda model_id: Path("/tmp/fake-llm"),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "load_text_config",
+        lambda path: {"model_type": "llama"},
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "_should_use_vlm_runtime",
+        lambda config: False,
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "load_text_runtime",
+        lambda model_id, tokenizer_config=None, adapter_path=None: (
+            seen_loads.append((model_id, adapter_path)) or (fake_model, fake_tokenizer)
+        ),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "ChatTemplate",
+        lambda model_type, source: ("chat-template", model_type, source),
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "extract_context_length",
+        lambda config, tokenizer: 8192,
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "_wrap_tokenizer",
+        lambda tokenizer_like: tokenizer_like,
+    )
+    monkeypatch.setattr(
+        model_types_module,
+        "_fix_tokenizer_eos",
+        lambda tokenizer: None,
+    )
+
+    loaded = model_types_module.load_mlx_model(
+        "mlx-community/llama-3.1-8b",
+        adapter_path="~/adapters/frontier-lora",
+    )
+
+    assert seen_loads == [("mlx-community/llama-3.1-8b", expanded_adapter)]
+    assert loaded.adapter_path == expanded_adapter
+
+
 def test_resolves_to_multimodal_runtime_honors_alias(monkeypatch):
     runtime_aliases_module.register_runtime_alias(
         "frontier-vlm",

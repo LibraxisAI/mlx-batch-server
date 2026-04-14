@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -47,6 +48,55 @@ def test_visual_router_reuses_canonical_runtime_alias(monkeypatch):
 
     assert alias_embedder is canonical_embedder
     assert created_ids == ["libraxisai/qwen3-vl-30b"]
+    assert len(visual_router_module._embedder_cache) == 1
+
+    _clear_visual_state()
+
+
+def test_visual_router_canonicalizes_projection_and_processor_identity(monkeypatch):
+    _clear_visual_state()
+
+    created_configs: list[tuple[str, str | None, str | None]] = []
+    projection_path = "~/weights/frontier-projection.safetensors"
+    expanded_projection_path = str(Path(projection_path).expanduser())
+
+    monkeypatch.setattr(
+        embedder_module.Qwen3VLEmbedder,
+        "load",
+        lambda self: created_configs.append(
+            (self.model_id, self.projection_path, self.processor_id)
+        ),
+    )
+    monkeypatch.setattr(
+        embedder_module.Qwen3VLEmbedder,
+        "log_summary",
+        lambda self: None,
+    )
+
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "LibraxisAI/Qwen3-VL-30B",
+    )
+
+    alias_embedder = visual_router_module.get_visual_embedder(
+        "frontier-vlm",
+        projection_path=projection_path,
+        processor_id="LibraxisAI/Qwen3-VL-30B",
+    )
+    canonical_embedder = visual_router_module.get_visual_embedder(
+        "libraxisai/qwen3-vl-30b",
+        projection_path=expanded_projection_path,
+        processor_id="libraxisai/qwen3-vl-30b",
+    )
+
+    assert alias_embedder is canonical_embedder
+    assert created_configs == [
+        (
+            "libraxisai/qwen3-vl-30b",
+            expanded_projection_path,
+            "libraxisai/qwen3-vl-30b",
+        )
+    ]
     assert len(visual_router_module._embedder_cache) == 1
 
     _clear_visual_state()

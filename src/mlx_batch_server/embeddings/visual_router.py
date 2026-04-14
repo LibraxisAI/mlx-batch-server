@@ -6,7 +6,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
+from ..chat.mlx.runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+)
+from ..chat.mlx.wrapper_cache import wrapper_cache
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 
 router = APIRouter(tags=["visual-embeddings"])
@@ -36,9 +40,9 @@ def _normalize_embedder_key(
     processor_id: str | None,
 ) -> tuple[str, str | None, str | None]:
     return (
-        normalize_model_id(model_id),
-        projection_path.strip() or None if projection_path else None,
-        processor_id.strip() or None if processor_id else None,
+        normalize_runtime_model_id(model_id),
+        normalize_runtime_path(projection_path),
+        normalize_runtime_model_id(processor_id) if processor_id else None,
     )
 
 
@@ -70,7 +74,9 @@ def get_visual_embedder(
 def unload_visual_embedder(model_id: str | None = None) -> list[str]:
     """Unload visual embedders and their shared VLM runtime residency."""
     removed_models: list[str] = []
-    specific_model_id = normalize_model_id(model_id) if model_id is not None else None
+    specific_model_id = (
+        normalize_runtime_model_id(model_id) if model_id is not None else None
+    )
 
     with _embedder_lock:
         if model_id is None:

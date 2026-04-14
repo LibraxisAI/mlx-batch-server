@@ -15,7 +15,11 @@ from safetensors import safe_open
 from transformers import AutoProcessor
 
 from ..chat.mlx.model_types import reset_request_local_runtime_state
-from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
+from ..chat.mlx.runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+)
+from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..utils.logger import logger
 
 try:
@@ -51,11 +55,14 @@ class Qwen3VLEmbedder:
         projection_path: str | None = None,
         processor_id: str | None = None,
     ) -> None:
-        self.model_id = normalize_model_id(model_id)
-        self.projection_path = projection_path or os.environ.get(
-            "QWEN3_VL_PROJECTION_PATH"
+        self.model_id = normalize_runtime_model_id(model_id)
+        self.projection_path = normalize_runtime_path(
+            projection_path or os.environ.get("QWEN3_VL_PROJECTION_PATH")
         )
-        self.processor_id = processor_id or os.environ.get("QWEN3_VL_PROCESSOR_ID")
+        raw_processor_id = processor_id or os.environ.get("QWEN3_VL_PROCESSOR_ID")
+        self.processor_id = (
+            normalize_runtime_model_id(raw_processor_id) if raw_processor_id else None
+        )
 
         self.model: Any | None = None
         self.processor: Any | None = None
