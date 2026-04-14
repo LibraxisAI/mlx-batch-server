@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import mlx.core as mx
+import pytest
 
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
+from mlx_batch_server.embeddings import router as embeddings_router_module
 from mlx_batch_server.embeddings.embeddings_service import EmbeddingsService
 from mlx_batch_server.embeddings.schema import EmbeddingRequest
 
@@ -165,3 +168,100 @@ def test_embeddings_service_routes_non_qwen_vlm_alias_to_shared_runtime(monkeypa
     assert service.has_shared_vlm_runtime_models() is True
 
     _clear_runtime_aliases()
+
+
+@pytest.mark.asyncio
+async def test_embeddings_router_reserves_endpoint_runtime_for_shared_vlm(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class FakeService:
+        def uses_shared_vlm_runtime(self, model_id: str) -> bool:
+            calls.append(("shared", model_id))
+            return True
+
+        def canonicalize_model_id(self, model_id: str) -> str:
+            calls.append(("canonicalize", model_id))
+            return "libraxisai/qwen3-vl-30b"
+
+        def generate_embeddings(self, request: EmbeddingRequest):
+            calls.append(("generate", request.model))
+            return "ok"
+
+    @asynccontextmanager
+    async def fake_endpoint_runtime_session(
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
+        assert adapter_path is None
+        assert draft_model_id is None
+        calls.append(("session", model_id))
+        yield {"switched": False}
+
+    monkeypatch.setattr(
+        embeddings_router_module,
+        "embeddings_service",
+        FakeService(),
+    )
+    monkeypatch.setattr(
+        embeddings_router_module,
+        "endpoint_runtime_session",
+        fake_endpoint_runtime_session,
+    )
+
+    result = await embeddings_router_module.create_embeddings(
+        EmbeddingRequest(model="frontier-vlm", input="hello")
+    )
+
+    assert result == "ok"
+    assert calls == [
+        ("shared", "frontier-vlm"),
+        ("canonicalize", "frontier-vlm"),
+        ("session", "libraxisai/qwen3-vl-30b"),
+        ("generate", "frontier-vlm"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_embeddings_router_skips_endpoint_runtime_for_native_embeddings(
+    monkeypatch,
+):
+    calls: list[tuple[str, str]] = []
+
+    class FakeService:
+        def uses_shared_vlm_runtime(self, model_id: str) -> bool:
+            calls.append(("shared", model_id))
+            return False
+
+        def canonicalize_model_id(self, model_id: str) -> str:
+            raise AssertionError("canonicalize_model_id should not be used")
+
+        def generate_embeddings(self, request: EmbeddingRequest):
+            calls.append(("generate", request.model))
+            return "native"
+
+    @asynccontextmanager
+    async def fake_endpoint_runtime_session(*args, **kwargs):
+        raise AssertionError("endpoint_runtime_session should not run")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(
+        embeddings_router_module,
+        "embeddings_service",
+        FakeService(),
+    )
+    monkeypatch.setattr(
+        embeddings_router_module,
+        "endpoint_runtime_session",
+        fake_endpoint_runtime_session,
+    )
+
+    result = await embeddings_router_module.create_embeddings(
+        EmbeddingRequest(model="mlx-community/all-MiniLM-L6-v2-4bit", input="hello")
+    )
+
+    assert result == "native"
+    assert calls == [
+        ("shared", "mlx-community/all-MiniLM-L6-v2-4bit"),
+        ("generate", "mlx-community/all-MiniLM-L6-v2-4bit"),
+    ]
