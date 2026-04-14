@@ -101,8 +101,10 @@ def create_app():
         # Shutdown - cleanup batch coordinators
         try:
             from .batch import shutdown_all_coordinators
+            from .vision.vlm_batch import shutdown_all_vlm_coordinators
 
             await shutdown_all_coordinators()
+            await shutdown_all_vlm_coordinators()
         except ImportError:
             pass  # Batch module may not be available
 

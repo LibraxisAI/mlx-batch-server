@@ -17,6 +17,7 @@ from mlx_batch_server.chat.openai.models.schema import (
 from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
 from mlx_batch_server.embeddings import visual_router as visual_router_module
 from mlx_batch_server.responses import adapter as responses_adapter_module
+from mlx_batch_server.vision import vlm_batch as vlm_batch_module
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +66,11 @@ class TestLoadedModelsRuntime:
             "get_loaded_vlm_models",
             lambda: ["model-b"],
         )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "get_loaded_vlm_batch_models",
+            lambda: ["model-b"],
+        )
 
         payload = await models_module.list_loaded_models()
 
@@ -78,11 +84,16 @@ class TestLoadedModelsRuntime:
             "multimodal",
         ]
         assert payload["data"][1]["runtime"]["text"]["batch_resident"] is False
-        assert payload["coordinators"] == {"llm_batch": ["model-a"]}
+        assert payload["data"][1]["runtime"]["multimodal"]["batch_resident"] is True
+        assert payload["coordinators"] == {
+            "llm_batch": ["model-a"],
+            "vlm_batch": ["model-b"],
+        }
         assert payload["caches"] == {"wrapper": ["model-a", "model-b"]}
         assert payload["cache_info"] == {"cache_size": 1, "runtime_keys": []}
         assert payload["runtime_contract"]["text"]["tool_capable"] is True
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
+        assert payload["runtime_contract"]["multimodal"]["batch_capable"] is True
         assert payload["runtime"] == {
             "process_rss_gb": 12.34,
             "rss_gb": 12.34,
@@ -253,6 +264,11 @@ class TestLoadedModelsRuntime:
             "get_loaded_vlm_models",
             lambda: ["model-a"],
         )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "get_loaded_vlm_batch_models",
+            lambda: [],
+        )
 
         payload = await models_module.health_check()
 
@@ -261,8 +277,10 @@ class TestLoadedModelsRuntime:
         assert payload["loaded_models_by_backend"] == {
             "wrapper": ["model-a"],
             "batch": ["model-a"],
+            "vlm_batch": [],
         }
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
+        assert payload["runtime_contract"]["multimodal"]["batch_capable"] is True
         runtime_entry = payload["loaded_models_runtime"][0]
         assert runtime_entry["runtime"]["text"]["tool_capable"] is True
         assert runtime_entry["runtime"]["text"]["batch_resident"] is True
@@ -401,6 +419,11 @@ class TestUnloadRuntime:
             lambda: [],
         )
         monkeypatch.setattr(
+            vlm_batch_module,
+            "get_loaded_vlm_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
             models_module,
             "get_models_service",
             FakeModelsService,
@@ -416,6 +439,7 @@ class TestUnloadRuntime:
         assert response.cache_info["loaded_models_by_backend"] == {
             "wrapper": ["model-a"],
             "batch": [],
+            "vlm_batch": [],
         }
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "model-a"

@@ -7,6 +7,7 @@ Contributed by LibraxisAI - https://libraxis.ai
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -490,6 +491,149 @@ class TestResponsesRuntimeGuards:
             "reasoning",
             "message",
         ]
+
+    @pytest.mark.asyncio
+    async def test_generate_vision_uses_vlm_batch_for_single_image(self, monkeypatch):
+        from mlx_batch_server.responses import adapter as adapter_module
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen: dict[str, object] = {}
+
+        def fake_settings():
+            return SimpleNamespace(
+                vlm_batch_enabled=True,
+                vlm_stream_batch_enabled=True,
+                vlm_batch_window_ms=25,
+                vlm_max_batch_size=3,
+                vlm_batch_group_by_shape=True,
+            )
+
+        class FakeCoordinator:
+            async def submit_request(self, **kwargs):
+                seen.update(kwargs)
+                return SimpleNamespace(
+                    text="batched vision",
+                    prompt_tokens=11,
+                    generation_tokens=7,
+                    total_tokens=18,
+                )
+
+        def fake_get_vlm_batch_coordinator(**kwargs):
+            seen["coordinator_kwargs"] = kwargs
+            return FakeCoordinator()
+
+        monkeypatch.setattr(adapter_module, "get_settings", fake_settings)
+        monkeypatch.setattr(
+            adapter_module,
+            "get_vlm_batch_coordinator",
+            fake_get_vlm_batch_coordinator,
+        )
+
+        normalised = normalise_responses_payload(
+            {
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/cat.png",
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+
+        response = await adapter._generate_vision(
+            "demo-model", normalised, "demo-model"
+        )
+
+        assert seen["messages"] == [{"role": "user", "content": "Describe this image"}]
+        assert len(seen["images"]) == 1
+        assert seen["max_tokens"] is None
+        assert seen["temperature"] is None
+        assert response.output[-1].content[0]["text"] == "batched vision"
+        assert response.usage.input_tokens == 11
+        assert response.usage.output_tokens == 7
+        assert response.usage.total_tokens == 18
+
+    @pytest.mark.asyncio
+    async def test_generate_vision_stream_uses_vlm_stream_batch_for_single_image(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses import adapter as adapter_module
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen: dict[str, object] = {}
+
+        def fake_settings():
+            return SimpleNamespace(
+                vlm_batch_enabled=True,
+                vlm_stream_batch_enabled=True,
+                vlm_batch_window_ms=25,
+                vlm_max_batch_size=3,
+                vlm_batch_group_by_shape=True,
+            )
+
+        class FakeStreamCoordinator:
+            async def stream_request(self, **kwargs):
+                seen.update(kwargs)
+                yield SimpleNamespace(
+                    text="<think>reason</think>batched ", finish_reason=None
+                )
+                yield SimpleNamespace(text="stream", finish_reason=None)
+                yield SimpleNamespace(text="", finish_reason="stop")
+
+        def fake_get_vlm_stream_coordinator(**kwargs):
+            seen["coordinator_kwargs"] = kwargs
+            return FakeStreamCoordinator()
+
+        monkeypatch.setattr(adapter_module, "get_settings", fake_settings)
+        monkeypatch.setattr(
+            adapter_module,
+            "get_vlm_stream_coordinator",
+            fake_get_vlm_stream_coordinator,
+        )
+
+        normalised = normalise_responses_payload(
+            {
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/cat.png",
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+
+        events = [
+            event
+            async for event in adapter._generate_vision_stream(
+                "demo-model", normalised, "demo-model"
+            )
+        ]
+
+        assert seen["messages"] == [{"role": "user", "content": "Describe this image"}]
+        completed = next(
+            event for event in events if event["type"] == "response.completed"
+        )
+        message_item = next(
+            item
+            for item in completed["response"]["output"]
+            if item["type"] == "message"
+        )
+        assert message_item["content"][0]["text"] == "batched stream"
 
     @pytest.mark.asyncio
     async def test_streaming_text_with_previous_response_id_falls_back_to_single_lane(
