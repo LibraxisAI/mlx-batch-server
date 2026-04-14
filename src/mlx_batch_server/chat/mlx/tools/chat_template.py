@@ -60,6 +60,7 @@ class ChatTemplate(ABC):
     end_tool_calls: str
 
     def __init__(self, tools_parser_type: str, tokenizer: TokenizerWrapper):
+        self.tools_parser_type = tools_parser_type
         self.tokenizer = tokenizer
         self.has_tools = False
         self.reason_decoder = None
@@ -69,6 +70,15 @@ class ChatTemplate(ABC):
         # Initialize tool call markers with default values
         self.start_tool_calls = self.tools_parser.start_tool_calls
         self.end_tool_calls = self.tools_parser.end_tool_calls
+
+    def fork(self) -> "ChatTemplate":
+        """Create a fresh request-local template/parser instance.
+
+        ChatTemplate carries mutable parsing state (tool schema, thinking decoder,
+        etc.). Shared runtime objects must therefore create a fresh template per
+        request to avoid state leaking across concurrent or sequential calls.
+        """
+        return ChatTemplate(self.tools_parser_type, self.tokenizer)
 
     def apply_chat_template(
         self,

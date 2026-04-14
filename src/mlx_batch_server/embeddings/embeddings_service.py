@@ -5,7 +5,10 @@ import numpy as np
 import tiktoken
 from mlx_embeddings import generate, load
 
+from ..chat.mlx.runtime_aliases import resolve_runtime_model_id
+from ..chat.mlx.wrapper_cache import normalize_model_id
 from ..utils.logger import logger
+from .qwen3_vl_embedder import Qwen3VLEmbedder
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
 
 
@@ -15,6 +18,9 @@ class EmbeddingsService:
     def __init__(self):
         # Map of loaded models for caching
         self._models: dict[str, tuple[Any, Any]] = {}
+        # Qwen3-VL embeddings reuse the shared visual/VLM runtime instead of
+        # loading a second text-only fallback into a private cache.
+        self._shared_vlm_models: set[str] = set()
         # Default encoder for token counting
         try:
             self._default_tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -28,18 +34,97 @@ class EmbeddingsService:
                 )
                 self._default_tokenizer = None
 
+    def canonicalize_model_id(self, model_id: str) -> str:
+        """Resolve aliases and normalize remote IDs for stable cache keys."""
+        return normalize_model_id(resolve_runtime_model_id(model_id))
+
     def _get_model(self, model_id: str) -> tuple[Any, Any]:
         """Get or load a model based on its ID"""
-        if model_id not in self._models:
-            logger.info(f"Loading embedding model: {model_id}")
+        canonical_model_id = self.canonicalize_model_id(model_id)
+        if canonical_model_id not in self._models:
+            logger.info(f"Loading embedding model: {canonical_model_id}")
             try:
-                model, processor = load(model_id)
-                self._models[model_id] = (model, processor)
+                model, processor = load(canonical_model_id)
+                self._models[canonical_model_id] = (model, processor)
             except Exception as e:
-                logger.error(f"Error loading embedding model {model_id}: {e!s}")
+                logger.error(
+                    f"Error loading embedding model {canonical_model_id}: {e!s}"
+                )
                 raise RuntimeError(f"Failed to load embedding model: {e!s}") from e
 
-        return self._models[model_id]
+        return self._models[canonical_model_id]
+
+    def load_model(self, model_id: str) -> bool:
+        """Preload an embeddings model. Returns True if it was already loaded."""
+        if self._should_use_shared_vlm_embeddings(model_id):
+            canonical_model_id = self.canonicalize_model_id(model_id)
+            already_loaded = canonical_model_id in self._shared_vlm_models
+            if not already_loaded:
+                self._get_shared_vlm_embedder(canonical_model_id)
+                self._shared_vlm_models.add(canonical_model_id)
+            return already_loaded
+
+        canonical_model_id = self.canonicalize_model_id(model_id)
+        already_loaded = canonical_model_id in self._models
+        self._get_model(canonical_model_id)
+        return already_loaded
+
+    def unload_model(self, model_id: str) -> bool:
+        """Unload a specific embeddings model. Returns True if it was loaded."""
+        if self._should_use_shared_vlm_embeddings(model_id):
+            canonical_model_id = self.canonicalize_model_id(model_id)
+            was_loaded = canonical_model_id in self._shared_vlm_models
+            self._shared_vlm_models.discard(canonical_model_id)
+            if was_loaded:
+                self._unload_shared_vlm_embedder(canonical_model_id)
+            return was_loaded
+
+        canonical_model_id = self.canonicalize_model_id(model_id)
+        if canonical_model_id in self._models:
+            self._models.pop(canonical_model_id, None)
+            mx.clear_cache()
+            return True
+        return False
+
+    def clear_models(self) -> list[str]:
+        """Unload all embeddings models and return the unloaded model IDs."""
+        unloaded = list(self._models.keys())
+        if unloaded:
+            self._models.clear()
+            mx.clear_cache()
+        shared_vlm_models = sorted(self._shared_vlm_models)
+        self._shared_vlm_models.clear()
+        for model_id in shared_vlm_models:
+            self._unload_shared_vlm_embedder(model_id)
+        return list(dict.fromkeys([*unloaded, *shared_vlm_models]))
+
+    def _should_use_shared_vlm_embeddings(self, model_id: str) -> bool:
+        """Route frontier VLM embeddings through the shared runtime spine."""
+        normalized_model_id = self.canonicalize_model_id(model_id)
+        return (
+            "qwen3-vl" in normalized_model_id
+            or "qwen3_vl" in normalized_model_id
+        )
+
+    def uses_shared_vlm_runtime(self, model_id: str) -> bool:
+        """Expose whether this embeddings request rides on the shared VLM cache."""
+        return self._should_use_shared_vlm_embeddings(model_id)
+
+    def has_shared_vlm_runtime_models(self) -> bool:
+        """Return True when shared VLM embeddings models are currently attached."""
+        return bool(self._shared_vlm_models)
+
+    def _get_shared_vlm_embedder(self, model_id: str) -> Qwen3VLEmbedder:
+        """Reuse the visual embedder that already rides on wrapper_cache."""
+        from .visual_router import get_visual_embedder  # noqa: PLC0415
+
+        return get_visual_embedder(model_id)
+
+    def _unload_shared_vlm_embedder(self, model_id: str) -> list[str]:
+        """Release the shared visual embedder/runtime for this model."""
+        from .visual_router import unload_visual_embedder  # noqa: PLC0415
+
+        return unload_visual_embedder(model_id)
 
     def _count_tokens(self, text: str | list[str]) -> int:
         """Count tokens in input text"""
@@ -75,14 +160,13 @@ class EmbeddingsService:
                 return [float(x) for x in embedding[0]]
             # Otherwise, convert each element to float
             return [float(x) for x in embedding]
-        elif isinstance(embedding, (mx.array, np.ndarray)):
+        if isinstance(embedding, (mx.array, np.ndarray)):
             # Ensure array is 1D
             if embedding.ndim > 1:
                 embedding = embedding.reshape(-1)
             return [float(x) for x in embedding.tolist()]
-        else:
-            # Handle any other unexpected type
-            return [float(x) for x in list(embedding)]
+        # Handle any other unexpected type
+        return [float(x) for x in list(embedding)]
 
     def _get_bert_embeddings(self, model, processor, text, model_id):
         """Extract embeddings specifically for BERT-like models"""
@@ -101,67 +185,97 @@ class EmbeddingsService:
             else:
                 outputs = model(input_ids)
 
-            # Extract embeddings based on model output structure
-            if hasattr(outputs, "last_hidden_state"):
-                # For models like BERT, MiniLM
-                # Check if model is likely MiniLM (which typically uses CLS token)
-                if "minilm" in model_id.lower():
-                    # MiniLM models typically use the CLS token (first token)
-                    return outputs.last_hidden_state[:, 0, :]
-                else:
-                    # Other BERT models might use mean pooling
-                    return outputs.last_hidden_state.mean(axis=1)
-            else:
-                # Last resort, assume the output itself is the embedding
-                return outputs
+            return self._extract_output_embeddings(outputs, model_id)
 
         raise ValueError("Could not determine how to extract embeddings from model")
+
+    def _extract_output_embeddings(self, output, model_id: str | None):
+        """Extract embeddings from common MLX model output types."""
+        if hasattr(output, "text_embeds") and output.text_embeds is not None:
+            return output.text_embeds
+
+        if hasattr(output, "pooler_output") and output.pooler_output is not None:
+            return output.pooler_output
+
+        if (
+            hasattr(output, "last_hidden_state")
+            and output.last_hidden_state is not None
+        ):
+            model_name = (model_id or "").lower()
+            if "minilm" in model_name:
+                return output.last_hidden_state[:, 0, :]
+            return output.last_hidden_state.mean(axis=1)
+
+        return output
 
     def generate_embeddings(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """Generate embeddings based on the request"""
         model_id = request.model
-        model, processor = self._get_model(model_id)
-
         # Handle both string and list of strings
         inputs = request.input if isinstance(request.input, list) else [request.input]
 
         # Count tokens for usage info
         token_count = self._count_tokens(inputs)
+        shared_vlm_embedder = None
+        model = None
+        processor = None
+        if self._should_use_shared_vlm_embeddings(model_id):
+            canonical_model_id = self.canonicalize_model_id(model_id)
+            shared_vlm_embedder = self._get_shared_vlm_embedder(canonical_model_id)
+            self._shared_vlm_models.add(canonical_model_id)
+            token_count = 0
+        else:
+            model, processor = self._get_model(model_id)
 
         # Generate embeddings for all inputs
         embeddings = []
-        for idx, text in enumerate(inputs):
-            try:
-                # Generate embedding using the model
+        try:
+            for idx, text in enumerate(inputs):
+                embedding = None
                 try:
-                    # First try the specific BERT extraction method
-                    embedding = self._get_bert_embeddings(
-                        model, processor, text, model_id
-                    )
-                except Exception as e:
-                    logger.debug(
-                        f"Failed with BERT method: {e!s}. Trying general generate() function."
-                    )
-                    # Fall back to the generate function
-                    output = generate(model, processor, text)
-                    if hasattr(output, "last_hidden_state"):
-                        embedding = output.last_hidden_state[:, 0, :]
+                    if shared_vlm_embedder is not None:
+                        result = shared_vlm_embedder.embed_text_pooled(text)
+                        embedding_list = self._ensure_float_list(result.embeddings)
+                        token_count += result.num_tokens
                     else:
-                        embedding = output
+                        try:
+                            # First try the specific BERT extraction method
+                            embedding = self._get_bert_embeddings(
+                                model, processor, text, model_id
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                f"Failed with BERT method: {e!s}. "
+                                "Trying general generate() function."
+                            )
+                            # Fall back to the generate function
+                            output = generate(model, processor, text)
+                            embedding = self._extract_output_embeddings(
+                                output, model_id
+                            )
 
-                # Convert to list of floats with proper formatting
-                embedding_list = self._ensure_float_list(embedding)
+                        # Finalize lazy MLX graphs before converting to Python
+                        # floats so long embedding runs do not pin intermediates.
+                        if isinstance(embedding, mx.array):
+                            mx.eval(embedding)
 
-                # Create embedding data
-                embedding_data = EmbeddingData(
-                    embedding=embedding_list,
-                    index=idx,
-                )
-                embeddings.append(embedding_data)
+                        # Convert to list of floats with proper formatting
+                        embedding_list = self._ensure_float_list(embedding)
+                        embedding = None
 
-            except Exception as e:
-                logger.error(f"Error generating embedding: {e!s}", exc_info=True)
-                raise RuntimeError(f"Failed to generate embedding: {e!s}") from e
+                    # Create embedding data
+                    embedding_data = EmbeddingData(
+                        embedding=embedding_list,
+                        index=idx,
+                    )
+                    embeddings.append(embedding_data)
+
+                except Exception as e:
+                    logger.error(f"Error generating embedding: {e!s}", exc_info=True)
+                    raise RuntimeError(f"Failed to generate embedding: {e!s}") from e
+        finally:
+            if shared_vlm_embedder is None:
+                mx.clear_cache()
 
         # Create the full response
         response = EmbeddingResponse(
@@ -171,3 +285,14 @@ class EmbeddingsService:
         )
 
         return response
+
+
+_embeddings_service: EmbeddingsService | None = None
+
+
+def get_embeddings_service() -> EmbeddingsService:
+    """Return a shared embeddings service instance."""
+    global _embeddings_service
+    if _embeddings_service is None:
+        _embeddings_service = EmbeddingsService()
+    return _embeddings_service

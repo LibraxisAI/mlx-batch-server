@@ -38,6 +38,7 @@ except ImportError:
             )
 
 
+from ...core.config import get_settings
 from ...utils.logger import logger
 from ...utils.model_limits import extract_context_length
 from .runtime_aliases import resolve_runtime_model_id
@@ -237,6 +238,44 @@ def _is_local_path(model_id: str) -> bool:
     )
 
 
+def _normalize_runtime_model_id(model_id: str) -> str:
+    """Normalize runtime IDs exactly like the shared residency cache."""
+    normalized = resolve_runtime_model_id(model_id).strip()
+    if normalized.startswith("~"):
+        normalized = str(Path(normalized).expanduser())
+
+    if (
+        "/" in normalized
+        and not normalized.startswith("/")
+        and not normalized.startswith(".")
+        and not normalized.startswith("~")
+    ):
+        return normalized.lower()
+    return normalized
+
+
+def _enforce_pinned_only_vlm_guard(model_id: str) -> None:
+    """Reject foreign VLM loads when the runtime is configured for pinned-only."""
+    settings = get_settings()
+    pinned = {
+        _normalize_runtime_model_id(candidate)
+        for candidate in settings.get_pinned_models()
+    }
+
+    if settings.model_cache_max_size > 0 or not pinned:
+        return
+
+    normalized = _normalize_runtime_model_id(model_id)
+    if normalized in pinned:
+        return
+
+    allowed = ", ".join(sorted(pinned))
+    raise ValueError(
+        "VLM model "
+        f"'{model_id}' is not allowed in pinned-only mode. Allowed: {allowed}"
+    )
+
+
 def _looks_multimodal_config(config: dict[str, Any]) -> bool:
     if any(config.get(key) is not None for key in _MULTIMODAL_CONFIG_KEYS):
         return True
@@ -297,6 +336,34 @@ def _load_vlm_runtime(
     return model, tokenizer, processor, chat_template_source
 
 
+def _load_draft_runtime(
+    draft_model_id: str | None,
+    tokenizer: TokenizerWrapper,
+) -> tuple[nn.Module | None, TokenizerWrapper | None]:
+    """Load optional draft runtime for speculative decoding."""
+    if not draft_model_id:
+        return None, None
+
+    try:
+        draft_model, draft_tokenizer = load_text_runtime(
+            draft_model_id,
+            tokenizer_config={"trust_remote_code": True},
+        )
+        draft_tokenizer = _wrap_tokenizer(draft_tokenizer)
+        _fix_tokenizer_eos(draft_tokenizer)
+
+        if draft_tokenizer.vocab_size != tokenizer.vocab_size:
+            logger.warn(
+                f"Draft model({draft_model_id}) tokenizer does not match model tokenizer."
+            )
+
+        logger.info(f"Loaded draft model: {draft_model_id}")
+        return draft_model, draft_tokenizer
+    except Exception as e:
+        logger.error(f"Failed to load draft model {draft_model_id}: {e}")
+        return None, None
+
+
 def load_mlx_model(
     model_id: str,
     adapter_path: str | None = None,
@@ -339,6 +406,7 @@ def load_mlx_model(
         processor = None
 
         if _should_use_vlm_runtime(config):
+            _enforce_pinned_only_vlm_guard(model_id)
             model, tokenizer, processor, chat_template_source = _load_vlm_runtime(
                 model_id=model_id,
                 adapter_path=adapter_path,
@@ -357,31 +425,7 @@ def load_mlx_model(
 
         chat_template = ChatTemplate(config["model_type"], chat_template_source)
 
-        # Load draft model if specified
-        draft_model = None
-        draft_tokenizer = None
-        if draft_model_id:
-            try:
-                draft_model, draft_tokenizer = load_text_runtime(
-                    draft_model_id,
-                    tokenizer_config={"trust_remote_code": True},
-                )
-                draft_tokenizer = _wrap_tokenizer(draft_tokenizer)
-                # Fix potential eos_token_ids mismatch for draft model
-                _fix_tokenizer_eos(draft_tokenizer)
-
-                # Check if vocabulary sizes match
-                if draft_tokenizer.vocab_size != tokenizer.vocab_size:
-                    logger.warn(
-                        f"Draft model({draft_model_id}) tokenizer does not match model tokenizer."
-                    )
-
-                logger.info(f"Loaded draft model: {draft_model_id}")
-            except Exception as e:
-                logger.error(f"Failed to load draft model {draft_model_id}: {e}")
-                # Continue without draft model
-                draft_model = None
-                draft_tokenizer = None
+        draft_model, draft_tokenizer = _load_draft_runtime(draft_model_id, tokenizer)
 
         return MLXModel(
             model_id=model_id,
@@ -396,6 +440,8 @@ def load_mlx_model(
             draft_tokenizer=draft_tokenizer,
         )
 
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"Failed to load model {model_id}: {e}")
         raise RuntimeError(f"Model loading failed for {model_id}: {e}") from e

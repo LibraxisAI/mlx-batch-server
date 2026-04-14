@@ -10,7 +10,7 @@ Includes:
 - Output entry building for Responses API
 - Harmony model detection
 
-Created by M&K (c)2025 The LibraxisAI Team
+Vibecrafted with AI Agents by VetCoders (c)2025 The LibraxisAI Team
 """
 
 from __future__ import annotations
@@ -476,6 +476,10 @@ _HARMONY_TOKEN_RE = re.compile(
 _CHANNEL_START_RE = re.compile(r"<\|channel\|>(\w+)")
 _MESSAGE_START_RE = re.compile(r"<\|message\|>")
 _END_TOKEN_RE = re.compile(r"<\|end\|>")
+_THINK_START_RE = re.compile(r"<think>", re.IGNORECASE)
+_THINK_END_RE = re.compile(r"</think>", re.IGNORECASE)
+_THINKING_PROCESS_LABEL_RE = re.compile(r"^\s*Thinking Process:\s*", re.IGNORECASE)
+_REASONING_PREFIX_MARKERS = ("<think>", "thinking process:")
 
 
 class HarmonyStreamingParser:
@@ -580,6 +584,152 @@ class HarmonyStreamingParser:
         }
 
 
+def _strip_reasoning_label(text: str) -> str:
+    """Remove human-facing reasoning labels and leading blank lines."""
+    stripped = _THINKING_PROCESS_LABEL_RE.sub("", text, count=1)
+    return stripped.lstrip("\r\n")
+
+
+def _trim_partial_reasoning_marker(text: str) -> str:
+    """Hide trailing partial reasoning markers until they are complete."""
+    lowered = text.lower()
+    best_trim = 0
+
+    for marker in (*_REASONING_PREFIX_MARKERS, "</think>"):
+        marker_lower = marker.lower()
+        max_prefix = min(len(marker_lower) - 1, len(lowered))
+        for prefix_len in range(max_prefix, 0, -1):
+            if lowered.endswith(marker_lower[:prefix_len]):
+                best_trim = max(best_trim, prefix_len)
+                break
+
+    if best_trim:
+        return text[:-best_trim]
+    return text
+
+
+def _has_ambiguous_reasoning_prefix(text: str) -> bool:
+    """Return True while the stream may still be opening a reasoning block."""
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+
+    lowered = stripped.lower()
+    return any(
+        marker.startswith(lowered) and lowered != marker
+        for marker in _REASONING_PREFIX_MARKERS
+    )
+
+
+def parse_reasoning_like_output(  # noqa: PLR0911
+    content: str,
+    *,
+    assume_initial_reasoning: bool = False,
+) -> dict[str, str | None]:
+    """
+    Split Qwen-style think output into reasoning and final text.
+
+    Supports:
+    - <think>...</think>
+    - Thinking Process: ... </think>
+    - Thinking Process: ... (stream still inside reasoning)
+    """
+    if not content:
+        return {"reasoning": None, "final_text": ""}
+
+    safe_content = _trim_partial_reasoning_marker(content)
+    stripped = safe_content.lstrip()
+
+    if _has_ambiguous_reasoning_prefix(safe_content):
+        return {"reasoning": None, "final_text": ""}
+
+    open_match = _THINK_START_RE.search(stripped)
+    if open_match:
+        reasoning_source = stripped[open_match.end() :]
+        close_match = _THINK_END_RE.search(reasoning_source)
+        if close_match:
+            reasoning_text = reasoning_source[: close_match.start()]
+            final_text = reasoning_source[close_match.end() :]
+        else:
+            reasoning_text = reasoning_source
+            final_text = ""
+        reasoning_text = _strip_reasoning_label(reasoning_text).strip()
+        return {
+            "reasoning": reasoning_text or None,
+            "final_text": final_text.lstrip("\r\n").strip(),
+        }
+
+    close_match = _THINK_END_RE.search(stripped)
+    if close_match:
+        reasoning_text = stripped[: close_match.start()]
+        final_text = stripped[close_match.end() :]
+        reasoning_text = _strip_reasoning_label(reasoning_text).strip()
+        return {
+            "reasoning": reasoning_text or None,
+            "final_text": final_text.lstrip("\r\n").strip(),
+        }
+
+    if _THINKING_PROCESS_LABEL_RE.match(stripped):
+        reasoning_text = _strip_reasoning_label(stripped).strip()
+        return {"reasoning": reasoning_text or None, "final_text": ""}
+
+    if assume_initial_reasoning:
+        reasoning_text = safe_content.strip()
+        return {"reasoning": reasoning_text or None, "final_text": ""}
+
+    return {"reasoning": None, "final_text": safe_content}
+
+
+class ReasoningStreamingParser:
+    """Stateful parser for Qwen-style reasoning mixed into plain text streams."""
+
+    def __init__(self, *, assume_initial_reasoning: bool = False):
+        self.full_text: str = ""
+        self.reasoning_started: bool = False
+        self.message_started: bool = False
+        self.assume_initial_reasoning = assume_initial_reasoning
+        self._emitted_reasoning_len = 0
+        self._emitted_output_len = 0
+
+    def process_delta(self, delta: str) -> list[tuple[str, str]]:
+        """Process one raw delta and emit ordered reasoning/output fragments."""
+        self.full_text += delta
+        parsed = parse_reasoning_like_output(
+            self.full_text,
+            assume_initial_reasoning=self.assume_initial_reasoning,
+        )
+        reasoning_text = parsed["reasoning"] or ""
+        output_text = parsed["final_text"] or ""
+
+        events: list[tuple[str, str]] = []
+
+        if len(reasoning_text) > self._emitted_reasoning_len:
+            reasoning_delta = reasoning_text[self._emitted_reasoning_len :]
+            if reasoning_delta:
+                self.reasoning_started = True
+                events.append(("reasoning", reasoning_delta))
+            self._emitted_reasoning_len = len(reasoning_text)
+
+        if len(output_text) > self._emitted_output_len:
+            output_delta = output_text[self._emitted_output_len :]
+            if output_delta:
+                self.message_started = True
+                events.append(("output", output_delta))
+            self._emitted_output_len = len(output_text)
+
+        return events
+
+    def get_state(self) -> dict[str, Any]:
+        """Get current parser state for debugging."""
+        return {
+            "reasoning_started": self.reasoning_started,
+            "message_started": self.message_started,
+            "full_text_size": len(self.full_text),
+            "reasoning_emitted_len": self._emitted_reasoning_len,
+            "output_emitted_len": self._emitted_output_len,
+        }
+
+
 def filter_harmony_tokens(text: str) -> str:
     """
     Strip Harmony special tokens from streaming delta for user display.
@@ -599,6 +749,7 @@ def filter_harmony_tokens(text: str) -> str:
 __all__ = [
     "HARMONY_AVAILABLE",
     "HarmonyStreamingParser",
+    "ReasoningStreamingParser",
     "apply_harmony_parsing",
     "build_harmony_output_entries",
     "create_harmony_conversation",
@@ -608,5 +759,6 @@ __all__ = [
     "parse_harmony_output",
     "parse_harmony_tool_calls",
     "parse_reasoning_channels",
+    "parse_reasoning_like_output",
     "render_harmony_prompt",
 ]

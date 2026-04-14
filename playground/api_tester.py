@@ -3,10 +3,18 @@
 LibraxisAI API Tester - Gradio Edition
 Multi-lane parallel comparison tool for API endpoints
 
+<<<<<<< Updated upstream
 Created by M&K (c)2026 VetCoders
 """
 
 import json
+=======
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+"""
+
+import json
+import os
+>>>>>>> Stashed changes
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +31,15 @@ ENDPOINTS = {
     "remote": "https://api.libraxis.cloud/v1/responses",
 }
 
+<<<<<<< Updated upstream
 DEFAULT_MODELS = ["chat", "programmer", "libraxisai/gpt-oss-120b-mlx-mxfp4"]
+=======
+DEFAULT_MODELS = [
+    "chat",
+    "programmer",
+    "LibraxisAI/Qwen3-VL-235B-A22B-Instruct-mlx-nvfp4",
+]
+>>>>>>> Stashed changes
 
 # Maciej's canonical test prompts
 CANONICAL_CHAIN = [
@@ -39,6 +55,44 @@ LOGS_FILE = Path(__file__).parent / "api_tester_logs.json"
 
 MAX_LANES = 6  # Maximum number of parallel lanes
 
+<<<<<<< Updated upstream
+=======
+APP_THEME = gr.themes.Base(
+    primary_hue="indigo",
+    secondary_hue="purple",
+    neutral_hue="zinc",
+)
+
+APP_CSS = """
+    .header { text-align: center; padding: 1rem; }
+    .header h1 {
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2rem;
+    }
+    .lane-box { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; }
+    .stats-box { font-family: monospace; background: #1a1a2e; padding: 0.5rem; border-radius: 4px; }
+    .run-btn { font-size: 1.2rem !important; font-weight: bold !important; }
+"""
+
+
+def _load_html_tester() -> tuple[str, str]:
+    """Load the standalone HTML tester and wrap it in an iframe."""
+    default_path = Path(__file__).parent / "static" / "api-tester.html"
+    html_path = Path(os.environ.get("LIBRAXIS_API_TESTER_HTML", default_path))
+    if not html_path.exists():
+        return (
+            f"<div style='color:#f59e0b'>HTML tester not found at {html_path}. Run make benchmark-build.</div>",
+            str(html_path),
+        )
+    iframe = (
+        "<iframe style='width:100%;height:92vh;border:none;border-radius:12px;' "
+        f"src='/file={html_path}'></iframe>"
+    )
+    return iframe, str(html_path)
+
+>>>>>>> Stashed changes
 
 # === API CLIENT ===
 
@@ -310,6 +364,7 @@ def get_log_count() -> int:
 # === GRADIO UI ===
 
 
+<<<<<<< Updated upstream
 def create_app():
     """Create the Gradio app with dynamic lanes."""
 
@@ -333,6 +388,12 @@ def create_app():
         .run-btn { font-size: 1.2rem !important; font-weight: bold !important; }
         """,
     ) as app:
+=======
+def create_app() -> tuple[gr.Blocks, str]:
+    """Create the Gradio app with dynamic lanes."""
+
+    with gr.Blocks(title="LibraxisAI API Tester") as app:
+>>>>>>> Stashed changes
         # Header
         gr.HTML("""
             <div class="header">
@@ -341,6 +402,7 @@ def create_app():
             </div>
         """)
 
+<<<<<<< Updated upstream
         # Global Config
         with gr.Row():
             api_key = gr.Textbox(
@@ -599,6 +661,278 @@ def create_app():
         """)
 
     return app
+=======
+        html_embed, html_path = _load_html_tester()
+        with gr.Tabs():
+            with gr.Tab("HTML Tester"):
+                gr.HTML(html_embed)
+                gr.Markdown(f"Source: `{html_path}`")
+            with gr.Tab("Gradio Tester"):
+                # Global Config
+                with gr.Row():
+                    api_key = gr.Textbox(
+                        label="API Key",
+                        type="password",
+                        value="c8b7f6e9d2a4c5b8e1f3d6a9c2b5e8f1d4a7c0b3e6f9d2a5c8b1e4f7d0a3c6b9",
+                        scale=3,
+                    )
+                    stream_mode = gr.Checkbox(label="Stream", value=True)
+                    num_lanes = gr.Slider(
+                        label="Number of Lanes",
+                        minimum=1,
+                        maximum=MAX_LANES,
+                        value=2,
+                        step=1,
+                    )
+
+                # System prompt (shared)
+                system_prompt = gr.Textbox(
+                    label="System Prompt (shared across all lanes)",
+                    placeholder="Jesteś pomocnym asystentem...",
+                    lines=2,
+                )
+
+                # Chain length selector
+                chain_length = gr.Slider(
+                    label="Chain Length (prompts per lane)",
+                    minimum=1,
+                    maximum=4,
+                    value=4,
+                    step=1,
+                )
+
+                # Prompts (canonical chain)
+                gr.Markdown("### Prompts (shared across all lanes)")
+                prompt_boxes = []
+                for i, default_prompt in enumerate(CANONICAL_CHAIN):
+                    prompt_boxes.append(
+                        gr.Textbox(
+                            label=f"Step {i + 1}",
+                            value=default_prompt,
+                            lines=2,
+                            visible=(i < 4),
+                        )
+                    )
+
+                # Update prompt visibility based on chain length
+                def update_prompt_visibility(length):
+                    return [gr.update(visible=(i < length)) for i in range(4)]
+
+                chain_length.change(
+                    update_prompt_visibility,
+                    inputs=[chain_length],
+                    outputs=prompt_boxes,
+                )
+
+                gr.Markdown("---")
+                gr.Markdown("### Lanes Configuration")
+
+                # Lane configurations - dynamic rendering
+                lane_configs = []
+                lane_outputs = []
+                lane_stats = []
+
+                # We'll create MAX_LANES components but show/hide based on num_lanes
+                for i in range(MAX_LANES):
+                    with gr.Group(visible=(i < 2)) as lane_group:
+                        gr.Markdown(f"#### Lane {i + 1}")
+                        with gr.Row():
+                            endpoint = gr.Dropdown(
+                                label="Endpoint",
+                                choices=list(ENDPOINTS.values()),
+                                value=list(ENDPOINTS.values())[i % len(ENDPOINTS)],
+                                allow_custom_value=True,
+                                scale=2,
+                            )
+                            model = gr.Dropdown(
+                                label="Model",
+                                choices=DEFAULT_MODELS,
+                                value=DEFAULT_MODELS[i % len(DEFAULT_MODELS)],
+                                allow_custom_value=True,
+                                scale=1,
+                            )
+
+                        # Quick endpoint buttons
+                        with gr.Row():
+                            for name, url in ENDPOINTS.items():
+                                btn = gr.Button(name, size="sm", scale=1)
+                                btn.click(lambda u=url: u, outputs=endpoint)
+
+                        output = gr.Textbox(
+                            label="Responses",
+                            lines=8,
+                            max_lines=15,
+                            interactive=False,
+                            buttons=["copy"],
+                        )
+                        stats = gr.Textbox(
+                            label="Stats",
+                            interactive=False,
+                            elem_classes=["stats-box"],
+                        )
+
+                    lane_configs.append(
+                        {
+                            "group": lane_group,
+                            "endpoint": endpoint,
+                            "model": model,
+                        }
+                    )
+                    lane_outputs.append(output)
+                    lane_stats.append(stats)
+
+                # Update lane visibility
+                def update_lanes_visibility(n):
+                    updates = []
+                    for i in range(MAX_LANES):
+                        updates.append(gr.update(visible=(i < n)))
+                    return updates
+
+                num_lanes.change(
+                    update_lanes_visibility,
+                    inputs=[num_lanes],
+                    outputs=[lc["group"] for lc in lane_configs],
+                )
+
+                gr.Markdown("---")
+
+                # Run button
+                with gr.Row():
+                    clear_btn = gr.Button("Clear All", variant="secondary")
+                    run_btn = gr.Button(
+                        "RUN ALL LANES (Parallel)",
+                        variant="primary",
+                        elem_classes=["run-btn"],
+                        scale=2,
+                    )
+
+                # Main execution function
+                def run_all_lanes(
+                    n_lanes,
+                    api_key,
+                    stream,
+                    system,
+                    chain_len,
+                    p1,
+                    p2,
+                    p3,
+                    p4,
+                    e1,
+                    m1,
+                    e2,
+                    m2,
+                    e3,
+                    m3,
+                    e4,
+                    m4,
+                    e5,
+                    m5,
+                    e6,
+                    m6,
+                ):
+                    """Run all enabled lanes in parallel."""
+
+                    prompts = [p1, p2, p3, p4][:chain_len]
+                    endpoints = [e1, e2, e3, e4, e5, e6]
+                    models = [m1, m2, m3, m4, m5, m6]
+
+                    # Build lane configs
+                    configs = []
+                    for i in range(int(n_lanes)):
+                        configs.append(
+                            {
+                                "endpoint": endpoints[i],
+                                "model": models[i],
+                                "prompts": prompts,
+                                "system": system,
+                            }
+                        )
+
+                    # Initial yield - show "Running..."
+                    initial_outputs = [
+                        "⏳ Running..." if i < n_lanes else "" for i in range(MAX_LANES)
+                    ]
+                    initial_stats = ["" for _ in range(MAX_LANES)]
+                    yield (*initial_outputs, *initial_stats)
+
+                    # Run in parallel
+                    results = run_lanes_parallel(configs, api_key, stream)
+
+                    # Save log
+                    save_log(results)
+
+                    # Format outputs
+                    final_outputs = []
+                    final_stats = []
+
+                    for i in range(MAX_LANES):
+                        if i < len(results):
+                            r = results[i]
+                            # Join all responses with step markers
+                            output_text = ""
+                            for j, resp in enumerate(r["responses"]):
+                                output_text += f"═══ Step {j + 1} ═══\n{resp}\n\n"
+
+                            final_outputs.append(output_text.strip())
+
+                            # Format stats
+                            ttft = f"{r['ttft']:.0f}ms" if r["ttft"] else "-"
+                            tps = (
+                                r["total_tokens"] / (r["total_time"] / 1000)
+                                if r["total_time"] > 0
+                                else 0
+                            )
+                            total = (
+                                f"{r['total_time'] / 1000:.2f}s"
+                                if r["total_time"]
+                                else "-"
+                            )
+                            stats_text = (
+                                f"TTFT: {ttft} | tok/s: {tps:.1f} | Total: {total}"
+                            )
+                            if r.get("error"):
+                                stats_text += f" | ❌ {r['error']}"
+                            final_stats.append(stats_text)
+                        else:
+                            final_outputs.append("")
+                            final_stats.append("")
+
+                    yield (*final_outputs, *final_stats)
+
+                # Connect run button
+                run_btn.click(
+                    run_all_lanes,
+                    inputs=[
+                        num_lanes,
+                        api_key,
+                        stream_mode,
+                        system_prompt,
+                        chain_length,
+                        *prompt_boxes,
+                        *[lc["endpoint"] for lc in lane_configs],
+                        *[lc["model"] for lc in lane_configs],
+                    ],
+                    outputs=[*lane_outputs, *lane_stats],
+                )
+
+                # Clear function
+                def clear_all():
+                    return [""] * MAX_LANES + [""] * MAX_LANES
+
+                clear_btn.click(
+                    clear_all,
+                    outputs=[*lane_outputs, *lane_stats],
+                )
+
+                # Footer
+                gr.HTML("""
+                    <div style="text-align: center; padding: 1rem; color: #666; font-size: 0.8rem;">
+                        Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders | LibraxisAI
+                    </div>
+                """)
+
+    return app, html_path
+>>>>>>> Stashed changes
 
 
 # === CLI BENCHMARK ===
@@ -794,12 +1128,26 @@ Examples:
         warnings.filterwarnings("ignore", message=".*will be removed in Gradio 6.0.*")
         warnings.filterwarnings("ignore", message=".*will be changed.*in Gradio 6.0.*")
 
+<<<<<<< Updated upstream
         app = create_app()
+=======
+        app, html_path = create_app()
+        allowed = []
+        html_dir = Path(html_path).parent if html_path else None
+        if html_dir and html_dir.exists():
+            allowed.append(str(html_dir))
+>>>>>>> Stashed changes
         app.launch(
             server_name="0.0.0.0",
             server_port=args.port,
             share=False,
             show_error=True,
+<<<<<<< Updated upstream
+=======
+            allowed_paths=allowed or None,
+            theme=APP_THEME,
+            css=APP_CSS,
+>>>>>>> Stashed changes
         )
 
 

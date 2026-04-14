@@ -91,7 +91,7 @@ openai-harmony package".
 
 If you need raw Harmony tokens (for debugging):
 
-```bash
+```python
 # Use chat completions endpoint instead of responses
 # Harmony parsing only applies to /v1/responses
 curl http://localhost:10240/v1/chat/completions \
@@ -100,4 +100,4 @@ curl http://localhost:10240/v1/chat/completions \
 ```
 
 ---
-Created by M&K (c)2026 VetCoders
+Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders

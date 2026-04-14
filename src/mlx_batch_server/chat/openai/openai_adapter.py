@@ -238,7 +238,9 @@ class OpenAIAdapter:
         return "", pending_buffer, False
 
     def _parse_stream_tool_calls(
-        self, accumulated_text: str
+        self,
+        accumulated_text: str,
+        params: dict[str, Any],
     ) -> tuple[list[ToolCall] | None, str]:
         """Parse tool calls from accumulated streaming text.
 
@@ -257,8 +259,14 @@ class OpenAIAdapter:
             f"Stream complete. Parsing for tool calls. Text preview: {text_preview}"
         )
 
-        chat_result = self._generate_wrapper.chat_template.parse_chat_response(
-            accumulated_text
+        parse_template = self._generate_wrapper.build_request_chat_template(
+            messages=params["messages"],
+            tools=params.get("tools"),
+            template_kwargs=params.get("template_kwargs"),
+            json_schema=params.get("json_schema"),
+        )
+        chat_result = parse_template.parse_chat_response(
+            accumulated_text,
         )
         content_preview = chat_result.content[:100] if chat_result.content else None
         logger.debug(
@@ -268,12 +276,13 @@ class OpenAIAdapter:
 
         if chat_result.tool_calls:
             tool_calls = _convert_tool_calls(chat_result.tool_calls)
-            logger.info(f"Found {len(tool_calls)} tool calls in stream")
-            for i, tc in enumerate(tool_calls):
-                logger.info(
-                    f"  Tool call {i}: {tc.function.name}({tc.function.arguments})"
-                )
-            return tool_calls, "tool_calls"
+            if tool_calls:
+                logger.info(f"Found {len(tool_calls)} tool calls in stream")
+                for i, tc in enumerate(tool_calls):
+                    logger.info(
+                        f"  Tool call {i}: {tc.function.name}({tc.function.arguments})"
+                    )
+                return tool_calls, "tool_calls"
 
         logger.info("No tool calls found in stream response")
         return None, "stop"
@@ -421,12 +430,13 @@ class OpenAIAdapter:
 
             result = None
             accumulated_text = ""
-            has_tools = request.tools is not None and len(request.tools) > 0
+            tools = request.tools or []
+            has_tools = len(tools) > 0
             in_tool_call = False
             pending_buffer = ""
 
             if has_tools:
-                logger.info(f"Streaming with {len(request.tools)} tools available")
+                logger.info(f"Streaming with {len(tools)} tools available")
 
             # Stream content chunks
             for chunk in self._generate_wrapper.generate_stream(**params):
@@ -475,7 +485,8 @@ class OpenAIAdapter:
             finish_reason = "stop"
             if has_tools and accumulated_text:
                 tool_calls, finish_reason = self._parse_stream_tool_calls(
-                    accumulated_text
+                    accumulated_text,
+                    params,
                 )
 
             # Emit final chunk with finish_reason and optional tool_calls

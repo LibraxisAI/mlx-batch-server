@@ -8,7 +8,7 @@ authors = [
 maintainers = [
     { name = "Maciej Gad", email = "void@div0.space" },
 ]
-# Original project by madroid (madroidmaq@gmail.com) - https://github.com/madroidmaq/mlx-batch-server
+# Original project by madroid (madroidmaq@gmail.com) - https://github.com/madroidmaq/mlx-omni-server
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
@@ -52,6 +52,9 @@ dependencies = [
     # embeddings
     "mlx-embeddings>=0.0.3",
     "openai-harmony>=0.0.8",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+    "mlx-vlm",
 ]
 
 [project.urls]
@@ -65,9 +68,10 @@ mlx-batch-server = "mlx_batch_server.main:start"
 dev = [
     "pytest>=8.3.3,<9",
     "httpx>=0.27.2,<0.28",
-    "gradio>=5.0.0",  # playground API tester
+    "gradio>=5.0.0", # playground API tester
     "pre-commit>=4.0.1,<5",
     "weave>=0.51.46,<0.60",
+    "chardet>=5,<6", # keep requests compatibility when weave pulls chardet
     "openai>=1.97.0",
     "anthropic>=0.57.1",
     # linting & formatting (LibraxisAI)
@@ -76,6 +80,7 @@ dev = [
     "bandit[toml]>=1.7.0",
     # for en_core_web_sm models
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "mlx-vlm @file:///Users/polyversai/Libraxis/mlx-vlm-local",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -91,8 +96,14 @@ include = ["src/mlx_batch_server"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.uv]
 prerelease = "allow"
+
+[tool.uv.sources]
+mlx-vlm = { path = "../mlx-vlm-local" }
 
 [tool.pytest.ini_options]
 log_cli = true
@@ -101,6 +112,11 @@ log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(linen
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:importlib._bootstrap",
+    "ignore:builtin type Swig:DeprecationWarning",
+    "ignore:BPE.__init__:DeprecationWarning:transformers",
 ]
 
 # === Ruff configuration (LibraxisAI) ===
@@ -137,7 +153,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH110", "PTH123"]
+"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
 "examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
 "playground/*" = ["PLR0912", "PLR0915", "PLC0415", "SIM105"]  # Testing tool, complexity OK
 "examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
@@ -148,6 +164,7 @@ ignore = [
 "src/mlx_batch_server/chat/mlx/tools/llama3.py" = ["PLC0415"]
 "src/mlx_batch_server/chat/mlx/tools/chat_template.py" = ["E402", "PLC0415", "PLR0912", "RUF003"]
 "src/mlx_batch_server/chat/openai/openai_adapter.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/chat/openai/models/models.py" = ["PLC0415"]  # Lazy imports for wrapper_cache
 # Complex parsing/conversion functions - refactoring would reduce readability
 "src/mlx_batch_server/chat/mlx/tools/glm45_tools_parser.py" = ["PLR0911"]
 "src/mlx_batch_server/chat/mlx/tools/qwen3_moe_tools_parser.py" = ["PLR0911"]
@@ -225,4 +242,4 @@ ignore_errors = true
 module = "mlx_batch_server.tts.*"
 ignore_errors = true
 
-# Created by M&K (c)2026 The LibraxisAI Team
+# Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
