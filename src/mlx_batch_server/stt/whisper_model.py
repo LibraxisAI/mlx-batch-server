@@ -137,8 +137,8 @@ class STTService:
 
 def preload_whisper_model(model_id: str) -> bool:
     """Preload a Whisper model into the global cache. Returns True if already loaded."""
-    import mlx.core as mx  # noqa: PLC0415
-    from mlx_whisper.transcribe import ModelHolder  # noqa: PLC0415
+    import mlx.core as mx
+    from mlx_whisper.transcribe import ModelHolder
 
     already_loaded = (
         ModelHolder.model is not None and ModelHolder.model_path == model_id
@@ -149,7 +149,7 @@ def preload_whisper_model(model_id: str) -> bool:
 
 def unload_whisper_model(model_id: str | None = None) -> list[str]:
     """Unload Whisper model(s). Returns unloaded model IDs."""
-    from mlx_whisper.transcribe import ModelHolder  # noqa: PLC0415
+    from mlx_whisper.transcribe import ModelHolder
 
     if ModelHolder.model is None:
         return []
