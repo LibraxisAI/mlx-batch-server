@@ -207,6 +207,30 @@ class Qwen3VLEmbedder:
             h = layer(h, position_ids=position_ids)
         return norm(h)
 
+    def _count_text_tokens(
+        self,
+        input_ids: mx.array,
+        attention_mask: mx.array | None,
+    ) -> int:
+        if attention_mask is None:
+            return int(input_ids.shape[1])
+        return int(mx.sum(attention_mask).item())
+
+    def _last_token_pool(
+        self,
+        hidden_states: mx.array,
+        attention_mask: mx.array | None,
+    ) -> mx.array:
+        if attention_mask is None:
+            return hidden_states[:, -1, :]
+
+        if bool(mx.all(attention_mask[:, -1]).item()):
+            return hidden_states[:, -1, :]
+
+        sequence_lengths = mx.sum(attention_mask, axis=1) - 1
+        batch_size = hidden_states.shape[0]
+        return hidden_states[mx.arange(batch_size), sequence_lengths]
+
     def _processor_call(self, **kwargs):
         last_error = None
         for tensor_type in ("np", "pt"):
@@ -349,7 +373,10 @@ class Qwen3VLEmbedder:
 
         raise ValueError("Unsupported image input")
 
-    def embed_text(self, text: str) -> EmbeddingResult:
+    def _embed_text_hidden_states(
+        self,
+        text: str,
+    ) -> tuple[mx.array, mx.array, mx.array | None, int]:
         self.load()
 
         with wrapper_cache.vlm_execution(self.model_id):
@@ -362,8 +389,19 @@ class Qwen3VLEmbedder:
                 tokenizer = processor
 
             inputs = self._tokenize_text(tokenizer, text)
-            input_ids = self._to_numpy(inputs["input_ids"]).astype(np.int64, copy=False)
-            input_ids = mx.array(input_ids, dtype=mx.int64)
+            input_ids_np = self._to_numpy(inputs["input_ids"]).astype(
+                np.int64, copy=False
+            )
+            input_ids = mx.array(input_ids_np, dtype=mx.int64)
+
+            attention_mask = inputs.get("attention_mask")
+            attention_mask_mx: mx.array | None = None
+            if attention_mask is not None:
+                attention_mask_np = self._to_numpy(attention_mask).astype(
+                    np.int32, copy=False
+                )
+                attention_mask_mx = mx.array(attention_mask_np, dtype=mx.int32)
+
             batch_size, seq_len = input_ids.shape
 
             inner_model = self._get_language_model(model)
@@ -376,17 +414,36 @@ class Qwen3VLEmbedder:
             hidden_states = self._run_language_layers(
                 inner_model, inputs_embeds, position_ids
             )
+            token_count = self._count_text_tokens(input_ids, attention_mask_mx)
+            return hidden_states, input_ids, attention_mask_mx, token_count
 
-            embeddings = self._project_and_normalize(hidden_states)
-            embeddings = embeddings.squeeze(0)
-            mx.eval(embeddings)
-            mx.clear_cache()
+    def embed_text(self, text: str) -> EmbeddingResult:
+        hidden_states, _, _, token_count = self._embed_text_hidden_states(text)
+        embeddings = self._project_and_normalize(hidden_states).squeeze(0)
+        mx.eval(embeddings)
+        mx.clear_cache()
 
-            return EmbeddingResult(
-                embeddings=embeddings,
-                num_tokens=embeddings.shape[0],
-                source_type="text",
-            )
+        return EmbeddingResult(
+            embeddings=embeddings,
+            num_tokens=token_count,
+            source_type="text",
+        )
+
+    def embed_text_pooled(self, text: str) -> EmbeddingResult:
+        """Return one sentence embedding from the shared VLM language tower."""
+        hidden_states, _, attention_mask, token_count = self._embed_text_hidden_states(
+            text
+        )
+        pooled = self._last_token_pool(hidden_states, attention_mask)
+        embeddings = self._project_and_normalize(pooled).squeeze(0)
+        mx.eval(embeddings)
+        mx.clear_cache()
+
+        return EmbeddingResult(
+            embeddings=embeddings,
+            num_tokens=token_count,
+            source_type="text",
+        )
 
     def embed_image(self, image: str | Path | Image.Image) -> EmbeddingResult:
         self.load()

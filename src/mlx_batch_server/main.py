@@ -10,6 +10,35 @@ from mlx_batch_server.utils import compat as _compat  # noqa: F401
 
 import argparse
 import os
+import re
+
+
+def _build_cors_config(cors_origins: str) -> tuple[list[str], str | None]:
+    """Split exact origins from wildcard origins and compile a regex for the latter."""
+    origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
+    if not origins:
+        return [], None
+
+    if "*" in origins:
+        return ["*"], None
+
+    exact_origins: list[str] = []
+    wildcard_patterns: list[str] = []
+
+    for origin in origins:
+        if "*" not in origin:
+            exact_origins.append(origin)
+            continue
+
+        # Turn user-friendly origin globs such as https://*.tail.ts.net into a
+        # strict origin regex accepted by Starlette's CORSMiddleware.
+        wildcard_patterns.append(re.escape(origin).replace(r"\*", r"[^/]+"))
+
+    allow_origin_regex = None
+    if wildcard_patterns:
+        allow_origin_regex = rf"^(?:{'|'.join(wildcard_patterns)})$"
+
+    return exact_origins, allow_origin_regex
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,10 +117,11 @@ def create_app():
     # Configure CORS from environment
     cors_origins = os.environ.get("MLX_BATCH_CORS", "")
     if cors_origins:
-        origins = [origin.strip() for origin in cors_origins.split(",")]
+        origins, allow_origin_regex = _build_cors_config(cors_origins)
         application.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_origin_regex=allow_origin_regex,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],

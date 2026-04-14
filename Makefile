@@ -10,11 +10,16 @@
 #   make check      - Run all checks (lint + test)
 #   make clean      - Clean build artifacts
 
-.PHONY: install dev run stop restart logs test lint format check clean help benchmark
+.PHONY: install dev run stop restart logs test lint format check clean help benchmark \
+	benchmark-cli benchmark-quick benchmark-build setup install-dev install-hooks lint-fix format-check \
+	security pre-commit pre-push test-fast test-cov test-responses loctree twins build \
+	docker-build docker-run load unload list ps status batch-stats embeddings reranker \
+	vision stt tts
 .DEFAULT_GOAL := help
 
 # === Configuration ===
-PYTHON := uv run python
+VENV_PYTHON := .venv/bin/python
+PYTHON := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),uv run python)
 PORT ?= 10240
 HOST ?= 0.0.0.0
 LOG_LEVEL ?= info
@@ -91,8 +96,12 @@ BENCH_WORKERS ?= 10
 BENCH_ENDPOINT ?= http://localhost:$(PORT)/v1/responses
 BENCH_MODEL ?= chat
 
-benchmark: ## Run API tester (Gradio UI on http://localhost:7860)
+benchmark: benchmark-build ## Run API tester (Gradio UI on http://localhost:7860)
 	$(PYTHON) playground/api_tester.py --port $(BENCH_PORT)
+
+benchmark-build: ## Build HTML tester static assets
+	$(PYTHON) playground/build_static.py
+
 
 benchmark-cli: ## Run CLI benchmark (BENCH_WORKERS=10 BENCH_MODEL=chat)
 	$(PYTHON) playground/api_tester.py --cli -w $(BENCH_WORKERS) -e $(BENCH_ENDPOINT) -m $(BENCH_MODEL)
@@ -156,24 +165,59 @@ twins: ## Check for duplicate code
 # === Model Management (LMS-style) ===
 MODEL ?= mlx-community/Qwen2.5-7B-Instruct-4bit
 SERVER_URL ?= http://localhost:$(PORT)
+TASK ?=
+UNLOAD_MODEL := $(if $(filter-out file,$(origin MODEL)),$(MODEL),)
+EMBEDDINGS_INPUT ?= hello from mlx
+RERANKER_INPUT ?= query: hello | passage: hello
+VISION_PROMPT ?= a simple test image
+VISION_RESPONSE_FORMAT ?= url
+STT_AUDIO ?= tests/test_audio.wav
+STT_RESPONSE_FORMAT ?= json
+TTS_INPUT ?= hello from mlx
+TTS_VOICE ?= af_sky
+TTS_FORMAT ?= wav
+TTS_OUTPUT ?= logs/tts-output.wav
 
-load: ## Load a model (MODEL=<model-id>)
+load: ## Load a model (MODEL=<model-id> [TASK=llm|embeddings|visual|images|stt|tts])
 	@echo "Loading model: $(MODEL)"
-	@curl -s -X POST $(SERVER_URL)/v1/models/load \
+	@payload='{"model": "$(MODEL)"}'; \
+	if [ -n "$(TASK)" ]; then payload=$$(printf '{"model": "%s", "task": "%s"}' "$(MODEL)" "$(TASK)"); fi; \
+	curl -s -X POST $(SERVER_URL)/v1/models/load \
 		-H "Content-Type: application/json" \
-		-d '{"model": "$(MODEL)"}' | $(PYTHON) -m json.tool 2>/dev/null || \
+		-d "$$payload" | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
 
-unload: ## Unload current model
+unload: ## Unload model(s) (MODEL=<model-id> [TASK=llm|embeddings|visual|images|stt|tts])
 	@echo "Unloading model..."
-	@curl -s -X POST $(SERVER_URL)/v1/models/unload | $(PYTHON) -m json.tool 2>/dev/null || \
+	@payload='{}'; \
+	if [ -n "$(UNLOAD_MODEL)" ]; then payload=$$(printf '{"model": "%s"}' "$(UNLOAD_MODEL)"); fi; \
+	if [ -n "$(TASK)" ]; then \
+		if [ -n "$(UNLOAD_MODEL)" ]; then \
+			payload=$$(printf '{"model": "%s", "task": "%s"}' "$(UNLOAD_MODEL)" "$(TASK)"); \
+		else \
+			payload=$$(printf '{"task": "%s"}' "$(TASK)"); \
+		fi; \
+	fi; \
+	curl -s -X POST $(SERVER_URL)/v1/models/unload \
+		-H "Content-Type: application/json" \
+		-d "$$payload" | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
 
 ps: ## List loaded models (in memory)
 	@curl -s $(SERVER_URL)/v1/models/loaded 2>/dev/null | \
 		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); models=d.get('data',[]); \
-		print('\n'.join(f'  \033[32m●\033[0m {m[\"id\"]}' for m in models)) if models else print('  (none loaded)')" 2>/dev/null || \
+		print('\n'.join(f'  \033[32m●\033[0m {m[\"id\"]} [backend={\"+\".join(m.get(\"backends\", [])) or \"unknown\"}]' for m in models)) if models else print('  (none loaded)')" 2>/dev/null || \
 		echo "Server not running"
+
+list: ## List all models in HuggingFace cache (local disk)
+	@echo "=== HuggingFace Cache (local models) ==="
+	@LOADED=$$(curl -s $(SERVER_URL)/v1/models/loaded 2>/dev/null | $(PYTHON) -c "import sys,json; d=json.load(sys.stdin); print(' '.join(m['id'] for m in d.get('data',[])))" 2>/dev/null || echo ""); \
+	hf cache ls 2>/dev/null | grep "^model/" | \
+		$(PYTHON) -c "import sys; loaded='$$LOADED'.split(); \
+[print(f'  \033[32m● loaded\033[0m  {p[6:]:50} {s:>8}') if p[6:] in loaded else print(f'  \033[90m○ cached\033[0m  {p[6:]:50} {s:>8}') \
+for line in sys.stdin if (parts := line.strip().split()) and len(parts) >= 2 and (p := parts[0]) and (s := parts[1])]" 2>/dev/null || \
+		echo "  (hf CLI not available - install: cargo install hf-cli)"
+
 
 status: ## Server status with loaded models
 	@echo "=== MLX Batch Server Status ==="
@@ -192,6 +236,51 @@ status: ## Server status with loaded models
 batch-stats: ## Show batch coordinator stats
 	@curl -s $(SERVER_URL)/v1/batch/stats | $(PYTHON) -m json.tool 2>/dev/null || \
 		echo "Server not running or endpoint not available"
+
+# === Task Model Helpers ===
+embeddings: ## Run embeddings model (MODEL=<model-id> PORT=<port>)
+	@echo "Embedding request: $(MODEL)"
+	@curl -s -X POST $(SERVER_URL)/v1/embeddings \
+		-H "Content-Type: application/json" \
+		-d '{"model": "$(MODEL)", "input": "$(EMBEDDINGS_INPUT)"}' | \
+		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); dim=len(d.get('data',[{}])[0].get('embedding', [])); print('OK embeddings model: %s (dim=%s)' % (d.get('model'), dim))" 2>/dev/null || \
+		echo "Server not running or endpoint not available"
+
+reranker: ## Run reranker model (MODEL=<model-id> PORT=<port>)
+	@echo "Reranker request: $(MODEL)"
+	@curl -s -X POST $(SERVER_URL)/v1/embeddings \
+		-H "Content-Type: application/json" \
+		-d '{"model": "$(MODEL)", "input": "$(RERANKER_INPUT)"}' | \
+		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); dim=len(d.get('data',[{}])[0].get('embedding', [])); print('OK reranker model: %s (dim=%s)' % (d.get('model'), dim))" 2>/dev/null || \
+		echo "Server not running or endpoint not available"
+
+vision: ## Run vision model (MODEL=<model-id> PORT=<port>)
+	@echo "Vision request: $(MODEL)"
+	@curl -s -X POST $(SERVER_URL)/v1/images/generations \
+		-H "Content-Type: application/json" \
+		-d '{"model": "$(MODEL)", "prompt": "$(VISION_PROMPT)", "response_format": "$(VISION_RESPONSE_FORMAT)"}' | \
+		$(PYTHON) -c "import sys,json; d=json.load(sys.stdin); data=d.get('data', []); url=data[0].get('url') if data else None; print('OK vision response: %s' % (url or 'no url'))" 2>/dev/null || \
+		echo "Server not running or endpoint not available"
+
+stt: ## Run stt model (MODEL=<model-id> PORT=<port>)
+	@echo "STT request: $(MODEL) (audio: $(STT_AUDIO))"
+	@curl -s -X POST $(SERVER_URL)/v1/audio/transcriptions \
+		-H "Content-Type: multipart/form-data" \
+		-F "file=@$(STT_AUDIO)" \
+		-F "model=$(MODEL)" \
+		-F "response_format=$(STT_RESPONSE_FORMAT)" || \
+		echo "Server not running or endpoint not available"
+
+tts: ## Run tts model (MODEL=<model-id> PORT=<port>)
+	@mkdir -p $(dir $(TTS_OUTPUT))
+	@echo "TTS request: $(MODEL) -> $(TTS_OUTPUT)"
+	@curl -s -X POST $(SERVER_URL)/v1/audio/speech \
+		-H "Content-Type: application/json" \
+		-d '{"model": "$(MODEL)", "input": "$(TTS_INPUT)", "voice": "$(TTS_VOICE)", "response_format": "$(TTS_FORMAT)"}' \
+		--output $(TTS_OUTPUT) && \
+		echo "Saved audio to $(TTS_OUTPUT)" || \
+		echo "Server not running or endpoint not available"
+
 
 # === Build & Release ===
 build: ## Build package
