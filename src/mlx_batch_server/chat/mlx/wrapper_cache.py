@@ -22,6 +22,19 @@ from .chat_generator import ChatGenerator
 from .runtime_aliases import resolve_runtime_model_id
 
 
+def normalize_runtime_path(path: str | None) -> str | None:
+    """Normalize optional filesystem-like runtime paths for stable cache keys."""
+    if path is None:
+        return None
+
+    normalized = path.strip()
+    if not normalized:
+        return None
+    if normalized.startswith("~"):
+        normalized = str(Path(normalized).expanduser())
+    return normalized
+
+
 def normalize_model_id(model_id: str) -> str:
     """Normalize model IDs for stable cache keys."""
     normalized = resolve_runtime_model_id(model_id).strip()
@@ -43,7 +56,7 @@ def normalize_runtime_key(
     draft_model_id: str | None = None,
 ) -> WrapperCacheKey:
     """Normalize all runtime-key fields so residency checks are stable."""
-    normalized_adapter = adapter_path.strip() or None if adapter_path else None
+    normalized_adapter = normalize_runtime_path(adapter_path)
     normalized_draft = normalize_model_id(draft_model_id) if draft_model_id else None
     return WrapperCacheKey(
         model_id=normalize_model_id(model_id),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -45,6 +46,49 @@ class TestSingleEndpointRuntimePolicy:
         )
 
         result = await ensure_single_endpoint_llm_runtime("demo-model")
+
+        assert result["switched"] is False
+        assert state["shutdown_called"] is False
+        assert state["unloaded"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_switch_when_adapter_path_only_differs_by_home_relative_form(
+        self,
+        monkeypatch,
+    ):
+        state = {"shutdown_called": False, "unloaded": []}
+        adapter_path = "~/adapters/frontier-lora"
+        expanded_adapter_path = str(Path(adapter_path).expanduser())
+
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.wrapper_cache.get_runtime_keys",
+            lambda: [WrapperCacheKey("demo-model", expanded_adapter_path, None)],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.get_loaded_batch_models",
+            lambda: ["demo-model"],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.wrapper_cache.get_loaded_models",
+            lambda: ["demo-model"],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.wrapper_cache.unload_model",
+            lambda model_id: state["unloaded"].append(model_id) or True,
+        )
+
+        async def fake_shutdown():
+            state["shutdown_called"] = True
+
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.shutdown_all_coordinators",
+            fake_shutdown,
+        )
+
+        result = await ensure_single_endpoint_llm_runtime(
+            "demo-model",
+            adapter_path=adapter_path,
+        )
 
         assert result["switched"] is False
         assert state["shutdown_called"] is False
