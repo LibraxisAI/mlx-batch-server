@@ -6,6 +6,7 @@ LRU eviction, thread safety, and edge case handling.
 
 import threading
 import time
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -466,6 +467,20 @@ class TestMLXWrapperCacheModelManagement:
             ]
         finally:
             runtime_aliases_module.clear_runtime_aliases()
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_home_relative_path_reuses_single_cached_wrapper(self, mock_create):
+        """Home-relative model paths should collapse to one cache identity."""
+        model_path = "~/models/frontier-vlm"
+        expanded_path = str(Path(model_path).expanduser())
+        mock_create.return_value = MockChatGenerator(expanded_path, multimodal=True)
+
+        first = self.cache.get_wrapper(model_path)
+        second = self.cache.get_wrapper(expanded_path)
+
+        assert second is first
+        assert mock_create.call_count == 1
+        assert self.cache.get_loaded_models() == [expanded_path]
 
 
 class TestMLXWrapperCachePinnedOnly:
