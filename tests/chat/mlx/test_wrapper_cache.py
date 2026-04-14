@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
+from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.chat.mlx.wrapper_cache import MLXWrapperCache, WrapperCacheKey
 
 
@@ -59,6 +60,7 @@ class TestMLXWrapperCache:
 
     def setup_method(self):
         """Set up test fixtures."""
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=3)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -148,6 +150,7 @@ class TestMLXWrapperCacheThreadSafety:
 
     def setup_method(self):
         """Set up test fixtures."""
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=10)
         self.results = []
         self.creation_count = 0
@@ -212,6 +215,7 @@ class TestMLXWrapperCacheTTL:
     def setup_method(self):
         """Set up test fixtures."""
         # Use short TTL for faster testing
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=5, ttl_seconds=1)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -335,6 +339,7 @@ class TestMLXWrapperCacheModelManagement:
 
     def setup_method(self):
         """Set up test fixtures."""
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=5)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -386,6 +391,25 @@ class TestMLXWrapperCacheModelManagement:
         result = self.cache.unload_model("model1")
         assert result is True
         assert self.cache.get_cache_info()["cache_size"] == 0
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_unload_model_clears_runtime_surface_attachments(self, mock_create):
+        """Actual runtime eviction should remove stale surface ownership metadata."""
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+
+        self.cache.get_wrapper("model-vlm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "embeddings")
+
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["embeddings", "visual"]
+
+        assert self.cache.unload_model("model-vlm") is True
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments("model-vlm")
+            == []
+        )
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_is_model_loaded(self, mock_create):

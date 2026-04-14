@@ -10,6 +10,7 @@ from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     normalize_runtime_path,
 )
+from ..chat.mlx.runtime_attachments import attach_runtime_surface
 from ..chat.mlx.wrapper_cache import wrapper_cache
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 
@@ -61,6 +62,7 @@ def _get_embedder(
             embedder.load()
             embedder.log_summary()
             _embedder_cache[key] = embedder
+    attach_runtime_surface(key[0], "visual")
     return embedder
 
 

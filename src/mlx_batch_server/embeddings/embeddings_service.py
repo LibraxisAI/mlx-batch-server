@@ -7,6 +7,7 @@ from mlx_embeddings import generate, load
 
 from ..chat.mlx.model_types import resolves_to_multimodal_runtime
 from ..chat.mlx.runtime_aliases import resolve_runtime_model_id
+from ..chat.mlx.runtime_attachments import attach_runtime_surface
 from ..chat.mlx.wrapper_cache import normalize_model_id
 from ..utils.logger import logger
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
@@ -131,6 +132,7 @@ class EmbeddingsService:
         """Pool text embeddings directly from the shared resident VLM runtime."""
         embedder = SharedVLMTextEmbedder(model_id)
         embedder.load()
+        attach_runtime_surface(model_id, "embeddings")
         return embedder
 
     def _unload_shared_vlm_embedder(self, model_id: str) -> list[str]:

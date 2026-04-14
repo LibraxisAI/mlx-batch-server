@@ -7,6 +7,7 @@ import mlx.core as mx
 import pytest
 
 from mlx_batch_server.chat.mlx import chat_generator as chat_generator_module
+from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 from mlx_batch_server.chat.mlx.model_types import (
     MLXLMCompatibleLanguageModel,
@@ -97,6 +98,9 @@ def _fake_wrapper(context_length: int, *, multimodal: bool = False) -> ChatGener
 
 
 class TestChatGeneratorLimits:
+    def setup_method(self):
+        runtime_attachments_module.clear_runtime_surface_attachments()
+
     def test_resolve_max_tokens_clamps_to_remaining_context(self):
         """Sequential generation should clamp to the remaining context."""
         wrapper = _fake_wrapper(context_length=8)
@@ -266,6 +270,24 @@ class TestChatGeneratorLimits:
 
         assert len(results) == 1
         assert events == [("enter", "test-model"), ("exit", "test-model")]
+
+    def test_get_or_create_attaches_llm_runtime_surface(self, monkeypatch):
+        """Lazy text-model access should record llm ownership for runtime truth."""
+        wrapper = _fake_wrapper(context_length=8, multimodal=True)
+        wrapper.model.model_id = "LibraxisAI/Qwen3-VL-30B"
+
+        monkeypatch.setattr(
+            shared_wrapper_cache,
+            "get_wrapper",
+            lambda model_id, adapter_path=None, draft_model_id=None: wrapper,
+        )
+
+        loaded = ChatGenerator.get_or_create("frontier-vlm")
+
+        assert loaded is wrapper
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b"
+        ) == ["llm"]
 
     def test_vlm_text_model_is_mlx_lm_compatible_with_real_generate_step(self):
         """The VLM seam should unwrap LanguageModelOutput for real mlx_lm generation."""

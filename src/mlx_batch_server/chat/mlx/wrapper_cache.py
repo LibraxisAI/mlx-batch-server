@@ -19,6 +19,7 @@ from ...utils.logger import logger
 from ...utils.memory import force_mlx_cleanup
 from .chat_generator import ChatGenerator
 from .runtime_aliases import normalize_runtime_model_id, normalize_runtime_path
+from .runtime_attachments import clear_runtime_surface_attachments
 
 
 def normalize_model_id(model_id: str) -> str:
@@ -148,6 +149,8 @@ class MLXWrapperCache:
         for key in expired_keys:
             wrapper = self._cache.pop(key, None)
             self._access_times.pop(key, None)
+            if not self._has_runtime_for_model_locked(key.model_id):
+                clear_runtime_surface_attachments(key.model_id)
             logger.info(
                 f"Evicted expired model from cache (TTL={self._ttl_seconds}s): {key}"
             )
@@ -176,6 +179,8 @@ class MLXWrapperCache:
             # Remove from cache and access times
             wrapper = self._cache.pop(lru_key, None)
             self._access_times.pop(lru_key, None)
+            if not self._has_runtime_for_model_locked(lru_key.model_id):
+                clear_runtime_surface_attachments(lru_key.model_id)
 
             logger.info(f"Evicted LRU model from cache: {lru_key}")
             self._release_memory(wrapper, lru_key)
@@ -186,6 +191,10 @@ class MLXWrapperCache:
         This method should be called while holding the lock.
         """
         self._access_times[key] = time.time()
+
+    def _has_runtime_for_model_locked(self, model_id: str) -> bool:
+        """Return True while any cache entry still owns this canonical model id."""
+        return any(key.model_id == model_id for key in self._cache)
 
     def _periodic_cleanup(self) -> None:
         """Background thread method for periodic cleanup of expired items.
@@ -318,6 +327,7 @@ class MLXWrapperCache:
             self._cache.clear()
             self._access_times.clear()
             self._vlm_execution_locks.clear()
+            clear_runtime_surface_attachments()
             logger.info(f"Cleared cache ({cache_size} runtime entries)")
 
         for key, wrapper in wrappers_to_release:
@@ -347,6 +357,10 @@ class MLXWrapperCache:
                 logger.info(f"Unloaded model from cache: {key}")
 
             self._vlm_execution_locks.pop(normalized_model_id, None)
+            if keys_to_remove and not self._has_runtime_for_model_locked(
+                normalized_model_id
+            ):
+                clear_runtime_surface_attachments(normalized_model_id)
             found = bool(keys_to_remove)
 
         if not found:

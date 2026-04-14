@@ -131,13 +131,16 @@ class ChatGenerator:
             efficient memory usage across different API endpoints.
         """
         # Import here to avoid circular imports
+        from .runtime_attachments import attach_runtime_surface
         from .wrapper_cache import wrapper_cache
 
-        return wrapper_cache.get_wrapper(
+        wrapper = wrapper_cache.get_wrapper(
             model_id=model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
         )
+        attach_runtime_surface(wrapper.model.model_id, "llm")
+        return wrapper
 
     @property
     def prompt_cache(self):
