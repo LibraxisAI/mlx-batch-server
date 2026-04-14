@@ -26,6 +26,7 @@ from .runtime_attachments import (
     attach_runtime_surface,
     clear_runtime_surface_attachments,
     get_runtime_surface_attachments,
+    list_runtime_surface_attachments_by_runtime,
     release_runtime_surface,
 )
 
@@ -137,7 +138,11 @@ class MLXWrapperCache:
         cache contract lies about residency and forces surprise reloads.
         """
         return self._is_pinned(key) or bool(
-            get_runtime_surface_attachments(key.model_id)
+            get_runtime_surface_attachments(
+                key.model_id,
+                adapter_path=key.adapter_path,
+                draft_model_id=key.draft_model_id,
+            )
         )
 
     def _should_cache_runtime(self, key: WrapperCacheKey) -> bool:
@@ -145,7 +150,13 @@ class MLXWrapperCache:
         return (
             self._is_pinned(key)
             or self._max_size > 0
-            or bool(get_runtime_surface_attachments(key.model_id))
+            or bool(
+                get_runtime_surface_attachments(
+                    key.model_id,
+                    adapter_path=key.adapter_path,
+                    draft_model_id=key.draft_model_id,
+                )
+            )
         )
 
     def _release_memory(
@@ -188,8 +199,11 @@ class MLXWrapperCache:
         for key in expired_keys:
             wrapper = self._cache.pop(key, None)
             self._access_times.pop(key, None)
-            if not self._has_runtime_for_model_locked(key.model_id):
-                clear_runtime_surface_attachments(key.model_id)
+            clear_runtime_surface_attachments(
+                key.model_id,
+                adapter_path=key.adapter_path,
+                draft_model_id=key.draft_model_id,
+            )
             logger.info(
                 f"Evicted expired model from cache (TTL={self._ttl_seconds}s): {key}"
             )
@@ -223,8 +237,11 @@ class MLXWrapperCache:
             # Remove from cache and access times
             wrapper = self._cache.pop(lru_key, None)
             self._access_times.pop(lru_key, None)
-            if not self._has_runtime_for_model_locked(lru_key.model_id):
-                clear_runtime_surface_attachments(lru_key.model_id)
+            clear_runtime_surface_attachments(
+                lru_key.model_id,
+                adapter_path=lru_key.adapter_path,
+                draft_model_id=lru_key.draft_model_id,
+            )
 
             logger.info(f"Evicted LRU model from cache: {lru_key}")
             self._release_memory(wrapper, lru_key)
@@ -285,7 +302,12 @@ class MLXWrapperCache:
         key = normalize_runtime_key(model_id, adapter_path, draft_model_id)
         normalized_model_id = key.model_id
         attachment_state = (
-            attach_runtime_surface(key.model_id, surface)
+            attach_runtime_surface(
+                key.model_id,
+                surface,
+                adapter_path=key.adapter_path,
+                draft_model_id=key.draft_model_id,
+            )
             if surface is not None
             else None
         )
@@ -344,7 +366,12 @@ class MLXWrapperCache:
                 return wrapper
             except Exception as e:
                 if attachment_state is not None and not attachment_state.was_attached:
-                    release_runtime_surface(key.model_id, attachment_state.surface)
+                    release_runtime_surface(
+                        key.model_id,
+                        attachment_state.surface,
+                        adapter_path=key.adapter_path,
+                        draft_model_id=key.draft_model_id,
+                    )
                 logger.error(f"Failed to create ChatGenerator for {key}: {e}")
                 raise
 
@@ -387,34 +414,54 @@ class MLXWrapperCache:
         for key, wrapper in wrappers_to_release:
             self._release_memory(wrapper, key)
 
-    def unload_model(self, model_id: str) -> bool:
-        """Unload a specific model from cache.
+    def unload_model(
+        self,
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> bool:
+        """Unload a specific model or one exact runtime key from cache.
 
         Args:
             model_id: The model ID to unload
+            adapter_path: Optional adapter path for exact runtime eviction
+            draft_model_id: Optional speculative draft runtime identity
 
         Returns:
             True if model was found and unloaded, False otherwise
         """
+        exact_key = None
         normalized_model_id = normalize_model_id(model_id)
+        if adapter_path is not None or draft_model_id is not None:
+            exact_key = normalize_runtime_key(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
+            normalized_model_id = exact_key.model_id
         wrappers_to_release: list[tuple[WrapperCacheKey, ChatGenerator | None]] = []
         found = False
 
         with self._lock:
-            keys_to_remove = [
-                key for key in self._cache if key.model_id == normalized_model_id
-            ]
+            if exact_key is None:
+                keys_to_remove = [
+                    key for key in self._cache if key.model_id == normalized_model_id
+                ]
+            else:
+                keys_to_remove = [key for key in self._cache if key == exact_key]
             for key in keys_to_remove:
                 wrapper = self._cache.pop(key, None)
                 self._access_times.pop(key, None)
                 wrappers_to_release.append((key, wrapper))
+                clear_runtime_surface_attachments(
+                    key.model_id,
+                    adapter_path=key.adapter_path,
+                    draft_model_id=key.draft_model_id,
+                )
                 logger.info(f"Unloaded model from cache: {key}")
 
-            self._vlm_execution_locks.pop(normalized_model_id, None)
-            if keys_to_remove and not self._has_runtime_for_model_locked(
-                normalized_model_id
-            ):
-                clear_runtime_surface_attachments(normalized_model_id)
+            if not any(key.model_id == normalized_model_id for key in self._cache):
+                self._vlm_execution_locks.pop(normalized_model_id, None)
             found = bool(keys_to_remove)
 
         if not found:
@@ -511,26 +558,51 @@ class MLXWrapperCache:
         with self._lock:
             return self._loaded_multimodal_model_ids()
 
-    def unload_vlm_model(self, model_id: str | None = None) -> list[str]:
+    def unload_vlm_model(
+        self,
+        model_id: str | None = None,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> list[str]:
         """Unload one or all multimodal-capable runtimes.
 
         Args:
             model_id: Specific model to unload, or ``None`` to clear all.
+            adapter_path: Optional adapter path for exact runtime eviction
+            draft_model_id: Optional speculative draft runtime identity
 
         Returns:
             List of model IDs that were actually evicted.
         """
         if model_id is not None:
-            normalized = normalize_model_id(model_id)
+            runtime_key = normalize_runtime_key(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
+            normalized = runtime_key.model_id
             with self._lock:
                 is_multimodal = any(
-                    key.model_id == normalized
+                    (
+                        key == runtime_key
+                        if adapter_path is not None or draft_model_id is not None
+                        else key.model_id == normalized
+                    )
                     and getattr(wrapper.model, "supports_multimodal", False)
                     for key, wrapper in self._cache.items()
                 )
             if not is_multimodal:
                 return []
-            return [normalized] if self.unload_model(normalized) else []
+            return (
+                [normalized]
+                if self.unload_model(
+                    normalized,
+                    adapter_path=runtime_key.adapter_path,
+                    draft_model_id=runtime_key.draft_model_id,
+                )
+                else []
+            )
 
         with self._lock:
             multimodal_ids = self._loaded_multimodal_model_ids()
@@ -587,6 +659,7 @@ class MLXWrapperCache:
                 "cached_keys": [str(key) for key in self._cache],
                 "runtime_keys": [serialize_runtime_key(key) for key in self._cache],
                 "vlm_cached_keys": self._loaded_multimodal_model_ids(),
+                "surface_runtime_attachments": list_runtime_surface_attachments_by_runtime(),
                 "lru_order": [str(key) for key, _ in sorted_keys],  # Most recent first
                 "ttl_info": ttl_info,
             }

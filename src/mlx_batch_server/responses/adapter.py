@@ -104,9 +104,18 @@ def get_loaded_vlm_models() -> list[str]:
     return wrapper_cache.get_loaded_vlm_models()
 
 
-def unload_vlm_model(model_id: str | None = None) -> list[str]:
+def unload_vlm_model(
+    model_id: str | None = None,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> list[str]:
     """Unload one or all VLM models (delegates to wrapper_cache)."""
-    return wrapper_cache.unload_vlm_model(model_id)
+    return wrapper_cache.unload_vlm_model(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
 
 
 class ResponsesAdapter:

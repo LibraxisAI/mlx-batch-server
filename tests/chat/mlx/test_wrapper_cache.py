@@ -188,6 +188,41 @@ class TestMLXWrapperCache:
         assert mock_create.call_count == 1
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_attachment_only_retain_exact_runtime_variant(self, mock_create):
+        """One retained variant must not keep sibling adapter variants resident."""
+        cache = MLXWrapperCache(max_size=0)
+        mock_create.side_effect = [
+            MockChatGenerator("model-vlm-adapter-a", multimodal=True),
+            MockChatGenerator("model-vlm-adapter-b", multimodal=True),
+        ]
+
+        retained = cache.get_wrapper(
+            "model-vlm",
+            adapter_path="/adapter-a",
+            surface="visual",
+        )
+        transient = cache.get_wrapper(
+            "model-vlm",
+            adapter_path="/adapter-b",
+        )
+
+        assert retained is not transient
+        assert cache.is_runtime_loaded("model-vlm", adapter_path="/adapter-a") is True
+        assert cache.is_runtime_loaded("model-vlm", adapter_path="/adapter-b") is False
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm",
+            adapter_path="/adapter-a",
+        ) == ["visual"]
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "model-vlm",
+                adapter_path="/adapter-b",
+            )
+            == []
+        )
+        assert cache.get_cache_info()["cache_size"] == 1
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_surface_attachment_rolls_back_when_runtime_load_fails(self, mock_create):
         """Failed retained loads must not leave a fake attachment behind."""
         cache = MLXWrapperCache(max_size=0)
