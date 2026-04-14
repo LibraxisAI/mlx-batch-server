@@ -86,12 +86,14 @@ def _build_llm_runtime_contract() -> dict[str, Any]:
         },
         "multimodal": {
             "runtime": "mlx-vlm",
-            "batch_capable": False,
+            "batch_capable": settings.vlm_batch_enabled,
+            "stream_batch_capable": settings.vlm_stream_batch_enabled,
             "execution": "single_flight",
         },
         "notes": [
             "Text requests batch through the resident model language tower.",
-            "Image and video requests intentionally run through the mlx-vlm single-flight lane.",
+            "Eligible single-image vision requests can micro-batch on the shared mlx-vlm runtime.",
+            "Video and multi-image requests intentionally stay on the mlx-vlm single-flight lane.",
         ],
     }
 
@@ -138,6 +140,7 @@ def _get_runtime_memory_snapshot() -> dict[str, float | int | None]:
 def _snapshot_llm_runtime() -> dict[str, Any]:
     from ....batch.coordinator import get_loaded_batch_models
     from ....chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
+    from ....vision.vlm_batch import get_loaded_vlm_batch_models
 
     runtime_keys = [
         serialize_runtime_key(key) for key in wrapper_cache.get_runtime_keys()
@@ -155,6 +158,9 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     batch_loaded = sorted(
         {normalize_model_id(model_id) for model_id in get_loaded_batch_models()}
     )
+    vlm_batch_loaded = sorted(
+        {normalize_model_id(model_id) for model_id in get_loaded_vlm_batch_models()}
+    )
     cache_info = wrapper_cache.get_cache_info()
     cache_info.setdefault("runtime_keys", runtime_keys)
     contract = _build_llm_runtime_contract()
@@ -162,10 +168,13 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     wrapper_loaded_set = set(wrapper_loaded)
     vlm_loaded_set = set(vlm_loaded)
     batch_loaded_set = set(batch_loaded)
+    vlm_batch_loaded_set = set(vlm_batch_loaded)
     shared_wrapper_residency = sorted(wrapper_loaded_set | vlm_loaded_set)
 
     data = []
-    for model_id in sorted(set(shared_wrapper_residency).union(batch_loaded_set)):
+    for model_id in sorted(
+        set(shared_wrapper_residency).union(batch_loaded_set, vlm_batch_loaded_set)
+    ):
         multimodal_resident = model_id in vlm_loaded_set
         text_resident = (
             model_id in wrapper_loaded_set
@@ -201,6 +210,10 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
                         "resident": multimodal_resident,
                         "runtime": contract["multimodal"]["runtime"],
                         "batch_capable": contract["multimodal"]["batch_capable"],
+                        "stream_batch_capable": contract["multimodal"][
+                            "stream_batch_capable"
+                        ],
+                        "batch_resident": model_id in vlm_batch_loaded_set,
                         "execution": contract["multimodal"]["execution"],
                     },
                 },
@@ -210,7 +223,10 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     return {
         "data": data,
         "loaded_models": [entry["id"] for entry in data],
-        "coordinators": {"llm_batch": batch_loaded},
+        "coordinators": {
+            "llm_batch": batch_loaded,
+            "vlm_batch": vlm_batch_loaded,
+        },
         "caches": {"wrapper": shared_wrapper_residency},
         "runtime_keys": runtime_keys,
         "surface_attachments": surface_attachments,
@@ -227,6 +243,7 @@ def _build_llm_cache_info() -> dict[str, Any]:
     cache_info["loaded_models_by_backend"] = {
         "wrapper": runtime["caches"]["wrapper"],
         "batch": runtime["coordinators"]["llm_batch"],
+        "vlm_batch": runtime["coordinators"]["vlm_batch"],
     }
     cache_info["runtime_keys"] = runtime["runtime_keys"]
     cache_info["surface_attachments"] = runtime["surface_attachments"]
@@ -688,8 +705,9 @@ def _build_unload_response(
     )
 
 
-def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadResponse:
+async def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadResponse:
     from ....embeddings.embeddings_service import get_embeddings_service
+    from ....vision.vlm_batch import shutdown_vlm_coordinator
 
     service = get_embeddings_service()
     shared_runtime = service.uses_shared_vlm_runtime(model_id)
@@ -703,6 +721,8 @@ def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadResponse:
         if service.unload_model(model_id, release_runtime=not preserve_runtime)
         else []
     )
+    if unloaded and not preserve_runtime:
+        await shutdown_vlm_coordinator(canonical_model_id)
     if unloaded and preserve_runtime:
         status = "detached"
         message = _format_retained_runtime_message(
@@ -726,11 +746,13 @@ def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadResponse:
     )
 
 
-def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
+async def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
     from ....embeddings.visual_router import unload_visual_embedder
+    from ....vision.vlm_batch import shutdown_vlm_coordinator
 
     attachment_state = release_runtime_surface(model_id, "visual")
     preserve_runtime = bool(attachment_state.remaining_surfaces)
+    await shutdown_vlm_coordinator(attachment_state.model_id)
     unloaded = unload_visual_embedder(model_id, release_runtime=not preserve_runtime)
     if unloaded and preserve_runtime:
         status = "detached"
@@ -758,10 +780,13 @@ def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
 async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
     if task == "llm":
         from ....batch.coordinator import shutdown_batch_coordinator
+        from ....vision.vlm_batch import shutdown_vlm_coordinator
 
         attachment_state = release_runtime_surface(model_id, "llm")
         preserve_runtime = bool(attachment_state.remaining_surfaces)
         await shutdown_batch_coordinator(model_id)
+        if not preserve_runtime:
+            await shutdown_vlm_coordinator(model_id)
         result = get_models_service().unload_model(
             model_id=model_id,
             release_runtime=not preserve_runtime,
@@ -785,10 +810,10 @@ async def _unload_specific(task: str, model_id: str) -> ModelUnloadResponse:
         return ModelUnloadResponse(**result)
 
     if task == "embeddings":
-        return _unload_shared_embeddings_surface(model_id)
+        return await _unload_shared_embeddings_surface(model_id)
 
     if task == "visual":
-        return _unload_visual_surface(model_id)
+        return await _unload_visual_surface(model_id)
 
     if task == "stt":
         from ....stt.whisper_model import unload_whisper_model
@@ -849,6 +874,7 @@ async def _clear_llm_task() -> ModelUnloadResponse:
     """Clear llm surfaces while preserving shared VLM runtime ownership."""
     from ....batch.coordinator import shutdown_all_coordinators
     from ....responses.adapter import unload_vlm_model
+    from ....vision.vlm_batch import shutdown_all_vlm_coordinators
 
     await shutdown_all_coordinators()
     llm_models = get_attached_models("llm")
@@ -857,6 +883,7 @@ async def _clear_llm_task() -> ModelUnloadResponse:
     # without attachment bookkeeping yet. Preserve the old operator behavior
     # only when the whole surface registry is empty.
     if not llm_models and not list_runtime_surface_attachments():
+        await shutdown_all_vlm_coordinators()
         result = get_models_service().unload_model(model_id=None)
         unloaded_models = list(result.get("unloaded_models", []))
         unloaded_models.extend(unload_vlm_model())
@@ -902,6 +929,7 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
 
     if task == "embeddings":
         from ....embeddings.embeddings_service import get_embeddings_service
+        from ....vision.vlm_batch import shutdown_vlm_coordinator
 
         service = get_embeddings_service()
         shared_runtime = service.has_shared_vlm_runtime_models()
@@ -916,6 +944,8 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
             preserve_runtime = bool(attachment_state.remaining_surfaces)
             if service.unload_model(model_id, release_runtime=not preserve_runtime):
                 unloaded.append(model_id)
+                if not preserve_runtime:
+                    await shutdown_vlm_coordinator(model_id)
         return ModelUnloadResponse(
             task="embeddings",
             status="cleared",
@@ -929,6 +959,7 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
             get_loaded_visual_models,
             unload_visual_embedder,
         )
+        from ....vision.vlm_batch import shutdown_vlm_coordinator
 
         unloaded: list[str] = []
         visual_models = sorted(
@@ -937,6 +968,7 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
         for model_id in visual_models:
             attachment_state = release_runtime_surface(model_id, "visual")
             preserve_runtime = bool(attachment_state.remaining_surfaces)
+            await shutdown_vlm_coordinator(model_id)
             unloaded.extend(
                 unload_visual_embedder(
                     model_id,
@@ -991,8 +1023,10 @@ async def _clear_task(task: str) -> ModelUnloadResponse:
 
 async def _clear_all_models() -> ModelUnloadResponse:
     from ....batch.coordinator import shutdown_all_coordinators
+    from ....vision.vlm_batch import shutdown_all_vlm_coordinators
 
     await shutdown_all_coordinators()
+    await shutdown_all_vlm_coordinators()
     clear_runtime_surface_attachments()
     result = get_models_service().unload_model(model_id=None)
     unloaded_models = list(result.get("unloaded_models", []))
@@ -1077,6 +1111,7 @@ async def health_check() -> dict:
         "loaded_models_by_backend": {
             "wrapper": runtime["caches"]["wrapper"],
             "batch": runtime["coordinators"]["llm_batch"],
+            "vlm_batch": runtime["coordinators"]["vlm_batch"],
         },
         "loaded_models_runtime": runtime["data"],
         "surface_attachments": runtime["surface_attachments"],

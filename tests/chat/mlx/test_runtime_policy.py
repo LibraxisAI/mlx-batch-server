@@ -172,6 +172,56 @@ class TestSingleEndpointRuntimePolicy:
         assert state["unloaded"] == ["demo-model"]
 
     @pytest.mark.asyncio
+    async def test_switches_when_vlm_batch_coordinator_targets_another_model(
+        self,
+        monkeypatch,
+    ):
+        state = {"shutdown_called": False, "vlm_shutdown_called": False, "unloaded": []}
+
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.wrapper_cache.get_runtime_keys",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.get_loaded_vlm_batch_models",
+            lambda: ["model-a"],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.wrapper_cache.get_loaded_models",
+            lambda: ["model-a"],
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.wrapper_cache.unload_model",
+            lambda model_id: state["unloaded"].append(model_id) or True,
+        )
+
+        async def fake_shutdown_all():
+            state["shutdown_called"] = True
+
+        async def fake_shutdown_all_vlm():
+            state["vlm_shutdown_called"] = True
+
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.shutdown_all_coordinators",
+            fake_shutdown_all,
+        )
+        monkeypatch.setattr(
+            "mlx_batch_server.chat.mlx.runtime_policy.shutdown_all_vlm_coordinators",
+            fake_shutdown_all_vlm,
+        )
+
+        result = await ensure_single_endpoint_llm_runtime("model-b")
+
+        assert result["switched"] is True
+        assert state["shutdown_called"] is True
+        assert state["vlm_shutdown_called"] is True
+        assert state["unloaded"] == ["model-a"]
+
+    @pytest.mark.asyncio
     async def test_runtime_session_blocks_different_model_until_active_runtime_drains(
         self,
         monkeypatch,
