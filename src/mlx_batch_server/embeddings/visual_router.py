@@ -71,7 +71,17 @@ def get_visual_embedder(
     return _get_embedder(model_id, projection_path, processor_id)
 
 
-def unload_visual_embedder(model_id: str | None = None) -> list[str]:
+def get_loaded_visual_models() -> list[str]:
+    """Return canonical model ids currently attached to visual embedders."""
+    with _embedder_lock:
+        return sorted({key[0] for key in _embedder_cache})
+
+
+def unload_visual_embedder(
+    model_id: str | None = None,
+    *,
+    release_runtime: bool = True,
+) -> list[str]:
     """Unload visual embedders and their shared VLM runtime residency."""
     removed_models: list[str] = []
     specific_model_id = (
@@ -89,6 +99,9 @@ def unload_visual_embedder(model_id: str | None = None) -> list[str]:
             for key in keys_to_remove:
                 _embedder_cache.pop(key, None)
             removed_models = [specific_model_id] if keys_to_remove else []
+
+    if not release_runtime:
+        return removed_models
 
     runtime_unloaded: list[str] = []
     runtime_targets = removed_models
