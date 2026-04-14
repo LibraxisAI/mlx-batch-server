@@ -228,6 +228,50 @@ class TestLoadedModelsRuntime:
         assert payload["cache_info"]["runtime_keys"] == payload["runtime_keys"]
 
     @pytest.mark.asyncio
+    async def test_list_loaded_models_exposes_surface_ownership_for_shared_vlm(
+        self,
+        monkeypatch,
+    ):
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "llm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: ["model-vlm"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 1},
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: ["model-vlm"],
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "get_loaded_vlm_batch_models",
+            lambda: ["model-vlm"],
+        )
+
+        payload = await models_module.list_loaded_models()
+
+        assert payload["surface_attachments"] == {"model-vlm": ["llm", "visual"]}
+        assert payload["data"][0]["attached_tasks"] == ["llm", "visual"]
+        assert payload["data"][0]["runtime"]["active_lanes"] == [
+            "text",
+            "multimodal",
+        ]
+        assert payload["data"][0]["runtime"]["multimodal"]["batch_resident"] is True
+
+    @pytest.mark.asyncio
     async def test_health_check_keeps_one_model_story_across_text_and_multimodal(
         self,
         monkeypatch,
