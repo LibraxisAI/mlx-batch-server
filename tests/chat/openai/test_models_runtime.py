@@ -372,13 +372,17 @@ class TestUnloadRuntime:
         self,
         monkeypatch,
     ):
-        state = {"shutdown_called": False}
+        state = {"shutdown_called": False, "vlm_shutdown_called": False}
         runtime_attachments_module.attach_runtime_surface("model-a", "llm")
         runtime_attachments_module.attach_runtime_surface("model-a", "visual")
 
         async def fake_shutdown(model_id: str) -> int:
             assert model_id == "model-a"
             state["shutdown_called"] = True
+            return 0
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            state["vlm_shutdown_called"] = True
             return 0
 
         class FakeModelsService:
@@ -397,6 +401,11 @@ class TestUnloadRuntime:
             batch_coordinator_module,
             "shutdown_batch_coordinator",
             fake_shutdown,
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
         )
         monkeypatch.setattr(
             wrapper_cache_module.wrapper_cache,
@@ -441,9 +450,94 @@ class TestUnloadRuntime:
             "batch": [],
             "vlm_batch": [],
         }
+        assert state["vlm_shutdown_called"] is False
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "model-a"
         ) == ["visual"]
+
+    @pytest.mark.asyncio
+    async def test_unload_llm_shuts_down_vlm_batch_when_only_embeddings_surface_remains(
+        self,
+        monkeypatch,
+    ):
+        state = {"shutdown_called": False, "vlm_shutdown_called": False}
+        runtime_attachments_module.attach_runtime_surface("model-a", "llm")
+        runtime_attachments_module.attach_runtime_surface("model-a", "embeddings")
+
+        async def fake_shutdown(model_id: str) -> int:
+            assert model_id == "model-a"
+            state["shutdown_called"] = True
+            return 0
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            assert model_id == "model-a"
+            state["vlm_shutdown_called"] = True
+            return 1
+
+        class FakeModelsService:
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert state["shutdown_called"] is True
+                assert state["vlm_shutdown_called"] is True
+                assert model_id == "model-a"
+                assert release_runtime is False
+                return {
+                    "status": "detached",
+                    "message": "Model model-a detached while shared runtime stayed hot",
+                    "unloaded_models": ["model-a"],
+                    "cache_info": {"cache_size": 0},
+                }
+
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "shutdown_batch_coordinator",
+            fake_shutdown,
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: ["model-a"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 0},
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "get_loaded_vlm_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            FakeModelsService,
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="model-a", task="llm")
+        )
+
+        assert response.status == "detached"
+        assert "retained by embeddings" in response.message
+        assert state["vlm_shutdown_called"] is True
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-a"
+        ) == ["embeddings"]
 
     @pytest.mark.asyncio
     async def test_unload_all_llm_models_shuts_down_all_coordinators(
@@ -644,6 +738,85 @@ class TestUnloadRuntime:
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "model-b"
         ) == ["visual"]
+
+    @pytest.mark.asyncio
+    async def test_unload_all_llm_shuts_down_vlm_batch_when_only_embeddings_surface_remains(
+        self,
+        monkeypatch,
+    ):
+        state = {"shutdown_all_called": False, "vlm_shutdown_models": []}
+        calls: list[tuple[str, bool]] = []
+
+        async def fake_shutdown_all() -> None:
+            state["shutdown_all_called"] = True
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            state["vlm_shutdown_models"].append(model_id)
+            return 1
+
+        class FakeModelsService:
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert state["shutdown_all_called"] is True
+                calls.append((model_id, release_runtime))
+                return {
+                    "status": "detached",
+                    "message": "ok",
+                    "unloaded_models": [model_id],
+                    "cache_info": {"cache_size": 1},
+                }
+
+        runtime_attachments_module.attach_runtime_surface("model-b", "llm")
+        runtime_attachments_module.attach_runtime_surface("model-b", "embeddings")
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "shutdown_all_coordinators",
+            fake_shutdown_all,
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: ["model-b"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 1},
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: ["model-b"],
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "get_loaded_vlm_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+
+        response = await models_module.unload_model(ModelUnloadRequest(task="llm"))
+
+        assert response.status == "cleared"
+        assert response.unloaded_models == ["model-b"]
+        assert calls == [("model-b", False)]
+        assert state["vlm_shutdown_models"] == ["model-b"]
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-b"
+        ) == ["embeddings"]
 
 
 class TestLoadRuntime:
@@ -1027,6 +1200,65 @@ class TestLoadRuntime:
         assert response.status == "detached"
         assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
         assert "retained by llm" in response.message
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b"
+        ) == ["llm"]
+
+    @pytest.mark.asyncio
+    async def test_unload_embeddings_shuts_down_vlm_batch_when_visual_surface_is_gone(
+        self,
+        monkeypatch,
+    ):
+        state = {"vlm_shutdown_called": False}
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b", "llm"
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b", "embeddings"
+        )
+
+        class FakeEmbeddingsService:
+            def uses_shared_vlm_runtime(self, model_id):
+                return True
+
+            def canonicalize_model_id(self, model_id):
+                return "libraxisai/qwen3-vl-30b"
+
+            def unload_model(self, model_id, *, release_runtime=True):
+                assert release_runtime is False
+                return True
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            assert model_id == "libraxisai/qwen3-vl-30b"
+            state["vlm_shutdown_called"] = True
+            return 1
+
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            lambda: FakeEmbeddingsService(),
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {
+                "loaded_models_count": 1,
+                "surface_attachments": {"libraxisai/qwen3-vl-30b": ["llm"]},
+            },
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="LibraxisAI/Qwen3-VL-30B", task="embeddings")
+        )
+
+        assert response.task == "embeddings"
+        assert response.status == "detached"
+        assert state["vlm_shutdown_called"] is True
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "libraxisai/qwen3-vl-30b"
         ) == ["llm"]
