@@ -379,71 +379,76 @@ class Qwen3VLEmbedder:
     ) -> tuple[mx.array, mx.array, mx.array | None, int]:
         self.load()
 
-        with wrapper_cache.vlm_execution(self.model_id):
-            model, processor = self._get_backend()
+        model, processor = self._get_backend()
 
-            tokenizer = getattr(self.tomoro_processor, "tokenizer", None)
-            if tokenizer is None:
-                tokenizer = getattr(processor, "tokenizer", None)
-            if tokenizer is None:
-                tokenizer = processor
+        tokenizer = getattr(self.tomoro_processor, "tokenizer", None)
+        if tokenizer is None:
+            tokenizer = getattr(processor, "tokenizer", None)
+        if tokenizer is None:
+            tokenizer = processor
 
-            inputs = self._tokenize_text(tokenizer, text)
-            input_ids_np = self._to_numpy(inputs["input_ids"]).astype(
-                np.int64, copy=False
+        inputs = self._tokenize_text(tokenizer, text)
+        input_ids_np = self._to_numpy(inputs["input_ids"]).astype(np.int64, copy=False)
+        input_ids = mx.array(input_ids_np, dtype=mx.int64)
+
+        attention_mask = inputs.get("attention_mask")
+        attention_mask_mx: mx.array | None = None
+        if attention_mask is not None:
+            attention_mask_np = self._to_numpy(attention_mask).astype(
+                np.int32, copy=False
             )
-            input_ids = mx.array(input_ids_np, dtype=mx.int64)
+            attention_mask_mx = mx.array(attention_mask_np, dtype=mx.int32)
 
-            attention_mask = inputs.get("attention_mask")
-            attention_mask_mx: mx.array | None = None
-            if attention_mask is not None:
-                attention_mask_np = self._to_numpy(attention_mask).astype(
-                    np.int32, copy=False
-                )
-                attention_mask_mx = mx.array(attention_mask_np, dtype=mx.int32)
+        batch_size, seq_len = input_ids.shape
 
-            batch_size, seq_len = input_ids.shape
+        inner_model = self._get_language_model(model)
+        embed_tokens = self._get_child(inner_model, "embed_tokens")
+        if embed_tokens is None:
+            raise RuntimeError("embed_tokens missing in qwen3_vl language model")
 
-            inner_model = self._get_language_model(model)
-            embed_tokens = self._get_child(inner_model, "embed_tokens")
-            if embed_tokens is None:
-                raise RuntimeError("embed_tokens missing in qwen3_vl language model")
-
-            inputs_embeds = embed_tokens(input_ids)
-            position_ids = self._build_position_ids(batch_size, seq_len)
-            hidden_states = self._run_language_layers(
-                inner_model, inputs_embeds, position_ids
-            )
-            token_count = self._count_text_tokens(input_ids, attention_mask_mx)
-            return hidden_states, input_ids, attention_mask_mx, token_count
+        inputs_embeds = embed_tokens(input_ids)
+        position_ids = self._build_position_ids(batch_size, seq_len)
+        hidden_states = self._run_language_layers(
+            inner_model, inputs_embeds, position_ids
+        )
+        token_count = self._count_text_tokens(input_ids, attention_mask_mx)
+        return hidden_states, input_ids, attention_mask_mx, token_count
 
     def embed_text(self, text: str) -> EmbeddingResult:
-        hidden_states, _, _, token_count = self._embed_text_hidden_states(text)
-        embeddings = self._project_and_normalize(hidden_states).squeeze(0)
-        mx.eval(embeddings)
-        mx.clear_cache()
+        with wrapper_cache.vlm_execution(self.model_id):
+            hidden_states, _, _, token_count = self._embed_text_hidden_states(text)
+            embeddings = self._project_and_normalize(hidden_states).squeeze(0)
+            mx.eval(embeddings)
 
-        return EmbeddingResult(
-            embeddings=embeddings,
-            num_tokens=token_count,
-            source_type="text",
-        )
+            del hidden_states
+            mx.clear_cache()
+
+            return EmbeddingResult(
+                embeddings=embeddings,
+                num_tokens=token_count,
+                source_type="text",
+            )
 
     def embed_text_pooled(self, text: str) -> EmbeddingResult:
         """Return one sentence embedding from the shared VLM language tower."""
-        hidden_states, _, attention_mask, token_count = self._embed_text_hidden_states(
-            text
-        )
-        pooled = self._last_token_pool(hidden_states, attention_mask)
-        embeddings = self._project_and_normalize(pooled).squeeze(0)
-        mx.eval(embeddings)
-        mx.clear_cache()
+        with wrapper_cache.vlm_execution(self.model_id):
+            hidden_states, _, attention_mask, token_count = (
+                self._embed_text_hidden_states(text)
+            )
+            pooled = self._last_token_pool(hidden_states, attention_mask)
+            embeddings = self._project_and_normalize(pooled).squeeze(0)
+            mx.eval(embeddings)
 
-        return EmbeddingResult(
-            embeddings=embeddings,
-            num_tokens=token_count,
-            source_type="text",
-        )
+            del hidden_states
+            del attention_mask
+            del pooled
+            mx.clear_cache()
+
+            return EmbeddingResult(
+                embeddings=embeddings,
+                num_tokens=token_count,
+                source_type="text",
+            )
 
     def embed_image(self, image: str | Path | Image.Image) -> EmbeddingResult:
         self.load()
@@ -474,6 +479,11 @@ class Qwen3VLEmbedder:
             image_hidden_states = self._select_image_hidden(hidden_states, image_mask)
             embeddings = self._project_and_normalize(image_hidden_states)
             mx.eval(embeddings)
+
+            del hidden_states
+            del image_hidden_states
+            del combined_embeddings
+            del vision_np
             mx.clear_cache()
 
             return EmbeddingResult(
