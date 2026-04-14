@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 
@@ -947,6 +948,72 @@ class TestLoadRuntime:
         assert response.cache_info["loaded_models_count"] == 1
 
     @pytest.mark.asyncio
+    async def test_load_llm_registers_alias_with_full_runtime_target(self, monkeypatch):
+        state = {"switch_called": False, "loaded": False}
+        expanded_adapter_path = str(Path("~/adapters/frontier-lora").expanduser())
+
+        @asynccontextmanager
+        async def fake_runtime_session(
+            model_id, adapter_path=None, draft_model_id=None
+        ):
+            assert model_id == "libraxisai/qwen3-vl-30b"
+            assert adapter_path == expanded_adapter_path
+            assert draft_model_id == "mlx-community/qwen3-1.7b-4bit"
+            state["switch_called"] = True
+            yield {
+                "switched": False,
+                "evicted_models": [],
+            }
+
+        class FakeModelsService:
+            def load_model(self, model_id, adapter_path=None, draft_model_id=None):
+                assert state["switch_called"] is True
+                assert model_id == "libraxisai/qwen3-vl-30b"
+                assert adapter_path == expanded_adapter_path
+                assert draft_model_id == "mlx-community/qwen3-1.7b-4bit"
+                state["loaded"] = True
+                return {
+                    "id": model_id,
+                    "status": "loaded",
+                    "message": f"Model {model_id} loaded successfully",
+                    "cache_info": {"cache_size": 1},
+                }
+
+        monkeypatch.setattr(
+            models_module,
+            "endpoint_runtime_session",
+            fake_runtime_session,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.load_model(
+            ModelLoadRequest(
+                model="LibraxisAI/Qwen3-VL-30B",
+                task="llm",
+                adapter_path="~/adapters/frontier-lora",
+                draft_model_id="MLX-Community/Qwen3-1.7B-4bit",
+                alias="frontier-vlm",
+            )
+        )
+
+        target = runtime_aliases_module.resolve_runtime_target("frontier-vlm")
+
+        assert state["loaded"] is True
+        assert response.id == "libraxisai/qwen3-vl-30b"
+        assert target.model_id == "libraxisai/qwen3-vl-30b"
+        assert target.adapter_path == expanded_adapter_path
+        assert target.draft_model_id == "mlx-community/qwen3-1.7b-4bit"
+
+    @pytest.mark.asyncio
     async def test_load_visual_uses_shared_runtime_session(self, monkeypatch):
         state = {"switch_called": False, "loaded_model": None}
 
@@ -963,8 +1030,19 @@ class TestLoadRuntime:
                 "evicted_models": ["model-old"],
             }
 
-        def fake_get_visual_embedder(model_id):
+        def fake_get_visual_embedder(
+            model_id,
+            projection_path=None,
+            processor_id=None,
+            *,
+            adapter_path=None,
+            draft_model_id=None,
+        ):
             assert state["switch_called"] is True
+            assert projection_path is None
+            assert processor_id is None
+            assert adapter_path is None
+            assert draft_model_id is None
             state["loaded_model"] = model_id
             return object()
 
@@ -1026,8 +1104,15 @@ class TestLoadRuntime:
             def canonicalize_model_id(self, model_id):
                 return "libraxisai/qwen3-vl-30b"
 
-            def load_model(self, model_id):
+            def load_model(
+                self,
+                model_id,
+                adapter_path=None,
+                draft_model_id=None,
+            ):
                 assert state["switch_called"] is True
+                assert adapter_path is None
+                assert draft_model_id is None
                 state["loaded_model"] = model_id
                 return False
 

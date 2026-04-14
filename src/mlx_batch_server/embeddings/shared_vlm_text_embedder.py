@@ -7,7 +7,8 @@ import mlx.core as mx
 import numpy as np
 
 from ..chat.mlx.model_types import reset_request_local_runtime_state
-from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
+from ..chat.mlx.runtime_aliases import resolve_runtime_target
+from ..chat.mlx.wrapper_cache import wrapper_cache
 
 
 @dataclass
@@ -20,8 +21,21 @@ class SharedTextEmbeddingResult:
 class SharedVLMTextEmbedder:
     """Pool sentence embeddings from a resident shared VLM language tower."""
 
-    def __init__(self, model_id: str) -> None:
-        self.model_id = normalize_model_id(model_id)
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> None:
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        self.model_id = target.model_id
+        self.adapter_path = target.adapter_path
+        self.draft_model_id = target.draft_model_id
         self.embedding_dim: int | None = None
 
     def load(self) -> None:
@@ -29,7 +43,11 @@ class SharedVLMTextEmbedder:
         self._get_backend()
 
     def _get_backend(self) -> tuple[Any, Any]:
-        return wrapper_cache.get_vlm_backend(self.model_id)
+        return wrapper_cache.get_vlm_backend(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+        )
 
     @staticmethod
     def _get_child(obj: Any, name: str) -> Any | None:

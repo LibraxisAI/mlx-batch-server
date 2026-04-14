@@ -252,7 +252,8 @@ def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(
         embedder_module.wrapper_cache,
         "get_vlm_backend",
-        lambda model_id: backend_calls.append(model_id) or (fake_model, fake_processor),
+        lambda model_id, **kwargs: backend_calls.append(model_id)
+        or (fake_model, fake_processor),
     )
     monkeypatch.setattr(
         embedder_module.AutoProcessor,
