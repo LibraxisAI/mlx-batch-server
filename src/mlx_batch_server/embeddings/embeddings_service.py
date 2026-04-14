@@ -10,6 +10,7 @@ from ..chat.mlx.wrapper_cache import normalize_model_id
 from ..utils.logger import logger
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
+from .visual_router import get_visual_embedder, unload_visual_embedder
 
 
 class EmbeddingsService:
@@ -75,9 +76,8 @@ class EmbeddingsService:
             canonical_model_id = self.canonicalize_model_id(model_id)
             was_loaded = canonical_model_id in self._shared_vlm_models
             self._shared_vlm_models.discard(canonical_model_id)
-            if was_loaded:
-                self._unload_shared_vlm_embedder(canonical_model_id)
-            return was_loaded
+            unloaded = self._unload_shared_vlm_embedder(canonical_model_id)
+            return was_loaded or bool(unloaded)
 
         canonical_model_id = self.canonicalize_model_id(model_id)
         if canonical_model_id in self._models:
@@ -113,14 +113,10 @@ class EmbeddingsService:
 
     def _get_shared_vlm_embedder(self, model_id: str) -> Qwen3VLEmbedder:
         """Reuse the visual embedder that already rides on wrapper_cache."""
-        from .visual_router import get_visual_embedder
-
         return get_visual_embedder(model_id)
 
     def _unload_shared_vlm_embedder(self, model_id: str) -> list[str]:
         """Release the shared visual embedder/runtime for this model."""
-        from .visual_router import unload_visual_embedder
-
         return unload_visual_embedder(model_id)
 
     def _count_tokens(self, text: str | list[str]) -> int:

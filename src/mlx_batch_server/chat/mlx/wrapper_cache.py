@@ -13,6 +13,7 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from pathlib import Path
 
 from ...core.config import get_settings
 from ...utils.logger import logger
@@ -23,7 +24,9 @@ from .runtime_aliases import resolve_runtime_model_id
 
 def normalize_model_id(model_id: str) -> str:
     """Normalize model IDs for stable cache keys."""
-    normalized = resolve_runtime_model_id(model_id)
+    normalized = resolve_runtime_model_id(model_id).strip()
+    if normalized.startswith("~"):
+        normalized = str(Path(normalized).expanduser())
     if (
         "/" in normalized
         and not normalized.startswith("/")

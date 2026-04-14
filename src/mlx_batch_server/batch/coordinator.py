@@ -24,6 +24,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..chat.mlx.runtime_aliases import resolve_runtime_model_id
@@ -44,6 +45,8 @@ __all__ = [
 def _normalize_batch_model_id(model_id: str) -> str:
     """Canonicalize coordinator keys to the same runtime identity as the cache."""
     normalized = resolve_runtime_model_id(model_id).strip()
+    if normalized.startswith("~"):
+        normalized = str(Path(normalized).expanduser())
     if (
         "/" in normalized
         and not normalized.startswith("/")
