@@ -258,7 +258,9 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
     monkeypatch.setattr(
         service,
         "_get_shared_vlm_embedder",
-        lambda model_id: loaded.append(model_id) or state.__setitem__("runtime_loaded", True) or object(),
+        lambda model_id: loaded.append(model_id)
+        or state.__setitem__("runtime_loaded", True)
+        or object(),
     )
     monkeypatch.setattr(
         service,
@@ -278,6 +280,36 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
 
     assert loaded == ["libraxisai/qwen3-vl-30b"]
     assert unloaded == ["libraxisai/qwen3-vl-30b"]
+
+
+def test_embeddings_service_clear_models_releases_shared_vlm_alias(monkeypatch):
+    _clear_visual_state()
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "LibraxisAI/Qwen3-VL-30B",
+    )
+
+    service = EmbeddingsService()
+    unloaded: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "_get_shared_vlm_embedder",
+        lambda model_id: object(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_unload_shared_vlm_embedder",
+        lambda model_id: unloaded.append(model_id) or [model_id],
+    )
+
+    assert service.load_model("frontier-vlm") is False
+    assert service.has_shared_vlm_runtime_models() is True
+    assert service.clear_models() == ["libraxisai/qwen3-vl-30b"]
+    assert service.has_shared_vlm_runtime_models() is False
+    assert unloaded == ["libraxisai/qwen3-vl-30b"]
+
+    _clear_visual_state()
 
 
 def test_embeddings_service_clears_native_mlx_cache_after_request(monkeypatch):

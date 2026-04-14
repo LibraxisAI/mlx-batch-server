@@ -101,10 +101,7 @@ class EmbeddingsService:
     def _should_use_shared_vlm_embeddings(self, model_id: str) -> bool:
         """Route frontier VLM embeddings through the shared runtime spine."""
         normalized_model_id = self.canonicalize_model_id(model_id)
-        return (
-            "qwen3-vl" in normalized_model_id
-            or "qwen3_vl" in normalized_model_id
-        )
+        return "qwen3-vl" in normalized_model_id or "qwen3_vl" in normalized_model_id
 
     def uses_shared_vlm_runtime(self, model_id: str) -> bool:
         """Expose whether this embeddings request rides on the shared VLM cache."""
@@ -116,13 +113,13 @@ class EmbeddingsService:
 
     def _get_shared_vlm_embedder(self, model_id: str) -> Qwen3VLEmbedder:
         """Reuse the visual embedder that already rides on wrapper_cache."""
-        from .visual_router import get_visual_embedder  # noqa: PLC0415
+        from .visual_router import get_visual_embedder
 
         return get_visual_embedder(model_id)
 
     def _unload_shared_vlm_embedder(self, model_id: str) -> list[str]:
         """Release the shared visual embedder/runtime for this model."""
-        from .visual_router import unload_visual_embedder  # noqa: PLC0415
+        from .visual_router import unload_visual_embedder
 
         return unload_visual_embedder(model_id)
 
