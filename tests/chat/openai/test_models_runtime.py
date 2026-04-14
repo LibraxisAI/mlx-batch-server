@@ -9,6 +9,7 @@ from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.chat.mlx import wrapper_cache as wrapper_cache_module
 from mlx_batch_server.chat.openai.models import models as models_module
+from mlx_batch_server.chat.openai.models import models_service as models_service_module
 from mlx_batch_server.chat.openai.models.schema import (
     ModelLoadRequest,
     ModelUnloadRequest,
@@ -79,7 +80,7 @@ class TestLoadedModelsRuntime:
         assert payload["data"][1]["runtime"]["text"]["batch_resident"] is False
         assert payload["coordinators"] == {"llm_batch": ["model-a"]}
         assert payload["caches"] == {"wrapper": ["model-a", "model-b"]}
-        assert payload["cache_info"] == {"cache_size": 1}
+        assert payload["cache_info"] == {"cache_size": 1, "runtime_keys": []}
         assert payload["runtime_contract"]["text"]["tool_capable"] is True
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
         assert payload["runtime"] == {
@@ -160,6 +161,59 @@ class TestLoadedModelsRuntime:
         assert entry["id"] == "libraxisai/gpt-oss-120b-mlx-mxfp4"
         assert entry["backends"] == ["wrapper"]
         assert entry["runtime"]["text"]["batch_resident"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_loaded_models_exposes_structured_runtime_keys(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_models",
+            lambda: ["model-a"],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 2},
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_runtime_keys",
+            lambda: [
+                wrapper_cache_module.WrapperCacheKey("model-a", None, None),
+                wrapper_cache_module.WrapperCacheKey(
+                    "model-a",
+                    "/adapter/frontier",
+                    "draft-a",
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "get_loaded_batch_models",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_loaded_vlm_models",
+            lambda: [],
+        )
+
+        payload = await models_module.list_loaded_models()
+
+        assert payload["runtime_keys"] == [
+            {
+                "model_id": "model-a",
+                "adapter_path": None,
+                "draft_model_id": None,
+            },
+            {
+                "model_id": "model-a",
+                "adapter_path": "/adapter/frontier",
+                "draft_model_id": "draft-a",
+            },
+        ]
+        assert payload["cache_info"]["runtime_keys"] == payload["runtime_keys"]
 
     @pytest.mark.asyncio
     async def test_health_check_keeps_one_model_story_across_text_and_multimodal(
@@ -952,3 +1006,53 @@ class TestLoadRuntime:
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "libraxisai/qwen3-vl-30b"
         ) == ["llm"]
+
+
+class TestModelsServiceRuntimeKeys:
+    def test_load_model_checks_exact_runtime_key_not_only_base_model(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            models_service_module.ModelsService,
+            "_scan_models",
+            lambda self: [],
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "is_model_loaded",
+            lambda model_id: True,
+        )
+        seen_runtime_checks: list[tuple[str, str | None, str | None]] = []
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "is_runtime_loaded",
+            lambda model_id, adapter_path=None, draft_model_id=None: (
+                seen_runtime_checks.append((model_id, adapter_path, draft_model_id))
+                or False
+            ),
+        )
+        seen_loads: list[tuple[str, str | None, str | None]] = []
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_wrapper",
+            lambda model_id, adapter_path=None, draft_model_id=None: (
+                seen_loads.append((model_id, adapter_path, draft_model_id)) or object()
+            ),
+        )
+        monkeypatch.setattr(
+            wrapper_cache_module.wrapper_cache,
+            "get_cache_info",
+            lambda: {"cache_size": 2},
+        )
+
+        service = models_service_module.ModelsService()
+        result = service.load_model(
+            "model-a",
+            adapter_path="/adapter/frontier",
+            draft_model_id="draft-a",
+        )
+
+        assert result["status"] == "loaded"
+        assert seen_runtime_checks == [("model-a", "/adapter/frontier", "draft-a")]
+        assert seen_loads == [("model-a", "/adapter/frontier", "draft-a")]
