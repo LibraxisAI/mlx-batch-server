@@ -8,6 +8,23 @@ from typing import Any
 
 from ...batch.coordinator import get_loaded_batch_models, shutdown_all_coordinators
 from ...utils.logger import logger
+
+try:
+    from ...vision.vlm_batch import (
+        get_loaded_vlm_batch_models,
+        shutdown_all_vlm_coordinators,
+    )
+except ImportError:
+    # `mlx-batch-runner` does not always ship the sibling repo's vision batch lane.
+    # Keep runtime policy usable here while automatically picking up the richer path
+    # when `vision.vlm_batch` is present in repos that provide it.
+    def get_loaded_vlm_batch_models() -> list[str]:
+        return []
+
+    async def shutdown_all_vlm_coordinators() -> None:
+        return None
+
+
 from .wrapper_cache import (
     WrapperCacheKey,
     normalize_model_id,
@@ -22,7 +39,13 @@ _active_runtime_count = 0
 
 def _normalized_batch_models() -> list[str]:
     return sorted(
-        {normalize_model_id(model_id) for model_id in get_loaded_batch_models()}
+        {
+            normalize_model_id(model_id)
+            for model_id in [
+                *get_loaded_batch_models(),
+                *get_loaded_vlm_batch_models(),
+            ]
+        }
     )
 
 
@@ -78,6 +101,7 @@ async def ensure_single_endpoint_llm_runtime(
     )
 
     await shutdown_all_coordinators()
+    await shutdown_all_vlm_coordinators()
 
     for loaded_model_id in list(wrapper_cache.get_loaded_models()):
         wrapper_cache.unload_model(loaded_model_id)
