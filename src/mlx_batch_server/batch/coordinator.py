@@ -61,6 +61,8 @@ def _normalize_batch_adapter_path(adapter_path: str | None) -> str | None:
     if adapter_path is None:
         return None
     normalized = adapter_path.strip()
+    if normalized.startswith("~"):
+        normalized = str(Path(normalized).expanduser())
     return normalized or None
 
 
