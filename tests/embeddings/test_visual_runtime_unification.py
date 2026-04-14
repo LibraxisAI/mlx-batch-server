@@ -241,6 +241,75 @@ def test_unload_visual_embedder_preserves_runtime_when_llm_surface_remains(
     _clear_visual_state()
 
 
+def test_unload_visual_embedder_exact_runtime_preserves_sibling_variant(monkeypatch):
+    _clear_visual_state()
+
+    monkeypatch.setattr(embedder_module.Qwen3VLEmbedder, "load", lambda self: None)
+    monkeypatch.setattr(
+        embedder_module.Qwen3VLEmbedder,
+        "log_summary",
+        lambda self: None,
+    )
+
+    visual_router_module.get_visual_embedder(
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="/adapter-a",
+    )
+    visual_router_module.get_visual_embedder(
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="/adapter-b",
+    )
+
+    unloaded_calls: list[tuple[str | None, str | None, str | None]] = []
+    monkeypatch.setattr(
+        visual_router_module.wrapper_cache,
+        "unload_vlm_model",
+        lambda model_id=None, **kwargs: unloaded_calls.append(
+            (
+                model_id,
+                kwargs.get("adapter_path"),
+                kwargs.get("draft_model_id"),
+            )
+        )
+        or [model_id],
+    )
+
+    unloaded = visual_router_module.unload_visual_embedder(
+        "libraxisai/qwen3-vl-30b",
+        adapter_path="/adapter-a",
+    )
+
+    assert unloaded == ["libraxisai/qwen3-vl-30b"]
+    assert unloaded_calls == [("libraxisai/qwen3-vl-30b", "/adapter-a", None)]
+    assert (
+        visual_router_module.has_visual_embedder(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path="/adapter-a",
+        )
+        is False
+    )
+    assert (
+        visual_router_module.has_visual_embedder(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path="/adapter-b",
+        )
+        is True
+    )
+    assert (
+        runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path="/adapter-a",
+        )
+        == []
+    )
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "libraxisai/qwen3-vl-30b",
+        adapter_path="/adapter-b",
+    ) == ["visual"]
+
+    _clear_visual_state()
+
+
 def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
     (tmp_path / "preprocessor_config.json").write_text("{}", encoding="utf-8")
 
@@ -519,14 +588,18 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
     monkeypatch.setattr(
         service,
         "_get_shared_vlm_embedder",
-        lambda model_id: loaded.append(model_id)
+        lambda model_id, **kwargs: loaded.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
         or state.__setitem__("runtime_loaded", True)
         or object(),
     )
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id: unloaded.append(model_id)
+        lambda model_id, **kwargs: unloaded.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
         or (
             state.__setitem__("runtime_loaded", False) or [model_id]
             if state["runtime_loaded"]
@@ -539,11 +612,50 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
     assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is True
     assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is False
 
-    assert loaded == ["libraxisai/qwen3-vl-30b"]
+    assert loaded == [("libraxisai/qwen3-vl-30b", None, None)]
     assert unloaded == [
-        "libraxisai/qwen3-vl-30b",
-        "libraxisai/qwen3-vl-30b",
+        ("libraxisai/qwen3-vl-30b", None, None),
+        ("libraxisai/qwen3-vl-30b", None, None),
     ]
+
+
+def test_embeddings_service_distinguishes_shared_vlm_runtime_variants(monkeypatch):
+    _clear_visual_state()
+    service = EmbeddingsService()
+    loaded: list[tuple[str, str | None, str | None]] = []
+
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_shared_vlm_embedder",
+        lambda model_id, **kwargs: loaded.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
+        or object(),
+    )
+
+    assert (
+        service.load_model("LibraxisAI/Qwen3-VL-30B", adapter_path="/adapter-a")
+        is False
+    )
+    assert (
+        service.load_model("LibraxisAI/Qwen3-VL-30B", adapter_path="/adapter-b")
+        is False
+    )
+    assert (
+        service.load_model("LibraxisAI/Qwen3-VL-30B", adapter_path="/adapter-a") is True
+    )
+
+    assert loaded == [
+        ("libraxisai/qwen3-vl-30b", "/adapter-a", None),
+        ("libraxisai/qwen3-vl-30b", "/adapter-b", None),
+    ]
+
+    _clear_visual_state()
 
 
 def test_embeddings_service_unload_preserves_runtime_when_llm_surface_remains(
@@ -566,12 +678,15 @@ def test_embeddings_service_unload_preserves_runtime_when_llm_surface_remains(
     monkeypatch.setattr(
         service,
         "_get_shared_vlm_embedder",
-        lambda model_id: object(),
+        lambda model_id, **kwargs: object(),
     )
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id: unloaded.append(model_id) or [model_id],
+        lambda model_id, **kwargs: unloaded.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
+        or [model_id],
     )
 
     assert service.load_model("LibraxisAI/Qwen3-VL-30B") is False
@@ -607,19 +722,22 @@ def test_embeddings_service_clear_models_releases_shared_vlm_alias(monkeypatch):
     monkeypatch.setattr(
         service,
         "_get_shared_vlm_embedder",
-        lambda model_id: object(),
+        lambda model_id, **kwargs: object(),
     )
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id: unloaded.append(model_id) or [model_id],
+        lambda model_id, **kwargs: unloaded.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
+        or [model_id],
     )
 
     assert service.load_model("frontier-vlm") is False
     assert service.has_shared_vlm_runtime_models() is True
     assert service.clear_models() == ["libraxisai/qwen3-vl-30b"]
     assert service.has_shared_vlm_runtime_models() is False
-    assert unloaded == ["libraxisai/qwen3-vl-30b"]
+    assert unloaded == [("libraxisai/qwen3-vl-30b", None, None)]
 
     _clear_visual_state()
 
