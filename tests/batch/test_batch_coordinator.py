@@ -171,6 +171,16 @@ class TestGetBatchCoordinator:
         assert coord1 is coord2
         assert coord1.model_id == expanded
 
+    def test_home_relative_adapter_path_reuses_canonical_coordinator(self):
+        """Home-relative adapter paths should collapse to one batch lane."""
+        home_relative = "~/adapters/frontier-lora"
+        expanded = str(Path(home_relative).expanduser())
+
+        coord1 = get_batch_coordinator("model-with-adapter", adapter_path=home_relative)
+        coord2 = get_batch_coordinator("model-with-adapter", adapter_path=expanded)
+
+        assert coord1 is coord2
+
     def test_loaded_batch_models_only_include_initialized_generators(self):
         """Only coordinators with live generators should be reported as loaded."""
         loaded_model = "model-loaded-generator"
