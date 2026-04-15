@@ -101,6 +101,11 @@ class ResponseRequest(BaseModel):
     store: bool = True
     metadata: dict[str, Any] | None = None
     previous_response_id: str | None = None  # Chain responses
+    adapter_path: str | None = None
+    draft_model_id: str | None = None
+    draft_model: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
     def get_max_tokens(self) -> int | None:
         """Get max tokens from either field."""
@@ -109,6 +114,10 @@ class ResponseRequest(BaseModel):
     def get_system_instruction(self) -> str | None:
         """Get system instruction from either field."""
         return self.system_instruction or self.instructions
+
+    def get_draft_model_id(self) -> str | None:
+        """Return the canonical draft model override across both request spellings."""
+        return self.draft_model_id or self.draft_model
 
 
 class ResponseUsage(BaseModel):

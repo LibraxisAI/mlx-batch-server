@@ -1215,11 +1215,11 @@ async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
 async def _clear_llm_task() -> ModelUnloadResponse:
     """Clear llm surfaces while preserving shared VLM runtime ownership."""
     from ....batch.coordinator import shutdown_all_coordinators
-    from ....responses.adapter import unload_vlm_model
     from ....vision.vlm_batch import (
         shutdown_all_vlm_coordinators,
         shutdown_vlm_coordinator,
     )
+    from ....vision.vlm_cache import unload_vlm_model
 
     await shutdown_all_coordinators()
     llm_models = get_attached_models("llm")
@@ -1469,9 +1469,9 @@ async def _clear_all_models() -> ModelUnloadResponse:
     from ....embeddings.embeddings_service import get_embeddings_service
     from ....embeddings.visual_router import unload_visual_embedder
     from ....images.images_service import get_images_service
-    from ....responses.adapter import unload_vlm_model
     from ....stt.whisper_model import unload_whisper_model
     from ....tts.tts_service import TTSService
+    from ....vision.vlm_cache import unload_vlm_model
 
     unloaded_models.extend(unload_vlm_model())
     unloaded_models.extend(get_embeddings_service().clear_models())

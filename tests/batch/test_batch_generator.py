@@ -298,24 +298,29 @@ class TestBatchChatGenerator:
         generator = BatchChatGenerator(
             model=_fake_model(context_length=16, multimodal=True)
         )
-        events: list[tuple[str, str]] = []
+        events: list[tuple[str, str, str | None, str | None]] = []
 
         @contextmanager
-        def fake_execution(model_id: str):
-            events.append(("enter", model_id))
+        def fake_execution(
+            model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            events.append(("enter", model_id, adapter_path, draft_model_id))
             try:
                 yield
             finally:
-                events.append(("exit", model_id))
+                events.append(("exit", model_id, adapter_path, draft_model_id))
 
         class FakeBatchGenerator:
             def insert(self, prompts, max_tokens, samplers=None):
                 del prompts, max_tokens, samplers
-                assert events == [("enter", "test-model")]
+                assert events == [("enter", "test-model", None, None)]
                 return [11]
 
             def next(self):
-                assert events == [("enter", "test-model")]
+                assert events == [("enter", "test-model", None, None)]
                 return [
                     SimpleNamespace(
                         uid=11,
@@ -358,7 +363,10 @@ class TestBatchChatGenerator:
 
         assert len(chunks) == 1
         assert chunks[0].finish_reason == "stop"
-        assert events == [("enter", "test-model"), ("exit", "test-model")]
+        assert events == [
+            ("enter", "test-model", None, None),
+            ("exit", "test-model", None, None),
+        ]
 
     def test_get_or_create_generator_uses_language_model_for_vlm_runtime(
         self, monkeypatch

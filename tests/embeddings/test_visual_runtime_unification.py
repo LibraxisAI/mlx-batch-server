@@ -353,15 +353,20 @@ def test_qwen3_vl_embedder_serializes_shared_runtime_on_text_embed(monkeypatch):
         }
     )
 
-    events: list[tuple[str, str]] = []
+    events: list[tuple[str, str, str | None, str | None]] = []
 
     @contextmanager
-    def fake_vlm_execution(model_id: str):
-        events.append(("enter", model_id))
+    def fake_vlm_execution(
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
+        events.append(("enter", model_id, adapter_path, draft_model_id))
         try:
             yield
         finally:
-            events.append(("exit", model_id))
+            events.append(("exit", model_id, adapter_path, draft_model_id))
 
     monkeypatch.setattr(
         embedder_module,
@@ -402,7 +407,10 @@ def test_qwen3_vl_embedder_serializes_shared_runtime_on_text_embed(monkeypatch):
     result = embedder.embed_text("hello")
 
     assert result.num_tokens == 2
-    assert events == [("enter", "model-vlm"), ("exit", "model-vlm")]
+    assert events == [
+        ("enter", "model-vlm", None, None),
+        ("exit", "model-vlm", None, None),
+    ]
 
 
 def test_embeddings_service_attaches_shared_runtime_surface_on_lazy_load(monkeypatch):
@@ -791,7 +799,12 @@ async def test_vlm_batch_coordinator_routes_alias_scoped_adapter_to_shared_backe
     backend_calls: list[tuple[str, str | None, str | None]] = []
 
     @contextmanager
-    def fake_vlm_execution(model_id: str):
+    def fake_vlm_execution(
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
         yield
 
     monkeypatch.setattr(
