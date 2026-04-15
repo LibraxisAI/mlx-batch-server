@@ -814,6 +814,23 @@ def _build_unload_response(
     )
 
 
+def _unload_vlm_runtime(
+    model_id: str | None = None,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> list[str]:
+    """Route VLM unloads through the compatibility seam backed by wrapper_cache."""
+    from ....vision.vlm_cache import unload_vlm_model
+
+    unload_kwargs: dict[str, str] = {}
+    if adapter_path is not None:
+        unload_kwargs["adapter_path"] = adapter_path
+    if draft_model_id is not None:
+        unload_kwargs["draft_model_id"] = draft_model_id
+    return unload_vlm_model(model_id, **unload_kwargs)
+
+
 async def _unload_shared_embeddings_surface(
     model_id: str,
     *,
@@ -1215,7 +1232,6 @@ async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
 async def _clear_llm_task() -> ModelUnloadResponse:
     """Clear llm surfaces while preserving shared VLM runtime ownership."""
     from ....batch.coordinator import shutdown_all_coordinators
-    from ....chat.mlx.wrapper_cache import wrapper_cache
     from ....vision.vlm_batch import (
         shutdown_all_vlm_coordinators,
         shutdown_vlm_coordinator,
@@ -1231,7 +1247,7 @@ async def _clear_llm_task() -> ModelUnloadResponse:
         await shutdown_all_vlm_coordinators()
         result = get_models_service().unload_model(model_id=None)
         unloaded_models = list(result.get("unloaded_models", []))
-        unloaded_models.extend(wrapper_cache.unload_vlm_model())
+        unloaded_models.extend(_unload_vlm_runtime())
         result["task"] = "llm"
         result["unloaded_models"] = list(dict.fromkeys(unloaded_models))
         result["message"] = (
@@ -1466,14 +1482,13 @@ async def _clear_all_models() -> ModelUnloadResponse:
     result = get_models_service().unload_model(model_id=None)
     unloaded_models = list(result.get("unloaded_models", []))
 
-    from ....chat.mlx.wrapper_cache import wrapper_cache
     from ....embeddings.embeddings_service import get_embeddings_service
     from ....embeddings.visual_router import unload_visual_embedder
     from ....images.images_service import get_images_service
     from ....stt.whisper_model import unload_whisper_model
     from ....tts.tts_service import TTSService
 
-    unloaded_models.extend(wrapper_cache.unload_vlm_model())
+    unloaded_models.extend(_unload_vlm_runtime())
     unloaded_models.extend(get_embeddings_service().clear_models())
     unloaded_models.extend(unload_visual_embedder())
     unloaded_models.extend(get_images_service().clear_models())

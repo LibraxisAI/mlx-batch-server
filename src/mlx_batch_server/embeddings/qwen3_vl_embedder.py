@@ -41,6 +41,11 @@ else:
 
 IMAGE_PAD_TOKEN = 151655
 
+# Keep a monkeypatchable seam for tests while resolving the real runtime through
+# the unified wrapper cache.
+get_vlm_backend = wrapper_cache.get_vlm_backend
+vlm_execution = wrapper_cache.vlm_execution
+
 
 @dataclass
 class EmbeddingResult:
@@ -86,7 +91,7 @@ class Qwen3VLEmbedder:
 
     def _get_backend(self) -> tuple[Any, Any]:
         """Resolve the shared resident VLM backend from the unified runtime cache."""
-        return wrapper_cache.get_vlm_backend(
+        return get_vlm_backend(
             self.model_id,
             adapter_path=self.adapter_path,
             draft_model_id=self.draft_model_id,
@@ -439,7 +444,7 @@ class Qwen3VLEmbedder:
         return hidden_states, input_ids, attention_mask_mx, token_count
 
     def embed_text(self, text: str) -> EmbeddingResult:
-        with wrapper_cache.vlm_execution(
+        with vlm_execution(
             self.model_id,
             adapter_path=self.adapter_path,
             draft_model_id=self.draft_model_id,

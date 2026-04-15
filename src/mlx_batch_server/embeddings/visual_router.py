@@ -21,6 +21,10 @@ from .qwen3_vl_embedder import Qwen3VLEmbedder
 
 router = APIRouter(tags=["visual-embeddings"])
 
+# Keep the unload seam monkeypatchable while delegating real residency
+# ownership to the unified wrapper cache.
+unload_vlm_model = wrapper_cache.unload_vlm_model
+
 _embedder_cache: dict[
     tuple[str, str | None, str | None, str | None, str | None],
     Qwen3VLEmbedder,
@@ -228,7 +232,7 @@ def unload_visual_embedder(
         if runtime_draft_model_id is not None:
             unload_kwargs["draft_model_id"] = runtime_draft_model_id
         runtime_unloaded.extend(
-            wrapper_cache.unload_vlm_model(
+            unload_vlm_model(
                 runtime_model_id,
                 **unload_kwargs,
             )
