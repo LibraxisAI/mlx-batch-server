@@ -20,8 +20,8 @@ from ..chat.mlx.runtime_aliases import (
     normalize_runtime_path,
     resolve_runtime_target,
 )
-from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..utils.logger import logger
+from ..vision.vlm_cache import get_vlm_backend, vlm_execution
 
 try:
     from mlx_vlm.utils import get_model_path
@@ -86,7 +86,7 @@ class Qwen3VLEmbedder:
 
     def _get_backend(self) -> tuple[Any, Any]:
         """Resolve the shared resident VLM backend from the unified runtime cache."""
-        return wrapper_cache.get_vlm_backend(
+        return get_vlm_backend(
             self.model_id,
             adapter_path=self.adapter_path,
             draft_model_id=self.draft_model_id,
@@ -439,7 +439,7 @@ class Qwen3VLEmbedder:
         return hidden_states, input_ids, attention_mask_mx, token_count
 
     def embed_text(self, text: str) -> EmbeddingResult:
-        with wrapper_cache.vlm_execution(self.model_id):
+        with vlm_execution(self.model_id):
             hidden_states, _, _, token_count = self._embed_text_hidden_states(text)
             embeddings = self._project_and_normalize(hidden_states).squeeze(0)
             mx.eval(embeddings)
@@ -455,7 +455,7 @@ class Qwen3VLEmbedder:
 
     def embed_text_pooled(self, text: str) -> EmbeddingResult:
         """Return one sentence embedding from the shared VLM language tower."""
-        with wrapper_cache.vlm_execution(self.model_id):
+        with vlm_execution(self.model_id):
             hidden_states, _, attention_mask, token_count = (
                 self._embed_text_hidden_states(text)
             )
@@ -482,7 +482,7 @@ class Qwen3VLEmbedder:
                 "qwen3_vl model has no vision assets. Use a vision-capable model."
             )
 
-        with wrapper_cache.vlm_execution(self.model_id):
+        with vlm_execution(self.model_id):
             model, processor = self._get_backend()
             reset_request_local_runtime_state(model)
 

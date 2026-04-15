@@ -535,26 +535,54 @@ async def shutdown_all_coordinators() -> None:
     logger.info("All batch coordinators shutdown")
 
 
-async def shutdown_batch_coordinator(model_id: str) -> int:
-    """Shutdown coordinator instances for a specific model ID."""
-    normalized_model_id = _normalize_batch_model_id(model_id)
+async def shutdown_batch_coordinator(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+) -> int:
+    """Shutdown coordinator instances for one runtime target.
+
+    When ``adapter_path`` is omitted we preserve the legacy coarse behavior and
+    remove every coordinator bound to the canonical ``model_id``. When it is
+    provided we only tear down the exact adapter-scoped batch lane.
+    """
+    normalized_model_id, normalized_adapter_path = _resolve_batch_runtime(
+        model_id,
+        adapter_path,
+    )
     with _coordinator_lock:
-        keys_to_remove = [
-            key
-            for key, coord in _coordinators.items()
-            if coord.model_id == normalized_model_id
-        ]
+        if normalized_adapter_path is None:
+            keys_to_remove = [
+                key
+                for key, coord in _coordinators.items()
+                if coord.model_id == normalized_model_id
+            ]
+        else:
+            keys_to_remove = [
+                key
+                for key, coord in _coordinators.items()
+                if coord.model_id == normalized_model_id
+                and coord.adapter_path == normalized_adapter_path
+            ]
         coords = [_coordinators.pop(key) for key in keys_to_remove]
 
     for coord in coords:
         await coord.shutdown()
 
     if coords:
-        logger.info(
-            "Shutdown %s batch coordinator(s) for model=%s",
-            len(coords),
-            normalized_model_id,
-        )
+        if normalized_adapter_path is None:
+            logger.info(
+                "Shutdown %s batch coordinator(s) for model=%s",
+                len(coords),
+                normalized_model_id,
+            )
+        else:
+            logger.info(
+                "Shutdown %s batch coordinator(s) for model=%s adapter=%s",
+                len(coords),
+                normalized_model_id,
+                normalized_adapter_path,
+            )
 
     return len(coords)
 

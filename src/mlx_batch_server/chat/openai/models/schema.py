@@ -100,6 +100,14 @@ class ModelUnloadRequest(BaseModel):
             "If omitted, the server will attempt to auto-detect."
         ),
     )
+    adapter_path: str | None = Field(
+        default=None,
+        description="Optional path to the exact LoRA-adapted runtime to unload",
+    )
+    draft_model_id: str | None = Field(
+        default=None,
+        description="Optional draft model tied to the exact runtime to unload",
+    )
 
 
 class ModelUnloadResponse(BaseModel):
