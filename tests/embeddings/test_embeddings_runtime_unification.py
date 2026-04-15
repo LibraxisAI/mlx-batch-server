@@ -7,6 +7,7 @@ import mlx.core as mx
 import pytest
 
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
+from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
 from mlx_batch_server.embeddings import router as embeddings_router_module
 from mlx_batch_server.embeddings.embeddings_service import EmbeddingsService
@@ -15,6 +16,7 @@ from mlx_batch_server.embeddings.schema import EmbeddingRequest
 
 def _clear_runtime_aliases() -> None:
     runtime_aliases_module.clear_runtime_aliases()
+    runtime_attachments_module.clear_runtime_surface_attachments()
 
 
 def test_embeddings_service_reuses_canonical_runtime_alias_for_shared_vlm(
@@ -101,7 +103,10 @@ def test_embeddings_service_unload_clears_shared_vlm_runtime(monkeypatch):
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id: unloaded_calls.append(model_id) or [model_id],
+        lambda model_id, **kwargs: unloaded_calls.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
+        or [model_id],
     )
 
     runtime_aliases_module.register_runtime_alias(
@@ -110,7 +115,7 @@ def test_embeddings_service_unload_clears_shared_vlm_runtime(monkeypatch):
     )
 
     assert service.unload_model("frontier-vlm") is True
-    assert unloaded_calls == ["libraxisai/qwen3-vl-30b"]
+    assert unloaded_calls == [("libraxisai/qwen3-vl-30b", None, None)]
     assert service.has_shared_vlm_runtime_models() is False
 
     _clear_runtime_aliases()
@@ -129,11 +134,83 @@ def test_embeddings_service_unload_reports_runtime_only_shared_vlm(monkeypatch):
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id: unloaded_calls.append(model_id) or [model_id],
+        lambda model_id, **kwargs: unloaded_calls.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
+        or [model_id],
     )
 
     assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is True
-    assert unloaded_calls == ["libraxisai/qwen3-vl-30b"]
+    assert unloaded_calls == [("libraxisai/qwen3-vl-30b", None, None)]
+
+    _clear_runtime_aliases()
+
+
+def test_embeddings_service_unload_exact_runtime_preserves_sibling_variant(
+    monkeypatch,
+):
+    _clear_runtime_aliases()
+    service = EmbeddingsService()
+    unloaded_calls: list[tuple[str, str | None, str | None]] = []
+
+    monkeypatch.setattr(
+        embeddings_service_module,
+        "resolves_to_multimodal_runtime",
+        lambda model_id: True,
+    )
+
+    def fake_get_shared_vlm_embedder(model_id: str, **kwargs):
+        runtime_attachments_module.attach_runtime_surface(
+            model_id,
+            "embeddings",
+            adapter_path=kwargs.get("adapter_path"),
+            draft_model_id=kwargs.get("draft_model_id"),
+        )
+        return object()
+
+    monkeypatch.setattr(
+        service,
+        "_get_shared_vlm_embedder",
+        fake_get_shared_vlm_embedder,
+    )
+    monkeypatch.setattr(
+        service,
+        "_unload_shared_vlm_embedder",
+        lambda model_id, **kwargs: unloaded_calls.append(
+            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+        )
+        or [model_id],
+    )
+
+    assert (
+        service.load_model("LibraxisAI/Qwen3-VL-30B", adapter_path="/adapter-a")
+        is False
+    )
+    assert (
+        service.load_model("LibraxisAI/Qwen3-VL-30B", adapter_path="/adapter-b")
+        is False
+    )
+
+    assert (
+        service.unload_model("LibraxisAI/Qwen3-VL-30B", adapter_path="/adapter-a")
+        is True
+    )
+    assert unloaded_calls == [("libraxisai/qwen3-vl-30b", "/adapter-a", None)]
+    assert service.get_shared_vlm_runtime_keys() == [
+        ("libraxisai/qwen3-vl-30b", "/adapter-b", None)
+    ]
+    assert service.get_shared_vlm_models() == ["libraxisai/qwen3-vl-30b"]
+    assert (
+        runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path="/adapter-a",
+        )
+        == []
+    )
+    assert runtime_attachments_module.get_runtime_surface_attachments(
+        "libraxisai/qwen3-vl-30b",
+        adapter_path="/adapter-b",
+    ) == ["embeddings"]
 
     _clear_runtime_aliases()
 

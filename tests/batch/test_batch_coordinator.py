@@ -271,3 +271,34 @@ class TestGetBatchCoordinator:
 
         assert removed == 1
         assert state["shutdown"] is True
+
+    @pytest.mark.asyncio
+    async def test_shutdown_batch_coordinator_exact_adapter_preserves_sibling_lane(
+        self,
+    ):
+        """Exact adapter shutdown must not tear down sibling batch variants."""
+        target = get_batch_coordinator("model-with-adapter", adapter_path="/adapter-a")
+        sibling = get_batch_coordinator("model-with-adapter", adapter_path="/adapter-b")
+        state = {"target_shutdown": False, "sibling_shutdown": False}
+
+        async def target_shutdown():
+            state["target_shutdown"] = True
+
+        async def sibling_shutdown():
+            state["sibling_shutdown"] = True
+
+        target.shutdown = target_shutdown
+        sibling.shutdown = sibling_shutdown
+
+        removed = await shutdown_batch_coordinator(
+            "model-with-adapter",
+            adapter_path="/adapter-a",
+        )
+
+        assert removed == 1
+        assert state["target_shutdown"] is True
+        assert state["sibling_shutdown"] is False
+        assert (
+            get_batch_coordinator("model-with-adapter", adapter_path="/adapter-b")
+            is sibling
+        )

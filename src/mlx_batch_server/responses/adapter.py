@@ -25,7 +25,6 @@ from PIL import Image
 from ..batch import BatchStreamChunk, get_batch_coordinator
 from ..chat.mlx.chat_generator import ChatGenerator
 from ..chat.mlx.runtime_policy import endpoint_runtime_session
-from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..chat.openai.openai_adapter import OpenAIAdapter
 from ..chat.openai.schema import ChatCompletionRequest, ChatMessage, Role, Tool
 from ..core.config import get_settings
@@ -47,6 +46,16 @@ from ..utils.video_loader import build_video_prompt_and_inputs
 from ..vision.vlm_batch import (
     get_vlm_batch_coordinator,
     get_vlm_stream_coordinator,
+)
+from ..vision.vlm_cache import (
+    get_loaded_models as get_cached_vlm_models,
+)
+from ..vision.vlm_cache import (
+    get_vlm_backend,
+    vlm_execution,
+)
+from ..vision.vlm_cache import (
+    unload_vlm_model as unload_cached_vlm_model,
 )
 from .normalizer import (
     collect_system_preamble,
@@ -95,13 +104,13 @@ _CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
 
 
 # ------------------------------------------------------------------
-# VLM lifecycle proxies — delegate to the unified wrapper_cache
+# VLM lifecycle proxies — delegate to the unified VLM cache shim
 # ------------------------------------------------------------------
 
 
 def get_loaded_vlm_models() -> list[str]:
     """Return model IDs currently resident in the VLM cache."""
-    return wrapper_cache.get_loaded_vlm_models()
+    return get_cached_vlm_models()
 
 
 def unload_vlm_model(
@@ -110,8 +119,8 @@ def unload_vlm_model(
     adapter_path: str | None = None,
     draft_model_id: str | None = None,
 ) -> list[str]:
-    """Unload one or all VLM models (delegates to wrapper_cache)."""
-    return wrapper_cache.unload_vlm_model(
+    """Unload one or all VLM models through the unified VLM cache shim."""
+    return unload_cached_vlm_model(
         model_id,
         adapter_path=adapter_path,
         draft_model_id=draft_model_id,
@@ -260,8 +269,8 @@ class ResponsesAdapter:
         return extra_body or None
 
     def _get_vlm_backend(self, model_id: str) -> tuple[Any, Any]:
-        """Load or reuse a vision-language model (via unified wrapper_cache)."""
-        return wrapper_cache.get_vlm_backend(model_id)
+        """Load or reuse a vision-language model via the shared VLM cache shim."""
+        return get_vlm_backend(model_id)
 
     def _require_vlm_chat_template(self):
         if _mlx_vlm_apply_chat_template is None:
@@ -1079,7 +1088,7 @@ class ResponsesAdapter:
         model, processor = self._get_vlm_backend(model_id)
         gen_kwargs = self._vlm_generation_kwargs(normalised_body)
 
-        with wrapper_cache.vlm_execution(model_id):
+        with vlm_execution(model_id):
             if videos:
                 # --- Video path: use mlx-vlm video pipeline ---
                 text_prompt = self._extract_text_content(
@@ -1215,7 +1224,7 @@ class ResponsesAdapter:
                 return
 
             async def _direct_stream_results():
-                with wrapper_cache.vlm_execution(model_id):
+                with vlm_execution(model_id):
                     for result in vlm_stream_generate(
                         model,
                         processor,

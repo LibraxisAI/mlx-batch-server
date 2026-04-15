@@ -13,8 +13,9 @@ from ..chat.mlx.runtime_attachments import (
     get_attached_runtime_targets,
     release_runtime_surface,
 )
-from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
+from ..chat.mlx.wrapper_cache import normalize_model_id
 from ..utils.logger import logger
+from ..vision.vlm_cache import unload_vlm_model
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
 from .shared_vlm_text_embedder import SharedVLMTextEmbedder
 
@@ -132,23 +133,55 @@ class EmbeddingsService:
         """Return exact shared-runtime VLM keys currently tracked by embeddings."""
         return sorted(self._shared_vlm_runtime_keys)
 
-    def unload_model(self, model_id: str, *, release_runtime: bool = True) -> bool:
+    def unload_model(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+        release_runtime: bool = True,
+    ) -> bool:
         """Unload a specific embeddings model. Returns True if it was loaded."""
         if self._should_use_shared_vlm_embeddings(model_id):
-            canonical_model_id = self.canonicalize_model_id(model_id)
-            runtime_keys = {
-                key
-                for key in self._shared_vlm_runtime_keys
-                if key[0] == canonical_model_id
-            }
-            was_loaded = (
-                bool(runtime_keys) or canonical_model_id in self._shared_vlm_models
+            runtime_target = resolve_runtime_target(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
             )
-            self._shared_vlm_runtime_keys = {
-                key
-                for key in self._shared_vlm_runtime_keys
-                if key[0] != canonical_model_id
-            }
+            canonical_model_id = runtime_target.model_id
+            runtime_key = (
+                runtime_target.model_id,
+                runtime_target.adapter_path,
+                runtime_target.draft_model_id,
+            )
+            exact_runtime_requested = (
+                runtime_target.adapter_path is not None
+                or runtime_target.draft_model_id is not None
+            )
+
+            if exact_runtime_requested:
+                runtime_keys = (
+                    {runtime_key}
+                    if runtime_key in self._shared_vlm_runtime_keys
+                    else set()
+                )
+                was_loaded = bool(runtime_keys)
+                self._shared_vlm_runtime_keys.discard(runtime_key)
+            else:
+                runtime_keys = {
+                    key
+                    for key in self._shared_vlm_runtime_keys
+                    if key[0] == canonical_model_id
+                }
+                was_loaded = (
+                    bool(runtime_keys) or canonical_model_id in self._shared_vlm_models
+                )
+                self._shared_vlm_runtime_keys = {
+                    key
+                    for key in self._shared_vlm_runtime_keys
+                    if key[0] != canonical_model_id
+                }
+
             if not any(
                 key[0] == canonical_model_id for key in self._shared_vlm_runtime_keys
             ):
@@ -156,9 +189,7 @@ class EmbeddingsService:
 
             unloaded_any = False
             attachment_found = False
-            runtime_targets = runtime_keys or {
-                self._shared_runtime_key(canonical_model_id)
-            }
+            runtime_targets = runtime_keys or {runtime_key}
 
             for (
                 runtime_model_id,
@@ -278,7 +309,7 @@ class EmbeddingsService:
             unload_kwargs["adapter_path"] = adapter_path
         if draft_model_id is not None:
             unload_kwargs["draft_model_id"] = draft_model_id
-        return wrapper_cache.unload_vlm_model(model_id, **unload_kwargs)
+        return unload_vlm_model(model_id, **unload_kwargs)
 
     def _release_shared_vlm_runtime(
         self,
