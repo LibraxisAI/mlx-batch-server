@@ -531,6 +531,7 @@ class MLXModel:
         self.draft_model = draft_model
         self.draft_tokenizer = draft_tokenizer
         self._text_model_proxy: nn.Module | None = None
+        self._language_model: nn.Module | None = None
 
     def reset_runtime_state(self) -> None:
         """Clear request-local transient state left behind by some VLM towers."""
@@ -539,15 +540,20 @@ class MLXModel:
             logger.debug("Cleared transient runtime state for %s", self.model_id)
 
     @property
-    def text_model(self) -> nn.Module:
+    def language_model(self) -> nn.Module:
         """Return the text-generation tower for both LLM and VLM runtimes."""
         base_model = getattr(self.model, "language_model", self.model)
         if not self.supports_multimodal:
-            return base_model
+            return self.model
 
-        if self._text_model_proxy is None:
-            self._text_model_proxy = MLXLMCompatibleLanguageModel(base_model)
-        return self._text_model_proxy
+        if self._language_model is None:
+            self._language_model = MLXLMCompatibleLanguageModel(base_model)
+        return self._language_model
+
+    @property
+    def text_model(self) -> nn.Module:
+        """Compatibility alias to the canonical language model projection."""
+        return self.language_model
 
     @property
     def supports_multimodal(self) -> bool:
