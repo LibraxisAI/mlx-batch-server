@@ -66,6 +66,11 @@ from .schema import (
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+# Keep a monkeypatchable module seam while delegating ownership to the unified
+# runtime registry instead of reviving a second VLM cache surface.
+get_vlm_backend = wrapper_cache.get_vlm_backend
+vlm_execution = wrapper_cache.vlm_execution
+
 try:  # Optional dependency for multimodal lanes.
     from mlx_vlm import apply_chat_template as _mlx_vlm_apply_chat_template
 except Exception as exc:  # pragma: no cover - optional dependency
@@ -282,13 +287,14 @@ class ResponsesAdapter:
         *,
         adapter_path: str | None = None,
         draft_model_id: str | None = None,
+        surface: str = "visual",
     ) -> tuple[Any, Any]:
         """Load or reuse a vision-language model under the shared endpoint surface."""
-        return wrapper_cache.get_vlm_backend(
+        return get_vlm_backend(
             model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
-            surface="llm",
+            surface=surface,
         )
 
     def _require_vlm_chat_template(self):
@@ -1161,7 +1167,7 @@ class ResponsesAdapter:
         )
         gen_kwargs = self._vlm_generation_kwargs(normalised_body)
 
-        with wrapper_cache.vlm_execution(
+        with vlm_execution(
             model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
@@ -1308,7 +1314,7 @@ class ResponsesAdapter:
                 return
 
             async def _direct_stream_results():
-                with wrapper_cache.vlm_execution(
+                with vlm_execution(
                     model_id,
                     adapter_path=adapter_path,
                     draft_model_id=draft_model_id,
