@@ -12,10 +12,15 @@ from typing import Any
 import mlx.core as mx
 
 from ..chat.mlx.model_types import reset_request_local_runtime_state
-from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
+from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..core.config import get_settings
 from ..utils.logger import logger
 from ..utils.model_limits import extract_context_length, resolve_max_tokens
+from .vlm_cache import (
+    get_vlm_backend,
+    resolve_vlm_model_id,
+    vlm_execution,
+)
 
 try:  # Optional dependency
     from mlx_vlm import apply_chat_template as _vlm_apply_chat_template
@@ -61,11 +66,20 @@ class VlmBatchCoordinator:
     def __init__(
         self,
         model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
         batch_window_ms: int = 50,
         max_batch_size: int = 4,
         group_by_shape: bool = True,
     ) -> None:
-        self.model_id = normalize_model_id(model_id)
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        self.model_id = target.model_id
+        self.adapter_path = target.adapter_path
+        self.draft_model_id = target.draft_model_id
         self._batch_window_ms = batch_window_ms
         self._max_batch_size = max_batch_size
         self._group_by_shape = group_by_shape
@@ -207,8 +221,12 @@ class VlmBatchCoordinator:
             resize_shape = _parse_resize_shape(settings.vlm_batch_resize_shape)
 
             prompts, images = _collect_vlm_batch_inputs(batch)
-            with wrapper_cache.vlm_execution(self.model_id):
-                model, processor = wrapper_cache.get_vlm_backend(self.model_id)
+            with vlm_execution(self.model_id):
+                model, processor = get_vlm_backend(
+                    self.model_id,
+                    adapter_path=self.adapter_path,
+                    draft_model_id=self.draft_model_id,
+                )
                 reset_request_local_runtime_state(model)
                 context_length = _infer_vlm_context_length(model, processor)
                 prompt_lengths = _estimate_prompt_lengths(
@@ -301,10 +319,19 @@ class VlmStreamBatchCoordinator:
     def __init__(
         self,
         model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
         batch_window_ms: int = 50,
         max_batch_size: int = 4,
     ) -> None:
-        self.model_id = normalize_model_id(model_id)
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        self.model_id = target.model_id
+        self.adapter_path = target.adapter_path
+        self.draft_model_id = target.draft_model_id
         self._batch_window_ms = batch_window_ms
         self._max_batch_size = max_batch_size
 
@@ -463,9 +490,11 @@ class VlmStreamBatchCoordinator:
         self._last_batch_size = len(batch)
 
         try:
-            with wrapper_cache.vlm_execution(self.model_id):
+            with vlm_execution(self.model_id):
                 state = _init_stream_batch_state(
                     model_id=self.model_id,
+                    adapter_path=self.adapter_path,
+                    draft_model_id=self.draft_model_id,
                     batch=batch,
                 )
                 await self._register_active_requests(batch)
@@ -541,49 +570,96 @@ class VlmStreamBatchCoordinator:
         return list(grouped.values())
 
 
-_VLM_COORDINATORS: dict[str, VlmBatchCoordinator] = {}
+VlmRuntimeKey = tuple[str, str | None, str | None]
+
+
+def _resolve_vlm_runtime_key(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> VlmRuntimeKey:
+    target = resolve_runtime_target(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
+    return (
+        resolve_vlm_model_id(target.model_id),
+        target.adapter_path,
+        target.draft_model_id,
+    )
+
+
+def _format_vlm_runtime_key(runtime_key: VlmRuntimeKey) -> str:
+    model_id, adapter_path, draft_model_id = runtime_key
+    parts = [model_id]
+    if adapter_path is not None:
+        parts.append(f"adapter={adapter_path}")
+    if draft_model_id is not None:
+        parts.append(f"draft={draft_model_id}")
+    return " | ".join(parts)
+
+
+_VLM_COORDINATORS: dict[VlmRuntimeKey, VlmBatchCoordinator] = {}
 _VLM_LOCK = threading.Lock()
-_VLM_STREAM_COORDINATORS: dict[str, VlmStreamBatchCoordinator] = {}
+_VLM_STREAM_COORDINATORS: dict[VlmRuntimeKey, VlmStreamBatchCoordinator] = {}
 _VLM_STREAM_LOCK = threading.Lock()
 
 
 def get_vlm_batch_coordinator(
     model_id: str,
     *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
     batch_window_ms: int,
     max_batch_size: int,
     group_by_shape: bool,
 ) -> VlmBatchCoordinator:
-    normalized_model_id = normalize_model_id(model_id)
+    runtime_key = _resolve_vlm_runtime_key(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     with _VLM_LOCK:
-        coordinator = _VLM_COORDINATORS.get(normalized_model_id)
+        coordinator = _VLM_COORDINATORS.get(runtime_key)
         if coordinator is None:
             coordinator = VlmBatchCoordinator(
-                model_id=normalized_model_id,
+                model_id=runtime_key[0],
+                adapter_path=runtime_key[1],
+                draft_model_id=runtime_key[2],
                 batch_window_ms=batch_window_ms,
                 max_batch_size=max_batch_size,
                 group_by_shape=group_by_shape,
             )
-            _VLM_COORDINATORS[normalized_model_id] = coordinator
+            _VLM_COORDINATORS[runtime_key] = coordinator
         return coordinator
 
 
 def get_vlm_stream_coordinator(
     model_id: str,
     *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
     batch_window_ms: int,
     max_batch_size: int,
 ) -> VlmStreamBatchCoordinator:
-    normalized_model_id = normalize_model_id(model_id)
+    runtime_key = _resolve_vlm_runtime_key(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     with _VLM_STREAM_LOCK:
-        coordinator = _VLM_STREAM_COORDINATORS.get(normalized_model_id)
+        coordinator = _VLM_STREAM_COORDINATORS.get(runtime_key)
         if coordinator is None:
             coordinator = VlmStreamBatchCoordinator(
-                model_id=normalized_model_id,
+                model_id=runtime_key[0],
+                adapter_path=runtime_key[1],
+                draft_model_id=runtime_key[2],
                 batch_window_ms=batch_window_ms,
                 max_batch_size=max_batch_size,
             )
-            _VLM_STREAM_COORDINATORS[normalized_model_id] = coordinator
+            _VLM_STREAM_COORDINATORS[runtime_key] = coordinator
         return coordinator
 
 
@@ -591,12 +667,15 @@ def get_vlm_batch_stats() -> dict[str, Any]:
     stats: dict[str, Any] = {}
     with _VLM_LOCK:
         stats.update(
-            {model_id: coord.stats() for model_id, coord in _VLM_COORDINATORS.items()}
+            {
+                _format_vlm_runtime_key(runtime_key): coord.stats()
+                for runtime_key, coord in _VLM_COORDINATORS.items()
+            }
         )
     with _VLM_STREAM_LOCK:
         stream_stats = {
-            model_id: coord.stats()
-            for model_id, coord in _VLM_STREAM_COORDINATORS.items()
+            _format_vlm_runtime_key(runtime_key): coord.stats()
+            for runtime_key, coord in _VLM_STREAM_COORDINATORS.items()
         }
     if stream_stats:
         stats["stream"] = stream_stats
@@ -606,9 +685,9 @@ def get_vlm_batch_stats() -> dict[str, Any]:
 def get_loaded_vlm_batch_models() -> list[str]:
     """Return model IDs with active VLM batch or stream coordinators."""
     with _VLM_LOCK:
-        loaded = list(_VLM_COORDINATORS.keys())
+        loaded = [coord.model_id for coord in _VLM_COORDINATORS.values()]
     with _VLM_STREAM_LOCK:
-        loaded.extend(list(_VLM_STREAM_COORDINATORS.keys()))
+        loaded.extend(coord.model_id for coord in _VLM_STREAM_COORDINATORS.values())
     return list(dict.fromkeys(loaded))
 
 
@@ -626,19 +705,44 @@ async def shutdown_all_vlm_coordinators() -> None:
         await coord.shutdown()
 
 
-async def shutdown_vlm_coordinator(model_id: str) -> int:
-    normalized_model_id = normalize_model_id(model_id)
+async def shutdown_vlm_coordinator(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> int:
+    runtime_key = _resolve_vlm_runtime_key(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     removed = 0
 
     with _VLM_LOCK:
-        coord = _VLM_COORDINATORS.pop(normalized_model_id, None)
-    if coord is not None:
+        if adapter_path is None and draft_model_id is None:
+            keys = [key for key in _VLM_COORDINATORS if key[0] == runtime_key[0]]
+        else:
+            keys = [runtime_key]
+        coords = [
+            _VLM_COORDINATORS.pop(key) for key in keys if key in _VLM_COORDINATORS
+        ]
+    for coord in coords:
         removed += 1
         await coord.shutdown()
 
     with _VLM_STREAM_LOCK:
-        stream_coord = _VLM_STREAM_COORDINATORS.pop(normalized_model_id, None)
-    if stream_coord is not None:
+        if adapter_path is None and draft_model_id is None:
+            stream_keys = [
+                key for key in _VLM_STREAM_COORDINATORS if key[0] == runtime_key[0]
+            ]
+        else:
+            stream_keys = [runtime_key]
+        stream_coords = [
+            _VLM_STREAM_COORDINATORS.pop(key)
+            for key in stream_keys
+            if key in _VLM_STREAM_COORDINATORS
+        ]
+    for stream_coord in stream_coords:
         removed += 1
         await stream_coord.shutdown()
 
@@ -687,6 +791,8 @@ def _chunk_list(items: list[Any], size: int) -> list[list[Any]]:
 def _init_stream_batch_state(
     *,
     model_id: str,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
     batch: list[PendingVlmStreamRequest],
 ) -> dict[str, Any]:
     apply_chat_template, batch_generator, prepare_inputs = _require_vlm_stream_support()
@@ -694,7 +800,11 @@ def _init_stream_batch_state(
     resize_shape = _parse_resize_shape(settings.vlm_batch_resize_shape)
     pad_uniform = settings.vlm_batch_pad_to_uniform_size
 
-    model, processor = wrapper_cache.get_vlm_backend(model_id)
+    model, processor = get_vlm_backend(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     reset_request_local_runtime_state(model)
     tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     if hasattr(processor, "detokenizer"):
