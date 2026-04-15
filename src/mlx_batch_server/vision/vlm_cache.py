@@ -2,7 +2,7 @@
 
 `mlx-batch-server` historically exposed a dedicated `vision.vlm_cache` module.
 `mlx-batch-runner` moved the real residency ownership into `wrapper_cache` so
-text, vision, and embeddings all share one runtime. This module restores that
+text, vision, and embeddings all share one runtime. This module restores the
 VLM-facing API as a thin shim over the unified owner so both repositories can
 converge on one contract without reintroducing split-brain caches.
 """
@@ -245,3 +245,18 @@ def get_cache_info() -> dict[str, Any]:
         "lru_order": lru_order,
         "ttl_info": ttl_info,
     }
+
+
+__all__ = [
+    "clear_vlm_models",
+    "get_cache_info",
+    "get_loaded_models",
+    "get_loaded_vlm_models",
+    "get_vlm_backend",
+    "is_vlm_loaded",
+    "load_vlm_model",
+    "normalize_vlm_model_id",
+    "resolve_vlm_model_id",
+    "unload_vlm_model",
+    "vlm_execution",
+]
