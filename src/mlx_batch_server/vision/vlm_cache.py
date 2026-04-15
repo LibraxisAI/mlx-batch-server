@@ -16,7 +16,11 @@ from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     resolve_runtime_target,
 )
-from ..chat.mlx.wrapper_cache import normalize_runtime_key, wrapper_cache
+from ..chat.mlx.wrapper_cache import (
+    normalize_runtime_key,
+    serialize_runtime_key,
+    wrapper_cache,
+)
 from ..core.config import get_settings
 
 
@@ -186,12 +190,17 @@ def get_cache_info() -> dict[str, Any]:
     info = wrapper_cache.get_cache_info()
     cached_models: list[str] = sorted(
         cast("list[str]", info.get("vlm_cached_keys", []))
+        or list(wrapper_cache.get_loaded_vlm_models())
     )
     surface_runtime_attachments = cast(
         "list[dict[str, Any]]",
         info.get("surface_runtime_attachments", []),
     )
-    runtime_key_items = cast("list[dict[str, Any]]", info.get("runtime_keys", []))
+    runtime_key_items = cast("list[dict[str, Any]]", info.get("runtime_keys", [])) or [
+        serialize_runtime_key(key)
+        for key in wrapper_cache.get_runtime_keys()
+        if key.model_id in cached_models
+    ]
     lru_entries = cast("list[str]", info.get("lru_order", []))
     ttl_entries = cast("list[dict[str, Any]]", info.get("ttl_info", []))
     surface_attachments = [

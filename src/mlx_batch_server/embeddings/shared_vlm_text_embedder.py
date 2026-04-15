@@ -8,7 +8,7 @@ import numpy as np
 
 from ..chat.mlx.model_types import reset_request_local_runtime_state
 from ..chat.mlx.runtime_aliases import resolve_runtime_target
-from ..chat.mlx.wrapper_cache import wrapper_cache
+from ..vision.vlm_cache import get_vlm_backend, vlm_execution
 
 
 @dataclass
@@ -43,7 +43,7 @@ class SharedVLMTextEmbedder:
         self._get_backend()
 
     def _get_backend(self) -> tuple[Any, Any]:
-        return wrapper_cache.get_vlm_backend(
+        return get_vlm_backend(
             self.model_id,
             adapter_path=self.adapter_path,
             draft_model_id=self.draft_model_id,
@@ -152,7 +152,7 @@ class SharedVLMTextEmbedder:
         return hidden_states / norm
 
     def embed_text_pooled(self, text: str) -> SharedTextEmbeddingResult:
-        with wrapper_cache.vlm_execution(self.model_id):
+        with vlm_execution(self.model_id):
             model, processor = self._get_backend()
             reset_request_local_runtime_state(model)
             tokenizer = getattr(processor, "tokenizer", processor)

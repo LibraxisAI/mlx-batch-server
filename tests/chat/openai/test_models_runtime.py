@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -347,15 +348,27 @@ class TestUnloadRuntime:
         """LLM unload should tear down the batch coordinator before cache unload."""
         state = {"shutdown_called": False}
 
-        async def fake_shutdown(model_id: str) -> int:
+        async def fake_shutdown(
+            model_id: str, *, adapter_path: str | None = None
+        ) -> int:
             assert model_id == "model-a"
+            assert adapter_path is None
             state["shutdown_called"] = True
             return 1
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_called"] is True
                 assert model_id == "model-a"
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is True
                 return {
                     "status": "unloaded",
@@ -421,8 +434,11 @@ class TestUnloadRuntime:
         runtime_attachments_module.attach_runtime_surface("model-a", "llm")
         runtime_attachments_module.attach_runtime_surface("model-a", "visual")
 
-        async def fake_shutdown(model_id: str) -> int:
+        async def fake_shutdown(
+            model_id: str, *, adapter_path: str | None = None
+        ) -> int:
             assert model_id == "model-a"
+            assert adapter_path is None
             state["shutdown_called"] = True
             return 0
 
@@ -431,9 +447,18 @@ class TestUnloadRuntime:
             return 0
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_called"] is True
                 assert model_id == "model-a"
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is False
                 return {
                     "status": "detached",
@@ -509,8 +534,11 @@ class TestUnloadRuntime:
         runtime_attachments_module.attach_runtime_surface("model-a", "llm")
         runtime_attachments_module.attach_runtime_surface("model-a", "embeddings")
 
-        async def fake_shutdown(model_id: str) -> int:
+        async def fake_shutdown(
+            model_id: str, *, adapter_path: str | None = None
+        ) -> int:
             assert model_id == "model-a"
+            assert adapter_path is None
             state["shutdown_called"] = True
             return 0
 
@@ -520,10 +548,18 @@ class TestUnloadRuntime:
             return 1
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_called"] is True
-                assert state["vlm_shutdown_called"] is True
                 assert model_id == "model-a"
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is False
                 return {
                     "status": "detached",
@@ -596,9 +632,18 @@ class TestUnloadRuntime:
             state["shutdown_all_called"] = True
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_all_called"] is True
                 assert model_id == "model-b"
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is True
                 return {
                     "status": "unloaded",
@@ -666,9 +711,18 @@ class TestUnloadRuntime:
             state["shutdown_all_called"] = True
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_all_called"] is True
                 assert model_id is None
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is True
                 return {
                     "status": "cleared",
@@ -732,8 +786,17 @@ class TestUnloadRuntime:
             state["shutdown_all_called"] = True
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_all_called"] is True
+                assert adapter_path is None
+                assert draft_model_id is None
                 calls.append((model_id, release_runtime))
                 return {
                     "status": "detached",
@@ -800,8 +863,17 @@ class TestUnloadRuntime:
             return 1
 
         class FakeModelsService:
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
                 assert state["shutdown_all_called"] is True
+                assert adapter_path is None
+                assert draft_model_id is None
                 calls.append((model_id, release_runtime))
                 return {
                     "status": "detached",
@@ -862,6 +934,99 @@ class TestUnloadRuntime:
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "model-b"
         ) == ["embeddings"]
+
+    @pytest.mark.asyncio
+    async def test_unload_llm_exact_runtime_target_preserves_sibling_variant(
+        self,
+        monkeypatch,
+    ):
+        calls: list[tuple[str, str | None, str | None, bool]] = []
+        batch_shutdowns: list[tuple[str, str | None]] = []
+        vlm_shutdowns: list[str] = []
+
+        runtime_attachments_module.attach_runtime_surface(
+            "model-a",
+            "llm",
+            adapter_path="/adapter-a",
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "model-a",
+            "llm",
+            adapter_path="/adapter-b",
+        )
+
+        async def fake_shutdown(
+            model_id: str, *, adapter_path: str | None = None
+        ) -> int:
+            batch_shutdowns.append((model_id, adapter_path))
+            return 1
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            vlm_shutdowns.append(model_id)
+            return 1
+
+        class FakeModelsService:
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
+                calls.append((model_id, adapter_path, draft_model_id, release_runtime))
+                return {
+                    "status": "unloaded",
+                    "message": f"Model {model_id} unloaded successfully",
+                    "unloaded_models": [model_id],
+                    "cache_info": {"cache_size": 1},
+                }
+
+        monkeypatch.setattr(
+            batch_coordinator_module,
+            "shutdown_batch_coordinator",
+            fake_shutdown,
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "get_models_service",
+            lambda: FakeModelsService(),
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(
+                model="model-a",
+                task="llm",
+                adapter_path="/adapter-a",
+            )
+        )
+
+        assert response.status == "unloaded"
+        assert response.unloaded_models == ["model-a"]
+        assert calls == [("model-a", "/adapter-a", None, True)]
+        assert batch_shutdowns == [("model-a", "/adapter-a")]
+        assert vlm_shutdowns == ["model-a"]
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "model-a",
+                adapter_path="/adapter-a",
+            )
+            == []
+        )
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-a",
+            adapter_path="/adapter-b",
+        ) == ["llm"]
 
 
 class TestLoadRuntime:
@@ -1192,9 +1357,15 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             visual_router_module,
             "unload_visual_embedder",
-            lambda model_id=None, release_runtime=True: (
-                ["model-vlm"] if model_id == "model-vlm" else []
-            ),
+            lambda model_id=None,
+            adapter_path=None,
+            draft_model_id=None,
+            release_runtime=True: (["model-vlm"] if model_id == "model-vlm" else []),
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            AsyncMock(return_value=1),
         )
         monkeypatch.setattr(
             models_module,
@@ -1223,7 +1394,10 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             visual_router_module,
             "unload_visual_embedder",
-            lambda model_id=None, release_runtime=True: (
+            lambda model_id=None,
+            adapter_path=None,
+            draft_model_id=None,
+            release_runtime=True: (
                 release_runtime_flags.append(release_runtime) or ["model-vlm"]
             ),
         )
@@ -1260,7 +1434,16 @@ class TestLoadRuntime:
             def canonicalize_model_id(self, model_id):
                 return "libraxisai/qwen3-vl-30b"
 
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is True
                 return True
 
@@ -1303,7 +1486,16 @@ class TestLoadRuntime:
             def canonicalize_model_id(self, model_id):
                 return "libraxisai/qwen3-vl-30b"
 
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is False
                 return True
 
@@ -1353,7 +1545,16 @@ class TestLoadRuntime:
             def canonicalize_model_id(self, model_id):
                 return "libraxisai/qwen3-vl-30b"
 
-            def unload_model(self, model_id, *, release_runtime=True):
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
+                assert adapter_path is None
+                assert draft_model_id is None
                 assert release_runtime is False
                 return True
 
@@ -1391,6 +1592,250 @@ class TestLoadRuntime:
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "libraxisai/qwen3-vl-30b"
         ) == ["llm"]
+
+    @pytest.mark.asyncio
+    async def test_unload_embeddings_fans_out_exact_runtime_keys_to_service(
+        self,
+        monkeypatch,
+    ):
+        calls: list[tuple[str, str | None, str | None, bool]] = []
+        shutdowns: list[str] = []
+
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "embeddings",
+            adapter_path="/adapter-a",
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "embeddings",
+            adapter_path="/adapter-b",
+        )
+
+        class FakeEmbeddingsService:
+            def uses_shared_vlm_runtime(self, model_id):
+                return True
+
+            def canonicalize_model_id(self, model_id):
+                return "libraxisai/qwen3-vl-30b"
+
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
+                calls.append((model_id, adapter_path, draft_model_id, release_runtime))
+                return True
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            shutdowns.append(model_id)
+            return 1
+
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            lambda: FakeEmbeddingsService(),
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 0, "surface_attachments": {}},
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(model="LibraxisAI/Qwen3-VL-30B", task="embeddings")
+        )
+
+        assert response.task == "embeddings"
+        assert response.status == "unloaded"
+        assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
+        assert calls == [
+            ("libraxisai/qwen3-vl-30b", "/adapter-a", None, True),
+            ("libraxisai/qwen3-vl-30b", "/adapter-b", None, True),
+        ]
+        assert shutdowns == ["libraxisai/qwen3-vl-30b"]
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "libraxisai/qwen3-vl-30b",
+                adapter_path="/adapter-a",
+            )
+            == []
+        )
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "libraxisai/qwen3-vl-30b",
+                adapter_path="/adapter-b",
+            )
+            == []
+        )
+
+    @pytest.mark.asyncio
+    async def test_unload_visual_exact_runtime_preserves_sibling_visual_variant(
+        self,
+        monkeypatch,
+    ):
+        calls: list[tuple[str, str | None, str | None, bool]] = []
+        shutdowns: list[str] = []
+
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "visual",
+            adapter_path="/adapter-a",
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "visual",
+            adapter_path="/adapter-b",
+        )
+
+        monkeypatch.setattr(
+            visual_router_module,
+            "unload_visual_embedder",
+            lambda model_id, **kwargs: calls.append(
+                (
+                    model_id,
+                    kwargs.get("adapter_path"),
+                    kwargs.get("draft_model_id"),
+                    kwargs.get("release_runtime"),
+                )
+            )
+            or [model_id],
+        )
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            shutdowns.append(model_id)
+            return 1
+
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(
+                model="LibraxisAI/Qwen3-VL-30B",
+                task="visual",
+                adapter_path="/adapter-a",
+            )
+        )
+
+        assert response.task == "visual"
+        assert response.status == "unloaded"
+        assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
+        assert calls == [("libraxisai/qwen3-vl-30b", "/adapter-a", None, True)]
+        assert shutdowns == []
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "libraxisai/qwen3-vl-30b",
+                adapter_path="/adapter-a",
+            )
+            == []
+        )
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path="/adapter-b",
+        ) == ["visual"]
+
+    @pytest.mark.asyncio
+    async def test_unload_embeddings_exact_runtime_targets_one_service_variant(
+        self,
+        monkeypatch,
+    ):
+        calls: list[tuple[str, str | None, str | None, bool]] = []
+        shutdowns: list[str] = []
+
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "embeddings",
+            adapter_path="/adapter-a",
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "embeddings",
+            adapter_path="/adapter-b",
+        )
+        runtime_attachments_module.attach_runtime_surface(
+            "libraxisai/qwen3-vl-30b",
+            "visual",
+            adapter_path="/adapter-b",
+        )
+
+        class FakeEmbeddingsService:
+            def uses_shared_vlm_runtime(self, model_id):
+                return True
+
+            def canonicalize_model_id(self, model_id):
+                return "libraxisai/qwen3-vl-30b"
+
+            def unload_model(
+                self,
+                model_id,
+                *,
+                adapter_path=None,
+                draft_model_id=None,
+                release_runtime=True,
+            ):
+                calls.append((model_id, adapter_path, draft_model_id, release_runtime))
+                return True
+
+        async def fake_shutdown_vlm(model_id: str) -> int:
+            shutdowns.append(model_id)
+            return 1
+
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            lambda: FakeEmbeddingsService(),
+        )
+        monkeypatch.setattr(
+            vlm_batch_module,
+            "shutdown_vlm_coordinator",
+            fake_shutdown_vlm,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "_build_llm_cache_info",
+            lambda: {"loaded_models_count": 1},
+        )
+
+        response = await models_module.unload_model(
+            ModelUnloadRequest(
+                model="LibraxisAI/Qwen3-VL-30B",
+                task="embeddings",
+                adapter_path="/adapter-a",
+            )
+        )
+
+        assert response.task == "embeddings"
+        assert response.status == "unloaded"
+        assert response.unloaded_models == ["libraxisai/qwen3-vl-30b"]
+        assert calls == [("libraxisai/qwen3-vl-30b", "/adapter-a", None, True)]
+        assert shutdowns == []
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "libraxisai/qwen3-vl-30b",
+                adapter_path="/adapter-a",
+            )
+            == []
+        )
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path="/adapter-b",
+        ) == ["embeddings", "visual"]
 
 
 class TestModelsServiceRuntimeKeys:

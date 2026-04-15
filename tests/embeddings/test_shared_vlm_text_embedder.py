@@ -43,12 +43,12 @@ def test_shared_vlm_text_embedder_pools_last_non_padding_token(monkeypatch):
     )
 
     monkeypatch.setattr(
-        embedder_module.wrapper_cache,
+        embedder_module,
         "get_vlm_backend",
         lambda model_id, **kwargs: (fake_model, fake_processor),
     )
     monkeypatch.setattr(
-        embedder_module.wrapper_cache,
+        embedder_module,
         "vlm_execution",
         fake_vlm_execution,
     )
@@ -98,7 +98,7 @@ def test_shared_vlm_text_embedder_resets_nested_language_runtime_state(monkeypat
     )
 
     monkeypatch.setattr(
-        embedder_module.wrapper_cache,
+        embedder_module,
         "get_vlm_backend",
         lambda model_id, **kwargs: (fake_model, fake_processor),
     )
@@ -128,7 +128,7 @@ def test_shared_vlm_text_embedder_resolves_alias_scoped_adapter(monkeypatch):
     )
 
     monkeypatch.setattr(
-        embedder_module.wrapper_cache,
+        embedder_module,
         "get_vlm_backend",
         lambda model_id, **kwargs: (
             seen.append(
