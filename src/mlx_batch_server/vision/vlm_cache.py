@@ -96,6 +96,11 @@ def get_loaded_models() -> list[str]:
     return sorted(wrapper_cache.get_loaded_vlm_models())
 
 
+def get_loaded_vlm_models() -> list[str]:
+    """Compatibility alias for callers expecting the explicit VLM naming."""
+    return get_loaded_models()
+
+
 def load_vlm_model(
     model_id: str,
     *,
@@ -181,7 +186,11 @@ def vlm_execution(
         adapter_path=adapter_path,
         draft_model_id=draft_model_id,
     )
-    with wrapper_cache.vlm_execution(target.model_id):
+    with wrapper_cache.vlm_execution(
+        target.model_id,
+        adapter_path=target.adapter_path,
+        draft_model_id=target.draft_model_id,
+    ):
         yield
 
 

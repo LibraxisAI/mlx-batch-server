@@ -7,6 +7,7 @@ Contributed by LibraxisAI - https://libraxis.ai
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 
 import httpx
@@ -73,6 +74,22 @@ class TestResponsesSchema:
             max_output_tokens=200,
         )
         assert request2.get_max_tokens() == 200
+
+    def test_response_request_accepts_runtime_override_fields(self):
+        """Responses surface should accept exact-runtime overrides like chat-completions."""
+        request = ResponseRequest(
+            model="test-model",
+            input="Hello",
+            adapter_path="~/adapters/frontier-lora",
+            draft_model="MLX-Community/Qwen3-1.7B-4bit",
+        )
+
+        dumped = request.model_dump(exclude_none=True)
+
+        assert request.adapter_path == "~/adapters/frontier-lora"
+        assert request.get_draft_model_id() == "MLX-Community/Qwen3-1.7B-4bit"
+        assert dumped["adapter_path"] == "~/adapters/frontier-lora"
+        assert dumped["draft_model"] == "MLX-Community/Qwen3-1.7B-4bit"
 
     def test_build_text_output_simple(self):
         """build_text_output should create message item."""
@@ -247,13 +264,22 @@ class TestResponsesAdapterRouting:
         adapter = ResponsesAdapter()
         calls = []
 
-        async def fake_generate_text(model_id, normalised_body, request_model=None):
+        async def fake_generate_text(
+            model_id,
+            normalised_body,
+            request_model=None,
+            *,
+            adapter_path=None,
+            draft_model_id=None,
+        ):
             calls.append(
                 {
                     "lane": "text",
                     "model_id": model_id,
                     "request_model": request_model,
                     "has_tools": bool(normalised_body.get("tools")),
+                    "adapter_path": adapter_path,
+                    "draft_model_id": draft_model_id,
                 }
             )
             return ResponseResponse(
@@ -261,13 +287,22 @@ class TestResponsesAdapterRouting:
                 output=build_text_output("text"),
             )
 
-        async def fake_generate_vision(model_id, normalised_body, request_model=None):
+        async def fake_generate_vision(
+            model_id,
+            normalised_body,
+            request_model=None,
+            *,
+            adapter_path=None,
+            draft_model_id=None,
+        ):
             calls.append(
                 {
                     "lane": "multimodal",
                     "model_id": model_id,
                     "request_model": request_model,
                     "has_tools": bool(normalised_body.get("tools")),
+                    "adapter_path": adapter_path,
+                    "draft_model_id": draft_model_id,
                 }
             )
             return ResponseResponse(
@@ -278,10 +313,19 @@ class TestResponsesAdapterRouting:
         monkeypatch.setattr(adapter, "_generate_text", fake_generate_text)
         monkeypatch.setattr(adapter, "_generate_vision", fake_generate_vision)
 
-        await adapter.generate(ResponseRequest(model="demo-model", input="Hello"))
         await adapter.generate(
             ResponseRequest(
                 model="demo-model",
+                input="Hello",
+                adapter_path="/adapter/frontier",
+                draft_model="draft-qwen",
+            )
+        )
+        await adapter.generate(
+            ResponseRequest(
+                model="demo-model",
+                adapter_path="/adapter/frontier",
+                draft_model="draft-qwen",
                 input=[
                     {
                         "role": "user",
@@ -301,12 +345,16 @@ class TestResponsesAdapterRouting:
                 model="demo-model",
                 input="Use the tool",
                 tools=[{"type": "function", "name": "lookup"}],
+                adapter_path="/adapter/frontier",
+                draft_model="draft-qwen",
             )
         )
 
         assert [call["lane"] for call in calls] == ["text", "multimodal", "text"]
         assert {call["model_id"] for call in calls} == {"demo-model"}
         assert {call["request_model"] for call in calls} == {"demo-model"}
+        assert {call["adapter_path"] for call in calls} == {"/adapter/frontier"}
+        assert {call["draft_model_id"] for call in calls} == {"draft-qwen"}
         assert calls[2]["has_tools"] is True
 
     @pytest.mark.asyncio
@@ -347,8 +395,19 @@ class TestResponsesAdapterRouting:
                     },
                 )()
 
+        def fake_get_openai_adapter(
+            _model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            seen["adapter_runtime"] = (_model_id, adapter_path, draft_model_id)
+            return FakeAdapter()
+
         monkeypatch.setattr(
-            adapter, "_get_openai_adapter", lambda _model_id: FakeAdapter()
+            adapter,
+            "_get_openai_adapter",
+            fake_get_openai_adapter,
         )
 
         events = [
@@ -365,6 +424,7 @@ class TestResponsesAdapterRouting:
         ]
 
         assert seen["model"] == "demo-model"
+        assert seen["adapter_runtime"] == ("demo-model", None, None)
         assert len(seen["messages"]) == 1
         assert seen["messages"][0]["role"] == "user"
         assert seen["messages"][0]["content"] == "What is the weather?"
@@ -372,6 +432,105 @@ class TestResponsesAdapterRouting:
         assert any(event["type"] == "response.completed" for event in events)
         assert any(
             event["type"] == "response.output_text.done" and event["text"] == "sunny"
+            for event in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_text_with_draft_model_uses_single_lane_exact_runtime(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses import adapter as adapter_module
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen: dict[str, object] = {}
+
+        monkeypatch.setattr(adapter, "_should_use_batch", lambda: True)
+
+        @asynccontextmanager
+        async def fake_runtime_session(
+            model_id: str,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            seen["runtime_session"] = (model_id, adapter_path, draft_model_id)
+            yield {"switched": False}
+
+        class FakeAdapter:
+            def generate_stream(self, request):
+                seen["request_model"] = request.model
+                seen["extra"] = request.get_extra_params()
+                yield type(
+                    "Chunk",
+                    (),
+                    {
+                        "choices": [
+                            type(
+                                "Choice",
+                                (),
+                                {
+                                    "delta": type(
+                                        "Delta",
+                                        (),
+                                        {"content": "draft ok"},
+                                    )(),
+                                    "finish_reason": "stop",
+                                },
+                            )()
+                        ]
+                    },
+                )()
+
+        def fake_get_openai_adapter(
+            model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            seen["adapter_runtime"] = (model_id, adapter_path, draft_model_id)
+            return FakeAdapter()
+
+        async def fail_batch(*args, **kwargs):
+            raise AssertionError("draft-model requests must not enter the batch lane")
+            yield
+
+        monkeypatch.setattr(
+            adapter_module,
+            "endpoint_runtime_session",
+            fake_runtime_session,
+        )
+        monkeypatch.setattr(adapter, "_get_openai_adapter", fake_get_openai_adapter)
+        monkeypatch.setattr(adapter, "_stream_batch_tokens", fail_batch)
+
+        events = [
+            event
+            async for event in adapter.generate_stream(
+                ResponseRequest(
+                    model="demo-model",
+                    input="Stay on the exact runtime",
+                    stream=True,
+                    adapter_path="/adapter/frontier",
+                    draft_model="draft-qwen",
+                )
+            )
+        ]
+
+        assert seen["runtime_session"] == (
+            "demo-model",
+            "/adapter/frontier",
+            "draft-qwen",
+        )
+        assert seen["adapter_runtime"] == (
+            "demo-model",
+            "/adapter/frontier",
+            "draft-qwen",
+        )
+        assert seen["request_model"] == "demo-model"
+        assert seen["extra"]["adapter_path"] == "/adapter/frontier"
+        assert seen["extra"]["draft_model"] == "draft-qwen"
+        assert any(
+            event["type"] == "response.output_text.done" and event["text"] == "draft ok"
             for event in events
         )
 
@@ -548,13 +707,19 @@ class TestResponsesRuntimeGuards:
         )
 
         response = await adapter._generate_vision(
-            "demo-model", normalised, "demo-model"
+            "demo-model",
+            normalised,
+            "demo-model",
+            adapter_path="/adapter/frontier",
+            draft_model_id="draft-qwen",
         )
 
         assert seen["messages"] == [{"role": "user", "content": "Describe this image"}]
         assert len(seen["images"]) == 1
         assert seen["max_tokens"] is None
         assert seen["temperature"] is None
+        assert seen["coordinator_kwargs"]["adapter_path"] == "/adapter/frontier"
+        assert seen["coordinator_kwargs"]["draft_model_id"] == "draft-qwen"
         assert response.output[-1].content[0]["text"] == "batched vision"
         assert response.usage.input_tokens == 11
         assert response.usage.output_tokens == 7
@@ -620,11 +785,17 @@ class TestResponsesRuntimeGuards:
         events = [
             event
             async for event in adapter._generate_vision_stream(
-                "demo-model", normalised, "demo-model"
+                "demo-model",
+                normalised,
+                "demo-model",
+                adapter_path="/adapter/frontier",
+                draft_model_id="draft-qwen",
             )
         ]
 
         assert seen["messages"] == [{"role": "user", "content": "Describe this image"}]
+        assert seen["coordinator_kwargs"]["adapter_path"] == "/adapter/frontier"
+        assert seen["coordinator_kwargs"]["draft_model_id"] == "draft-qwen"
         completed = next(
             event for event in events if event["type"] == "response.completed"
         )
@@ -634,6 +805,198 @@ class TestResponsesRuntimeGuards:
             if item["type"] == "message"
         )
         assert message_item["content"][0]["text"] == "batched stream"
+
+    @pytest.mark.asyncio
+    async def test_generate_vision_direct_lane_uses_exact_runtime_identity(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses import adapter as adapter_module
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen: dict[str, object] = {}
+
+        def fake_settings():
+            return SimpleNamespace(
+                vlm_batch_enabled=False,
+                vlm_stream_batch_enabled=False,
+                vlm_batch_window_ms=25,
+                vlm_max_batch_size=3,
+                vlm_batch_group_by_shape=True,
+            )
+
+        def fake_get_vlm_backend(
+            model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            seen["backend"] = (model_id, adapter_path, draft_model_id)
+            return SimpleNamespace(config={}), SimpleNamespace()
+
+        @contextmanager
+        def fake_vlm_execution(
+            model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            seen["execution"] = (model_id, adapter_path, draft_model_id)
+            yield
+
+        monkeypatch.setattr(adapter_module, "get_settings", fake_settings)
+        monkeypatch.setattr(adapter, "_get_vlm_backend", fake_get_vlm_backend)
+        monkeypatch.setattr(adapter_module, "vlm_execution", fake_vlm_execution)
+        monkeypatch.setattr(
+            adapter, "_require_vlm_chat_template", lambda: lambda *a, **k: "prompt"
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_require_vlm_generate",
+            lambda: lambda *args, **kwargs: SimpleNamespace(
+                text="direct vision",
+                prompt_tokens=5,
+                generation_tokens=2,
+                total_tokens=7,
+            ),
+        )
+
+        normalised = normalise_responses_payload(
+            {
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/cat.png",
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+
+        response = await adapter._generate_vision(
+            "demo-model",
+            normalised,
+            "demo-model",
+            adapter_path="/adapter/frontier",
+            draft_model_id="draft-qwen",
+        )
+
+        assert seen["backend"] == (
+            "demo-model",
+            "/adapter/frontier",
+            "draft-qwen",
+        )
+        assert seen["execution"] == (
+            "demo-model",
+            "/adapter/frontier",
+            "draft-qwen",
+        )
+        assert response.output[-1].content[0]["text"] == "direct vision"
+
+    @pytest.mark.asyncio
+    async def test_generate_vision_marks_shared_runtime_as_llm_surface(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses import adapter as adapter_module
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        seen: dict[str, object] = {}
+
+        @contextmanager
+        def fake_vlm_execution(model_id: str, **kwargs):
+            seen["execution"] = (
+                model_id,
+                kwargs.get("adapter_path"),
+                kwargs.get("draft_model_id"),
+            )
+            yield
+
+        monkeypatch.setattr(
+            adapter,
+            "_should_use_vlm_batch",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            adapter_module,
+            "get_vlm_backend",
+            lambda model_id, **kwargs: (
+                seen.update(
+                    {
+                        "model_id": model_id,
+                        "adapter_path": kwargs.get("adapter_path"),
+                        "draft_model_id": kwargs.get("draft_model_id"),
+                        "surface": kwargs.get("surface"),
+                    }
+                )
+                or (
+                    SimpleNamespace(config=SimpleNamespace()),
+                    SimpleNamespace(),
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            adapter_module,
+            "vlm_execution",
+            fake_vlm_execution,
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_require_vlm_chat_template",
+            lambda: (lambda processor, config, messages, **kwargs: "prompt"),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_require_vlm_generate",
+            lambda: (
+                lambda model, processor, prompt, image=None, **kwargs: SimpleNamespace(
+                    text="vision attached",
+                    prompt_tokens=4,
+                    generation_tokens=2,
+                    total_tokens=6,
+                )
+            ),
+        )
+
+        normalised = normalise_responses_payload(
+            {
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/cat.png",
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+
+        response = await adapter._generate_vision(
+            "frontier-vlm",
+            normalised,
+            "frontier-vlm",
+        )
+
+        assert seen == {
+            "model_id": "frontier-vlm",
+            "adapter_path": None,
+            "draft_model_id": None,
+            "surface": "llm",
+            "execution": ("frontier-vlm", None, None),
+        }
+        assert response.output[-1].content[0]["text"] == "vision attached"
+        assert response.usage.total_tokens == 6
 
     @pytest.mark.asyncio
     async def test_streaming_text_with_previous_response_id_falls_back_to_single_lane(
@@ -673,8 +1036,19 @@ class TestResponsesRuntimeGuards:
                     },
                 )()
 
+        def fake_get_openai_adapter(
+            _model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            seen["adapter_runtime"] = (_model_id, adapter_path, draft_model_id)
+            return FakeAdapter()
+
         monkeypatch.setattr(
-            adapter, "_get_openai_adapter", lambda _model_id: FakeAdapter()
+            adapter,
+            "_get_openai_adapter",
+            fake_get_openai_adapter,
         )
 
         events = [
@@ -699,6 +1073,7 @@ class TestResponsesRuntimeGuards:
         ]
 
         assert seen["model"] == "demo-model"
+        assert seen["adapter_runtime"] == ("demo-model", None, None)
         assert seen["tools"] is None
         assert seen["extra"]["extra_body"]["enable_prompt_cache"] is False
         assert len(seen["messages"]) == 1

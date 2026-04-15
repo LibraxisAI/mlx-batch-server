@@ -34,6 +34,7 @@ from mlx_lm.generate import BatchGenerator
 from mlx_lm.sample_utils import make_sampler
 
 from ..chat.mlx.model_types import MLXModel
+from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..utils.logger import logger
 from ..utils.model_limits import extract_context_length, resolve_max_tokens
 
@@ -518,10 +519,12 @@ class BatchChatGenerator:
         if not requests:
             return
 
-        from ..chat.mlx.wrapper_cache import wrapper_cache
-
         execution_context = (
-            wrapper_cache.vlm_execution(self.model.model_id)
+            wrapper_cache.vlm_execution(
+                self.model.model_id,
+                adapter_path=getattr(self.model, "adapter_path", None),
+                draft_model_id=getattr(self.model, "draft_model_id", None),
+            )
             if getattr(self.model, "supports_multimodal", False)
             else nullcontext()
         )

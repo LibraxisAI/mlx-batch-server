@@ -665,6 +665,56 @@ class TestMLXWrapperCacheModelManagement:
         finally:
             runtime_aliases_module.clear_runtime_aliases()
 
+    def test_vlm_execution_scopes_locks_to_exact_runtime_key(self):
+        """Different VLM runtime variants should not serialize on one coarse lock."""
+        entered_same = threading.Event()
+        entered_other = threading.Event()
+        release_same = threading.Event()
+        release_other = threading.Event()
+        events: list[tuple[str, str]] = []
+
+        def run_variant(
+            adapter_path: str,
+            label: str,
+            entered: threading.Event,
+            release: threading.Event,
+        ) -> None:
+            with self.cache.vlm_execution("model-vlm", adapter_path=adapter_path):
+                events.append(("enter", label))
+                entered.set()
+                release.wait(timeout=1.0)
+                events.append(("exit", label))
+
+        with self.cache.vlm_execution("model-vlm", adapter_path="/adapter-a"):
+            same_variant = threading.Thread(
+                target=run_variant,
+                args=("/adapter-a", "same", entered_same, release_same),
+            )
+            other_variant = threading.Thread(
+                target=run_variant,
+                args=("/adapter-b", "other", entered_other, release_other),
+            )
+            same_variant.start()
+            other_variant.start()
+
+            assert entered_other.wait(timeout=1.0) is True
+            assert entered_same.wait(timeout=0.1) is False
+
+            release_other.set()
+            other_variant.join(timeout=1.0)
+            assert other_variant.is_alive() is False
+
+        assert entered_same.wait(timeout=1.0) is True
+        release_same.set()
+        same_variant.join(timeout=1.0)
+        assert same_variant.is_alive() is False
+        assert events == [
+            ("enter", "other"),
+            ("exit", "other"),
+            ("enter", "same"),
+            ("exit", "same"),
+        ]
+
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_home_relative_path_reuses_single_cached_wrapper(self, mock_create):
         """Home-relative model paths should collapse to one cache identity."""
