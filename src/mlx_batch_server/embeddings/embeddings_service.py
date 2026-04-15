@@ -174,7 +174,7 @@ class EmbeddingsService:
                 attachment_found = attachment_found or attachment_state.was_attached
                 if not release_runtime or attachment_state.remaining_surfaces:
                     continue
-                unloaded = self._unload_shared_vlm_embedder(
+                unloaded = self._release_shared_vlm_runtime(
                     runtime_model_id,
                     adapter_path=runtime_adapter_path,
                     draft_model_id=runtime_draft_model_id,
@@ -224,7 +224,7 @@ class EmbeddingsService:
                 draft_model_id=target.draft_model_id,
             )
             if release_runtime and not attachment_state.remaining_surfaces:
-                self._unload_shared_vlm_embedder(
+                self._release_shared_vlm_runtime(
                     target.model_id,
                     adapter_path=target.adapter_path,
                     draft_model_id=target.draft_model_id,
@@ -279,6 +279,22 @@ class EmbeddingsService:
         if draft_model_id is not None:
             unload_kwargs["draft_model_id"] = draft_model_id
         return wrapper_cache.unload_vlm_model(model_id, **unload_kwargs)
+
+    def _release_shared_vlm_runtime(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> list[str]:
+        """Bridge exact runtime-key unload with the older model-id-only contract."""
+        if adapter_path is None and draft_model_id is None:
+            return self._unload_shared_vlm_embedder(model_id)
+        return self._unload_shared_vlm_embedder(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
 
     def _count_tokens(self, text: str | list[str]) -> int:
         """Count tokens in input text"""
