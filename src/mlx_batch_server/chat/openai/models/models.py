@@ -272,11 +272,41 @@ def _format_retained_runtime_message(
     )
 
 
-def _visual_lane_retained(
-    remaining_surfaces: list[str] | tuple[str, ...],
+def _exact_runtime_requested(
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
 ) -> bool:
-    """Return True while the visual surface still owns the multimodal batch lane."""
-    return "visual" in set(remaining_surfaces)
+    """Return True when the operator targeted one exact runtime variant."""
+    return adapter_path is not None or draft_model_id is not None
+
+
+def _select_runtime_targets(
+    surface: str,
+    *,
+    model_id: str,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> list[Any]:
+    """Return surface attachments for one model, optionally narrowed to one runtime."""
+    runtime_targets = get_attached_runtime_targets(surface, model_id=model_id)
+    if not _exact_runtime_requested(
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    ):
+        return runtime_targets
+
+    requested_target = resolve_runtime_target(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
+    return [target for target in runtime_targets if target == requested_target]
+
+
+def _visual_surfaces_still_attached(model_id: str) -> bool:
+    """Return True when any exact runtime for this canonical model still owns vision."""
+    return bool(get_attached_runtime_targets("visual", model_id=model_id))
 
 
 @lru_cache(maxsize=128)
@@ -784,22 +814,46 @@ def _build_unload_response(
     )
 
 
-async def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadResponse:
+async def _unload_shared_embeddings_surface(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> ModelUnloadResponse:
     from ....embeddings.embeddings_service import get_embeddings_service
     from ....vision.vlm_batch import shutdown_vlm_coordinator
 
     service = get_embeddings_service()
     shared_runtime = service.uses_shared_vlm_runtime(model_id)
-    canonical_model_id = (
-        service.canonicalize_model_id(model_id) if shared_runtime else model_id
+    runtime_target = resolve_runtime_target(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
     )
-    runtime_targets = get_attached_runtime_targets("embeddings", model_id=model_id)
+    canonical_model_id = (
+        service.canonicalize_model_id(runtime_target.model_id)
+        if shared_runtime
+        else runtime_target.model_id
+    )
+    runtime_targets = _select_runtime_targets(
+        "embeddings",
+        model_id=model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
     if not runtime_targets:
         unloaded = (
             [canonical_model_id]
-            if service.unload_model(model_id, release_runtime=True)
+            if service.unload_model(
+                runtime_target.model_id,
+                adapter_path=runtime_target.adapter_path,
+                draft_model_id=runtime_target.draft_model_id,
+                release_runtime=True,
+            )
             else []
         )
+        if unloaded and not _visual_surfaces_still_attached(canonical_model_id):
+            await shutdown_vlm_coordinator(canonical_model_id)
         return ModelUnloadResponse(
             task="embeddings",
             status="unloaded" if unloaded else "not_found",
@@ -843,7 +897,7 @@ async def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadRespons
         remaining_surfaces.update(target_remaining)
 
     unloaded = list(dict.fromkeys(unloaded))
-    if unloaded and not _visual_lane_retained(sorted(remaining_surfaces)):
+    if unloaded and not _visual_surfaces_still_attached(canonical_model_id):
         await shutdown_vlm_coordinator(canonical_model_id)
     if unloaded and detached:
         status = "detached"
@@ -868,16 +922,37 @@ async def _unload_shared_embeddings_surface(model_id: str) -> ModelUnloadRespons
     )
 
 
-async def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
+async def _unload_visual_surface(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+) -> ModelUnloadResponse:
     from ....embeddings.visual_router import unload_visual_embedder
     from ....vision.vlm_batch import shutdown_vlm_coordinator
 
-    runtime_targets = get_attached_runtime_targets("visual", model_id=model_id)
-    canonical_model_id = resolve_runtime_target(model_id).model_id
-    await shutdown_vlm_coordinator(canonical_model_id)
+    runtime_target = resolve_runtime_target(
+        model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
+    runtime_targets = _select_runtime_targets(
+        "visual",
+        model_id=model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
+    canonical_model_id = runtime_target.model_id
 
     if not runtime_targets:
-        unloaded = unload_visual_embedder(model_id, release_runtime=True)
+        unloaded = unload_visual_embedder(
+            runtime_target.model_id,
+            adapter_path=runtime_target.adapter_path,
+            draft_model_id=runtime_target.draft_model_id,
+            release_runtime=True,
+        )
+        if unloaded and not _visual_surfaces_still_attached(canonical_model_id):
+            await shutdown_vlm_coordinator(canonical_model_id)
         return ModelUnloadResponse(
             task="visual",
             status="unloaded" if unloaded else "not_found",
@@ -923,6 +998,8 @@ async def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
         remaining_surfaces.update(target_remaining)
 
     unloaded = list(dict.fromkeys(unloaded))
+    if unloaded and not _visual_surfaces_still_attached(canonical_model_id):
+        await shutdown_vlm_coordinator(canonical_model_id)
     if unloaded and detached:
         status = "detached"
         message = _format_retained_runtime_message(
@@ -947,22 +1024,52 @@ async def _unload_visual_surface(model_id: str) -> ModelUnloadResponse:
 
 
 async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
-    task: str, model_id: str
+    task: str,
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
 ) -> ModelUnloadResponse:
     if task == "llm":
         from ....batch.coordinator import shutdown_batch_coordinator
         from ....vision.vlm_batch import shutdown_vlm_coordinator
 
-        runtime_targets = get_attached_runtime_targets("llm", model_id=model_id)
-        canonical_model_id = resolve_runtime_target(model_id).model_id
-        await shutdown_batch_coordinator(canonical_model_id)
+        runtime_target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        runtime_targets = _select_runtime_targets(
+            "llm",
+            model_id=model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        canonical_model_id = runtime_target.model_id
+        await shutdown_batch_coordinator(
+            canonical_model_id,
+            adapter_path=(
+                runtime_target.adapter_path
+                if _exact_runtime_requested(
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                )
+                else None
+            ),
+        )
 
         if not runtime_targets:
             result = get_models_service().unload_model(
-                model_id=model_id,
+                model_id=canonical_model_id,
+                adapter_path=runtime_target.adapter_path,
+                draft_model_id=runtime_target.draft_model_id,
                 release_runtime=True,
             )
             unloaded_models = list(dict.fromkeys(result.get("unloaded_models", [])))
+            if unloaded_models and not _visual_surfaces_still_attached(
+                canonical_model_id
+            ):
+                await shutdown_vlm_coordinator(canonical_model_id)
             status = "unloaded" if unloaded_models else result["status"]
             message = (
                 f"Model {canonical_model_id} unloaded successfully"
@@ -988,8 +1095,6 @@ async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
                 draft_model_id=target.draft_model_id,
             )
             preserve_runtime = bool(target_remaining)
-            if not _visual_lane_retained(target_remaining):
-                await shutdown_vlm_coordinator(canonical_model_id)
             unload_kwargs: dict[str, Any] = {
                 "model_id": target.model_id,
                 "release_runtime": not preserve_runtime,
@@ -1007,6 +1112,8 @@ async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
             )
             if result.get("unloaded_models"):
                 unloaded_models.extend(result.get("unloaded_models", []))
+                if not _visual_surfaces_still_attached(canonical_model_id):
+                    await shutdown_vlm_coordinator(canonical_model_id)
             detached = detached or preserve_runtime
             remaining_surfaces.update(target_remaining)
 
@@ -1037,10 +1144,18 @@ async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
         )
 
     if task == "embeddings":
-        return await _unload_shared_embeddings_surface(model_id)
+        return await _unload_shared_embeddings_surface(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
 
     if task == "visual":
-        return await _unload_visual_surface(model_id)
+        return await _unload_visual_surface(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
 
     if task == "stt":
         from ....stt.whisper_model import unload_whisper_model
@@ -1136,8 +1251,6 @@ async def _clear_llm_task() -> ModelUnloadResponse:
             draft_model_id=target.draft_model_id,
         )
         preserve_runtime = bool(target_remaining)
-        if not _visual_lane_retained(target_remaining):
-            await shutdown_vlm_coordinator(target.model_id)
         unload_kwargs: dict[str, Any] = {
             "model_id": target.model_id,
             "release_runtime": not preserve_runtime,
@@ -1157,6 +1270,8 @@ async def _clear_llm_task() -> ModelUnloadResponse:
             unloaded_models.extend(result["unloaded_models"])
             if preserve_runtime:
                 detached_models.extend(result["unloaded_models"])
+            if not _visual_surfaces_still_attached(target.model_id):
+                await shutdown_vlm_coordinator(target.model_id)
 
     unloaded_models = list(dict.fromkeys(unloaded_models))
     return ModelUnloadResponse(
@@ -1222,7 +1337,7 @@ async def _clear_task(  # noqa: PLR0911, PLR0912, PLR0915
                 **unload_kwargs,
             ):
                 unloaded.append(target.model_id)
-                if not _visual_lane_retained(target_remaining):
+                if not _visual_surfaces_still_attached(target.model_id):
                     await shutdown_vlm_coordinator(target.model_id)
             release_runtime_surface(
                 target.model_id,
@@ -1388,6 +1503,8 @@ async def unload_model(
     try:
         model_id = request.model if request else None
         task_hint = _normalize_task(request.task) if request else None
+        adapter_path = request.adapter_path if request else None
+        draft_model_id = request.draft_model_id if request else None
 
         if task_hint and task_hint not in _ALLOWED_TASKS:
             raise HTTPException(
@@ -1398,9 +1515,25 @@ async def unload_model(
                 ),
             )
 
+        if model_id is None and (
+            adapter_path is not None or draft_model_id is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "adapter_path and draft_model_id require a specific model "
+                    "when unloading runtime variants"
+                ),
+            )
+
         if model_id:
             task = _detect_task(model_id, task_hint)
-            return await _unload_specific(task, model_id)
+            return await _unload_specific(
+                task,
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
 
         if task_hint:
             return await _clear_task(task_hint)
