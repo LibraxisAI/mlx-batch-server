@@ -15,12 +15,15 @@ from mlx_batch_server.embeddings import qwen3_vl_embedder as embedder_module
 from mlx_batch_server.embeddings import visual_router as visual_router_module
 from mlx_batch_server.embeddings.embeddings_service import EmbeddingsService
 from mlx_batch_server.embeddings.schema import EmbeddingRequest
+from mlx_batch_server.vision import vlm_batch as vlm_batch_module
 
 
 def _clear_visual_state() -> None:
     runtime_aliases_module.clear_runtime_aliases()
     runtime_attachments_module.clear_runtime_surface_attachments()
     visual_router_module._embedder_cache.clear()
+    vlm_batch_module._VLM_COORDINATORS.clear()
+    vlm_batch_module._VLM_STREAM_COORDINATORS.clear()
 
 
 def test_visual_router_reuses_canonical_runtime_alias(monkeypatch):
@@ -191,7 +194,7 @@ def test_unload_visual_embedder_clears_shared_vlm_runtime(monkeypatch):
 
     unloaded_calls: list[str] = []
     monkeypatch.setattr(
-        visual_router_module.wrapper_cache,
+        visual_router_module,
         "unload_vlm_model",
         lambda model_id=None: unloaded_calls.append(model_id) or [model_id],
     )
@@ -225,7 +228,7 @@ def test_unload_visual_embedder_preserves_runtime_when_llm_surface_remains(
 
     unloaded_calls: list[str] = []
     monkeypatch.setattr(
-        visual_router_module.wrapper_cache,
+        visual_router_module,
         "unload_vlm_model",
         lambda model_id=None: unloaded_calls.append(model_id) or [model_id],
     )
@@ -262,7 +265,7 @@ def test_unload_visual_embedder_exact_runtime_preserves_sibling_variant(monkeypa
 
     unloaded_calls: list[tuple[str | None, str | None, str | None]] = []
     monkeypatch.setattr(
-        visual_router_module.wrapper_cache,
+        visual_router_module,
         "unload_vlm_model",
         lambda model_id=None, **kwargs: unloaded_calls.append(
             (
@@ -319,7 +322,7 @@ def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
 
     monkeypatch.setattr(embedder_module, "get_model_path", lambda model_id: tmp_path)
     monkeypatch.setattr(
-        embedder_module.wrapper_cache,
+        embedder_module,
         "get_vlm_backend",
         lambda model_id, **kwargs: backend_calls.append(
             (model_id, kwargs.get("surface"))
@@ -361,7 +364,7 @@ def test_qwen3_vl_embedder_serializes_shared_runtime_on_text_embed(monkeypatch):
             events.append(("exit", model_id))
 
     monkeypatch.setattr(
-        embedder_module.wrapper_cache,
+        embedder_module,
         "vlm_execution",
         fake_vlm_execution,
     )
@@ -771,3 +774,165 @@ def test_embeddings_service_clears_native_mlx_cache_after_request(monkeypatch):
 
     assert len(response.data) == 1
     assert cleared == ["clear"]
+
+
+@pytest.mark.asyncio
+async def test_vlm_batch_coordinator_routes_alias_scoped_adapter_to_shared_backend(
+    monkeypatch,
+):
+    _clear_visual_state()
+    expanded_adapter_path = str(Path("~/adapters/frontier-lora").expanduser())
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="~/adapters/frontier-lora",
+    )
+
+    backend_calls: list[tuple[str, str | None, str | None]] = []
+
+    @contextmanager
+    def fake_vlm_execution(model_id: str):
+        yield
+
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "vlm_execution",
+        fake_vlm_execution,
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "get_vlm_backend",
+        lambda model_id, **kwargs: (
+            backend_calls.append(
+                (
+                    model_id,
+                    kwargs.get("adapter_path"),
+                    kwargs.get("draft_model_id"),
+                )
+            )
+            or (
+                SimpleNamespace(config=SimpleNamespace(model_type="qwen3_vl")),
+                object(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "_collect_vlm_batch_inputs",
+        lambda batch: (["formatted prompt"], [object()]),
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "_infer_vlm_context_length",
+        lambda model, processor: 8192,
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "_estimate_prompt_lengths",
+        lambda model, processor, batch: [1 for _ in batch],
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "_collect_vlm_max_tokens",
+        lambda batch, context_length, prompt_lengths: 16,
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "_build_sampler",
+        lambda temperature, top_p: None,
+    )
+    monkeypatch.setattr(
+        vlm_batch_module,
+        "_vlm_batch_generate",
+        lambda model, processor, **kwargs: SimpleNamespace(
+            texts=["batched vision"],
+            prompt_tokens=4,
+            generation_tokens=2,
+            total_tokens=6,
+        ),
+    )
+
+    coordinator = vlm_batch_module.get_vlm_batch_coordinator(
+        "frontier-vlm",
+        batch_window_ms=1,
+        max_batch_size=1,
+        group_by_shape=True,
+    )
+    result = await coordinator.submit_request(
+        messages=[{"role": "user", "content": "Describe this image"}],
+        images=[object()],
+        max_tokens=16,
+        temperature=None,
+        top_p=None,
+    )
+
+    assert result.text == "batched vision"
+    assert backend_calls == [("libraxisai/qwen3-vl-30b", expanded_adapter_path, None)]
+
+    await coordinator.shutdown()
+    _clear_visual_state()
+
+
+@pytest.mark.asyncio
+async def test_vlm_stream_coordinators_keep_alias_scoped_variants_distinct():
+    _clear_visual_state()
+    adapter_a = str(Path("~/adapters/frontier-a").expanduser())
+    adapter_b = str(Path("~/adapters/frontier-b").expanduser())
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-a",
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="~/adapters/frontier-a",
+    )
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-b",
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="~/adapters/frontier-b",
+    )
+
+    batch_a = vlm_batch_module.get_vlm_batch_coordinator(
+        "frontier-a",
+        batch_window_ms=1,
+        max_batch_size=2,
+        group_by_shape=True,
+    )
+    batch_b = vlm_batch_module.get_vlm_batch_coordinator(
+        "frontier-b",
+        batch_window_ms=1,
+        max_batch_size=2,
+        group_by_shape=True,
+    )
+    stream_a = vlm_batch_module.get_vlm_stream_coordinator(
+        "frontier-a",
+        batch_window_ms=1,
+        max_batch_size=2,
+    )
+    stream_b = vlm_batch_module.get_vlm_stream_coordinator(
+        "frontier-b",
+        batch_window_ms=1,
+        max_batch_size=2,
+    )
+
+    assert batch_a is not batch_b
+    assert stream_a is not stream_b
+    assert batch_a.adapter_path == adapter_a
+    assert batch_b.adapter_path == adapter_b
+    assert stream_a.adapter_path == adapter_a
+    assert stream_b.adapter_path == adapter_b
+
+    removed = await vlm_batch_module.shutdown_vlm_coordinator(
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path=adapter_a,
+    )
+
+    assert removed == 2
+    assert {
+        coord.adapter_path for coord in vlm_batch_module._VLM_COORDINATORS.values()
+    } == {adapter_b}
+    assert {
+        coord.adapter_path
+        for coord in vlm_batch_module._VLM_STREAM_COORDINATORS.values()
+    } == {adapter_b}
+
+    await batch_b.shutdown()
+    await stream_b.shutdown()
+    _clear_visual_state()
