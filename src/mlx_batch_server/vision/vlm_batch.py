@@ -221,11 +221,16 @@ class VlmBatchCoordinator:
             resize_shape = _parse_resize_shape(settings.vlm_batch_resize_shape)
 
             prompts, images = _collect_vlm_batch_inputs(batch)
-            with vlm_execution(self.model_id):
+            with vlm_execution(
+                self.model_id,
+                adapter_path=self.adapter_path,
+                draft_model_id=self.draft_model_id,
+            ):
                 model, processor = get_vlm_backend(
                     self.model_id,
                     adapter_path=self.adapter_path,
                     draft_model_id=self.draft_model_id,
+                    surface="llm",
                 )
                 reset_request_local_runtime_state(model)
                 context_length = _infer_vlm_context_length(model, processor)
@@ -490,7 +495,11 @@ class VlmStreamBatchCoordinator:
         self._last_batch_size = len(batch)
 
         try:
-            with vlm_execution(self.model_id):
+            with vlm_execution(
+                self.model_id,
+                adapter_path=self.adapter_path,
+                draft_model_id=self.draft_model_id,
+            ):
                 state = _init_stream_batch_state(
                     model_id=self.model_id,
                     adapter_path=self.adapter_path,
@@ -804,6 +813,7 @@ def _init_stream_batch_state(
         model_id,
         adapter_path=adapter_path,
         draft_model_id=draft_model_id,
+        surface="llm",
     )
     reset_request_local_runtime_state(model)
     tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor

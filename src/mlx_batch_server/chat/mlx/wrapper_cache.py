@@ -102,7 +102,7 @@ class MLXWrapperCache:
         """
         self._cache: OrderedDict[WrapperCacheKey, ChatGenerator] = OrderedDict()
         self._access_times: dict[WrapperCacheKey, float] = {}
-        self._vlm_execution_locks: dict[str, threading.Lock] = {}
+        self._vlm_execution_locks: dict[WrapperCacheKey, threading.Lock] = {}
 
         self._lock = threading.Lock()
         self._max_size = max_size
@@ -460,8 +460,26 @@ class MLXWrapperCache:
                 )
                 logger.info(f"Unloaded model from cache: {key}")
 
+            if exact_key is None:
+                lock_keys_to_remove = [
+                    lock_key
+                    for lock_key in self._vlm_execution_locks
+                    if lock_key.model_id == normalized_model_id
+                ]
+            else:
+                lock_keys_to_remove = [exact_key]
+
+            for lock_key in lock_keys_to_remove:
+                self._vlm_execution_locks.pop(lock_key, None)
+
             if not any(key.model_id == normalized_model_id for key in self._cache):
-                self._vlm_execution_locks.pop(normalized_model_id, None)
+                sibling_lock_keys = [
+                    lock_key
+                    for lock_key in self._vlm_execution_locks
+                    if lock_key.model_id == normalized_model_id
+                ]
+                for lock_key in sibling_lock_keys:
+                    self._vlm_execution_locks.pop(lock_key, None)
             found = bool(keys_to_remove)
 
         if not found:
@@ -613,11 +631,21 @@ class MLXWrapperCache:
         return unloaded
 
     @contextmanager
-    def vlm_execution(self, model_id: str):
-        """Serialize multimodal generation on a shared resident VLM runtime."""
-        normalized = normalize_model_id(model_id)
+    def vlm_execution(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
+        """Serialize multimodal generation on one exact resident VLM runtime."""
+        runtime_key = normalize_runtime_key(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         with self._lock:
-            lock = self._vlm_execution_locks.setdefault(normalized, threading.Lock())
+            lock = self._vlm_execution_locks.setdefault(runtime_key, threading.Lock())
         lock.acquire()
         try:
             yield

@@ -218,21 +218,26 @@ class TestChatGeneratorLimits:
     def test_generate_stream_serializes_shared_vlm_runtime(self, monkeypatch):
         """VLM text requests should acquire the shared multimodal execution lock."""
         wrapper = _fake_wrapper(context_length=8, multimodal=True)
-        events: list[tuple[str, str]] = []
+        events: list[tuple[str, str, str | None, str | None]] = []
 
         @contextmanager
-        def fake_execution(model_id: str):
-            events.append(("enter", model_id))
+        def fake_execution(
+            model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            events.append(("enter", model_id, adapter_path, draft_model_id))
             try:
                 yield
             finally:
-                events.append(("exit", model_id))
+                events.append(("exit", model_id, adapter_path, draft_model_id))
 
         def fake_stream_generate(
             *, model, tokenizer, prompt, draft_model=None, **kwargs
         ):
             del model, tokenizer, prompt, draft_model, kwargs
-            assert events == [("enter", "test-model")]
+            assert events == [("enter", "test-model", None, None)]
             yield SimpleNamespace(
                 token=1,
                 finish_reason=None,
@@ -269,7 +274,10 @@ class TestChatGeneratorLimits:
         )
 
         assert len(results) == 1
-        assert events == [("enter", "test-model"), ("exit", "test-model")]
+        assert events == [
+            ("enter", "test-model", None, None),
+            ("exit", "test-model", None, None),
+        ]
 
     def test_get_or_create_requests_llm_runtime_surface(self, monkeypatch):
         """Lazy text-model access should request llm retention from wrapper cache."""

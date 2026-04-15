@@ -18,8 +18,8 @@ from mlx_batch_server.chat.openai.models.schema import (
 )
 from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
 from mlx_batch_server.embeddings import visual_router as visual_router_module
-from mlx_batch_server.responses import adapter as responses_adapter_module
 from mlx_batch_server.vision import vlm_batch as vlm_batch_module
+from mlx_batch_server.vision import vlm_cache as vlm_cache_module
 
 
 @pytest.fixture(autouse=True)
@@ -383,7 +383,7 @@ class TestUnloadRuntime:
             fake_shutdown,
         )
         monkeypatch.setattr(
-            responses_adapter_module,
+            vlm_cache_module,
             "unload_vlm_model",
             lambda model_id=None: [],
         )
@@ -737,7 +737,7 @@ class TestUnloadRuntime:
             fake_shutdown_all,
         )
         monkeypatch.setattr(
-            responses_adapter_module,
+            vlm_cache_module,
             "unload_vlm_model",
             lambda model_id=None: ["legacy-vlm"] if model_id is None else [],
         )

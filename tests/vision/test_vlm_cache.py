@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -159,6 +162,193 @@ def test_batch_coordinators_reject_non_pinned_models_in_pinned_only_mode(
         )
 
 
+def test_vlm_batch_coordinator_attaches_llm_surface(monkeypatch) -> None:
+    from mlx_batch_server.vision import vlm_batch
+
+    backend_calls: list[tuple[str, str | None, str | None, str | None]] = []
+
+    fake_model = SimpleNamespace(config=SimpleNamespace())
+    fake_processor = SimpleNamespace(
+        tokenizer=SimpleNamespace(encode=lambda text: [1, 2]),
+    )
+
+    monkeypatch.setattr(
+        vlm_batch,
+        "get_vlm_backend",
+        lambda model_id, **kwargs: backend_calls.append(
+            (
+                model_id,
+                kwargs.get("adapter_path"),
+                kwargs.get("draft_model_id"),
+                kwargs.get("surface"),
+            )
+        )
+        or (fake_model, fake_processor),
+    )
+    monkeypatch.setattr(
+        vlm_batch,
+        "_vlm_apply_chat_template",
+        lambda processor, config, messages, **kwargs: "formatted prompt",
+    )
+    monkeypatch.setattr(
+        vlm_batch,
+        "_vlm_batch_generate",
+        lambda model,
+        processor,
+        *,
+        images=None,
+        prompts=None,
+        max_tokens=128,
+        **kwargs: SimpleNamespace(
+            texts=["batched vision"],
+            prompt_tokens=3,
+            generation_tokens=2,
+            total_tokens=5,
+        ),
+    )
+
+    async def _run() -> None:
+        coordinator = vlm_batch.VlmBatchCoordinator(
+            "LibraxisAI/Qwen3-VL-30B",
+            adapter_path="/adapter-a",
+            draft_model_id="MLX-Community/Qwen3-1.7B-4bit",
+            batch_window_ms=10,
+            max_batch_size=4,
+        )
+        try:
+            result = await coordinator.submit_request(
+                messages=[{"role": "user", "content": "Describe this image"}],
+                images=["https://example.com/cat.png"],
+                max_tokens=12,
+                temperature=None,
+                top_p=None,
+            )
+            assert result.text == "batched vision"
+        finally:
+            await coordinator.shutdown()
+
+    asyncio.run(_run())
+
+    assert backend_calls == [
+        (
+            "libraxisai/qwen3-vl-30b",
+            "/adapter-a",
+            "mlx-community/qwen3-1.7b-4bit",
+            "llm",
+        )
+    ]
+
+
+def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
+    from mlx_batch_server.vision import vlm_batch
+
+    backend_calls: list[tuple[str, str | None, str | None, str | None]] = []
+    generator_calls: list[tuple[object, object, int, int]] = []
+
+    class FakeBatchGenerator:
+        def __init__(
+            self,
+            language_model,
+            processor,
+            *,
+            prefill_batch_size: int,
+            completion_batch_size: int,
+            sampler,
+        ) -> None:
+            generator_calls.append(
+                (
+                    language_model,
+                    processor,
+                    prefill_batch_size,
+                    completion_batch_size,
+                )
+            )
+
+        def insert(self, input_ids_list, max_tokens):
+            return [f"uid-{idx}" for idx, _ in enumerate(input_ids_list)]
+
+    fake_model = SimpleNamespace(
+        config=SimpleNamespace(),
+        language_model=SimpleNamespace(name="tower"),
+    )
+    fake_processor = SimpleNamespace(
+        tokenizer=SimpleNamespace(name="tokenizer"),
+        detokenizer=SimpleNamespace(reset=lambda: None),
+    )
+
+    monkeypatch.setattr(
+        vlm_batch,
+        "get_settings",
+        lambda: SimpleNamespace(
+            vlm_batch_resize_shape=None,
+            vlm_batch_pad_to_uniform_size=True,
+        ),
+    )
+    monkeypatch.setattr(
+        vlm_batch,
+        "get_vlm_backend",
+        lambda model_id, **kwargs: backend_calls.append(
+            (
+                model_id,
+                kwargs.get("adapter_path"),
+                kwargs.get("draft_model_id"),
+                kwargs.get("surface"),
+            )
+        )
+        or (fake_model, fake_processor),
+    )
+    monkeypatch.setattr(
+        vlm_batch,
+        "_require_vlm_stream_support",
+        lambda: ("apply", FakeBatchGenerator, "prepare"),
+    )
+    monkeypatch.setattr(
+        vlm_batch,
+        "_prepare_stream_batch_inputs",
+        lambda **kwargs: {
+            "input_ids": [[1, 2]],
+            "input_ids_list": [[1, 2]],
+            "pixel_values": None,
+            "data_kwargs": {},
+            "max_tokens": 9,
+        },
+    )
+    monkeypatch.setattr(
+        vlm_batch,
+        "_build_stream_gen_kwargs",
+        lambda model, input_ids, pixel_values, data_kwargs: {"prepared": True},
+    )
+
+    state = vlm_batch._init_stream_batch_state(
+        model_id="LibraxisAI/Qwen3-VL-30B",
+        adapter_path="/adapter-a",
+        draft_model_id="MLX-Community/Qwen3-1.7B-4bit",
+        batch=[
+            vlm_batch.PendingVlmStreamRequest(
+                request_id="req-1",
+                messages=[{"role": "user", "content": "Describe this image"}],
+                images=["https://example.com/cat.png"],
+                max_tokens=9,
+                temperature=None,
+                top_p=None,
+                response_queue=None,
+                created_at=0.0,
+            )
+        ],
+    )
+
+    assert backend_calls == [
+        (
+            "LibraxisAI/Qwen3-VL-30B",
+            "/adapter-a",
+            "MLX-Community/Qwen3-1.7B-4bit",
+            "llm",
+        )
+    ]
+    assert generator_calls == [(fake_model.language_model, fake_processor, 1, 1)]
+    assert state["uids"] == ["uid-0"]
+
+
 def test_get_cache_info_filters_to_multimodal_runtime_surface(monkeypatch) -> None:
     from mlx_batch_server.vision import vlm_cache
 
@@ -253,4 +443,60 @@ def test_get_cache_info_filters_to_multimodal_runtime_surface(monkeypatch) -> No
     ]
     assert info["lru_order"] == [
         "WrapperCacheKey(model_id='mlx-community/qwen3-vl-30b', adapter_path=None, draft_model_id=None)"
+    ]
+
+
+def test_get_loaded_vlm_models_is_explicit_alias(monkeypatch) -> None:
+    from mlx_batch_server.vision import vlm_cache
+
+    monkeypatch.setattr(
+        vlm_cache.wrapper_cache,
+        "get_loaded_vlm_models",
+        lambda: ["mlx-community/qwen3-vl-30b", "mlx-community/pixtral-12b-4bit"],
+    )
+
+    assert vlm_cache.get_loaded_vlm_models() == [
+        "mlx-community/pixtral-12b-4bit",
+        "mlx-community/qwen3-vl-30b",
+    ]
+
+
+def test_vlm_execution_resolves_alias_scoped_runtime_key(monkeypatch) -> None:
+    from mlx_batch_server.vision import vlm_cache
+
+    expanded_adapter_path = str(Path("~/adapters/frontier-lora").expanduser())
+    runtime_aliases_module.register_runtime_alias(
+        "frontier-vlm",
+        "LibraxisAI/Qwen3-VL-30B",
+        adapter_path="~/adapters/frontier-lora",
+        draft_model_id="LibraxisAI/Qwen3-1.7B-draft",
+    )
+
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    @contextmanager
+    def fake_execution(
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
+        seen.append((model_id, adapter_path, draft_model_id))
+        yield
+
+    monkeypatch.setattr(
+        vlm_cache.wrapper_cache,
+        "vlm_execution",
+        fake_execution,
+    )
+
+    with vlm_cache.vlm_execution("frontier-vlm"):
+        pass
+
+    assert seen == [
+        (
+            "libraxisai/qwen3-vl-30b",
+            expanded_adapter_path,
+            "libraxisai/qwen3-1.7b-draft",
+        )
     ]

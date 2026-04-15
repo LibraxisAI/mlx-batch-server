@@ -451,7 +451,11 @@ class ChatGenerator:
             from .wrapper_cache import wrapper_cache
 
             execution_context = (
-                wrapper_cache.vlm_execution(self.model.model_id)
+                wrapper_cache.vlm_execution(
+                    self.model.model_id,
+                    adapter_path=getattr(self.model, "adapter_path", None),
+                    draft_model_id=getattr(self.model, "draft_model_id", None),
+                )
                 if getattr(self.model, "supports_multimodal", False)
                 else nullcontext()
             )
