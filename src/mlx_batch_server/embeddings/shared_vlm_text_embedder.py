@@ -152,7 +152,11 @@ class SharedVLMTextEmbedder:
         return hidden_states / norm
 
     def embed_text_pooled(self, text: str) -> SharedTextEmbeddingResult:
-        with vlm_execution(self.model_id):
+        with vlm_execution(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+        ):
             model, processor = self._get_backend()
             reset_request_local_runtime_state(model)
             tokenizer = getattr(processor, "tokenizer", processor)

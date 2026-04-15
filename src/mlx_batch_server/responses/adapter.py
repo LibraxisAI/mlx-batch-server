@@ -48,14 +48,8 @@ from ..vision.vlm_batch import (
     get_vlm_stream_coordinator,
 )
 from ..vision.vlm_cache import (
-    get_loaded_models as get_cached_vlm_models,
-)
-from ..vision.vlm_cache import (
     get_vlm_backend,
     vlm_execution,
-)
-from ..vision.vlm_cache import (
-    unload_vlm_model as unload_cached_vlm_model,
 )
 from .normalizer import (
     collect_system_preamble,
@@ -103,30 +97,6 @@ else:  # pragma: no cover - exercised indirectly
 _CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
 
 
-# ------------------------------------------------------------------
-# VLM lifecycle proxies — delegate to the unified VLM cache shim
-# ------------------------------------------------------------------
-
-
-def get_loaded_vlm_models() -> list[str]:
-    """Return model IDs currently resident in the VLM cache."""
-    return get_cached_vlm_models()
-
-
-def unload_vlm_model(
-    model_id: str | None = None,
-    *,
-    adapter_path: str | None = None,
-    draft_model_id: str | None = None,
-) -> list[str]:
-    """Unload one or all VLM models through the unified VLM cache shim."""
-    return unload_cached_vlm_model(
-        model_id,
-        adapter_path=adapter_path,
-        draft_model_id=draft_model_id,
-    )
-
-
 class ResponsesAdapter:
     """
     Adapter for Responses API that routes to appropriate backend.
@@ -147,13 +117,33 @@ class ResponsesAdapter:
         """
         self.default_model_id = model_id
 
-    def _get_chat_generator(self, model_id: str) -> ChatGenerator:
+    def _get_chat_generator(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> ChatGenerator:
         """Get or create ChatGenerator for model (uses shared cache)."""
-        return ChatGenerator.get_or_create(model_id, None, None)
+        return ChatGenerator.get_or_create(
+            model_id,
+            adapter_path,
+            draft_model_id,
+        )
 
-    def _get_openai_adapter(self, model_id: str) -> OpenAIAdapter:
+    def _get_openai_adapter(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> OpenAIAdapter:
         """Get OpenAI adapter wrapping ChatGenerator."""
-        generator = self._get_chat_generator(model_id)
+        generator = self._get_chat_generator(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         return OpenAIAdapter(generator)
 
     def _prepare_tools_for_request(
@@ -178,6 +168,20 @@ class ResponsesAdapter:
             if tool_def.get("type") == "function"
         ]
         return tool_definitions, tools_for_request or None
+
+    def _chat_request_runtime_params(
+        self,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> dict[str, str]:
+        """Build runtime override params for the chat-completions adapter surface."""
+        params: dict[str, str] = {}
+        if adapter_path is not None:
+            params["adapter_path"] = adapter_path
+        if draft_model_id is not None:
+            params["draft_model"] = draft_model_id
+        return params
 
     def _should_use_batch(self) -> bool:
         """Check if batch inference is enabled."""
@@ -238,21 +242,28 @@ class ResponsesAdapter:
     def _batch_fallback_reason(
         self,
         normalised_body: dict[str, Any],
+        *,
+        draft_model_id: str | None = None,
     ) -> str | None:
         """Return the reason a text request must stay off the batch lane."""
-        if normalised_body.get("previous_response_id"):
-            return "previous_response context"
-        if normalised_body.get("tools"):
-            return "tools"
-        if normalised_body.get("stop"):
-            return "custom stop"
-        top_p = normalised_body.get("top_p")
-        if top_p not in (None, 1, 1.0):
-            return "custom top_p"
-        text_format = (normalised_body.get("text") or {}).get("format")
-        if text_format and text_format.get("type") != "text":
-            return "structured output"
-        return None
+        reason: str | None = None
+        if draft_model_id is not None:
+            reason = "draft model"
+        elif normalised_body.get("previous_response_id"):
+            reason = "previous_response context"
+        elif normalised_body.get("tools"):
+            reason = "tools"
+        elif normalised_body.get("stop"):
+            reason = "custom stop"
+        else:
+            top_p = normalised_body.get("top_p")
+            text_format = (normalised_body.get("text") or {}).get("format")
+            if top_p not in (None, 1, 1.0):
+                reason = "custom top_p"
+            elif text_format and text_format.get("type") != "text":
+                reason = "structured output"
+
+        return reason
 
     def _chat_request_extra_body(
         self,
@@ -268,9 +279,20 @@ class ResponsesAdapter:
             extra_body["enable_prompt_cache"] = False
         return extra_body or None
 
-    def _get_vlm_backend(self, model_id: str) -> tuple[Any, Any]:
-        """Load or reuse a vision-language model via the shared VLM cache shim."""
-        return get_vlm_backend(model_id)
+    def _get_vlm_backend(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> tuple[Any, Any]:
+        """Load or reuse a vision-language model under the shared endpoint surface."""
+        return get_vlm_backend(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+            surface="llm",
+        )
 
     def _require_vlm_chat_template(self):
         if _mlx_vlm_apply_chat_template is None:
@@ -524,6 +546,9 @@ class ResponsesAdapter:
         self,
         model_id: str,
         normalised_body: dict[str, Any],
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> (
         tuple[Any, Any, str, list[Any], dict[str, Any]]
         | tuple[None, None, None, None, dict[str, Any]]
@@ -576,7 +601,11 @@ class ResponsesAdapter:
                 },
             )
 
-        model, processor = self._get_vlm_backend(model_id)
+        model, processor = self._get_vlm_backend(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         kwargs = self._vlm_generation_kwargs(normalised_body)
 
         if videos:
@@ -759,6 +788,7 @@ class ResponsesAdapter:
         max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
+        adapter_path: str | None = None,
     ) -> AsyncGenerator[BatchStreamChunk, None]:
         """Stream tokens through batch coordinator.
 
@@ -768,6 +798,7 @@ class ResponsesAdapter:
             max_tokens: Max tokens to generate
             tools: Optional tools for function calling
             temperature: Sampling temperature
+            adapter_path: Optional adapter path for exact runtime batching
 
         Yields:
             BatchStreamChunk for each token
@@ -777,6 +808,7 @@ class ResponsesAdapter:
         # Get or create batch coordinator for this model
         coordinator = get_batch_coordinator(
             model_id=model_id,
+            adapter_path=adapter_path,
             completion_batch_size=settings.batch_completion_size,
             prefill_batch_size=settings.batch_prefill_size,
             prefill_step_size=settings.batch_prefill_step_size,
@@ -820,6 +852,8 @@ class ResponsesAdapter:
         # Preserve original model name for response (don't expose local paths)
         request_model = request.model or self.default_model_id
         model_id = request_model
+        adapter_path = request.adapter_path
+        draft_model_id = request.get_draft_model_id()
 
         if not model_id:
             return build_error_response(
@@ -841,11 +875,17 @@ class ResponsesAdapter:
                         error_code="invalid_request_error",
                         model=request_model,
                     )
-                async with endpoint_runtime_session(model_id):
+                async with endpoint_runtime_session(
+                    model_id,
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                ):
                     return await self._generate_vision(
                         model_id,
                         normalised,
                         request_model,
+                        adapter_path=adapter_path,
+                        draft_model_id=draft_model_id,
                     )
 
             if has_media_content(normalised):
@@ -854,8 +894,18 @@ class ResponsesAdapter:
                 )
 
             # Text-only path
-            async with endpoint_runtime_session(model_id):
-                return await self._generate_text(model_id, normalised, request_model)
+            async with endpoint_runtime_session(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            ):
+                return await self._generate_text(
+                    model_id,
+                    normalised,
+                    request_model,
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                )
 
         except Exception as e:
             logger.error(f"Responses generation failed: {e}", exc_info=True)
@@ -870,6 +920,9 @@ class ResponsesAdapter:
         model_id: str,
         normalised_body: dict[str, Any],
         request_model: str | None = None,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> ResponseResponse:
         """Generate text-only response using MLX, with tool support."""
         # Use request_model for response, fallback to model_id
@@ -897,10 +950,18 @@ class ResponsesAdapter:
             stream=False,
             tools=tools_for_request,
             extra_body=self._chat_request_extra_body(normalised_body),
+            **self._chat_request_runtime_params(
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            ),
         )
 
         # Get adapter and generate
-        adapter = self._get_openai_adapter(model_id)
+        adapter = self._get_openai_adapter(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         completion = adapter.generate(chat_request)
 
         # Extract content from completion
@@ -1025,6 +1086,9 @@ class ResponsesAdapter:
         model_id: str,
         normalised_body: dict[str, Any],
         request_model: str | None = None,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> ResponseResponse:
         """
         Generate response for vision/multimodal content via mlx-vlm.
@@ -1042,12 +1106,20 @@ class ResponsesAdapter:
             logger.warning(
                 "Vision content detected but no media found; falling back to text-only"
             )
-            return await self._generate_text(model_id, normalised_body, request_model)
+            return await self._generate_text(
+                model_id,
+                normalised_body,
+                request_model,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
 
         if self._should_use_vlm_batch(normalised_body, stream=False):
             settings = get_settings()
             coordinator = get_vlm_batch_coordinator(
                 model_id=model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
                 batch_window_ms=settings.vlm_batch_window_ms,
                 max_batch_size=settings.vlm_max_batch_size,
                 group_by_shape=settings.vlm_batch_group_by_shape,
@@ -1085,10 +1157,18 @@ class ResponsesAdapter:
         apply_chat_template = self._require_vlm_chat_template()
         vlm_generate = self._require_vlm_generate()
 
-        model, processor = self._get_vlm_backend(model_id)
+        model, processor = self._get_vlm_backend(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
         gen_kwargs = self._vlm_generation_kwargs(normalised_body)
 
-        with vlm_execution(model_id):
+        with vlm_execution(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        ):
             if videos:
                 # --- Video path: use mlx-vlm video pipeline ---
                 text_prompt = self._extract_text_content(
@@ -1153,6 +1233,9 @@ class ResponsesAdapter:
         model_id: str,
         normalised_body: dict[str, Any],
         request_model: str | None = None,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         response_model = request_model or model_id
         response_id = f"resp_{uuid.uuid4().hex}"
@@ -1188,6 +1271,8 @@ class ResponsesAdapter:
             settings = get_settings()
             stream_results = get_vlm_stream_coordinator(
                 model_id=model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
                 batch_window_ms=settings.vlm_batch_window_ms,
                 max_batch_size=settings.vlm_max_batch_size,
             ).stream_request(
@@ -1218,13 +1303,19 @@ class ResponsesAdapter:
             model, processor, prompt, images, kwargs = self._prepare_vlm_stream_request(
                 model_id,
                 normalised_body,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
             )
             if model is None:
                 yield make_event("error", {"error": kwargs})
                 return
 
             async def _direct_stream_results():
-                with vlm_execution(model_id):
+                with vlm_execution(
+                    model_id,
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                ):
                     for result in vlm_stream_generate(
                         model,
                         processor,
@@ -1366,6 +1457,8 @@ class ResponsesAdapter:
         # Preserve original model name for response (don't expose local paths)
         request_model = request.model or self.default_model_id
         model_id = request_model  # May be resolved to full path internally
+        adapter_path = request.adapter_path
+        draft_model_id = request.get_draft_model_id()
 
         # Sequence number counter for OpenAI compliance
         seq_num = 0
@@ -1407,11 +1500,17 @@ class ResponsesAdapter:
                         },
                     )
                     return
-                async with endpoint_runtime_session(model_id):
+                async with endpoint_runtime_session(
+                    model_id,
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                ):
                     async for event in self._generate_vision_stream(
                         model_id,
                         normalised,
                         request_model,
+                        adapter_path=adapter_path,
+                        draft_model_id=draft_model_id,
                     ):
                         yield event
                 return
@@ -1421,7 +1520,11 @@ class ResponsesAdapter:
                     "Media content detected without images; streaming text-only"
                 )
 
-            async with endpoint_runtime_session(model_id):
+            async with endpoint_runtime_session(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            ):
                 # Convert to chat messages
                 messages = responses_to_chat_messages(normalised)
 
@@ -1446,6 +1549,10 @@ class ResponsesAdapter:
                     tools=tools_for_request,
                     tool_choice=normalised.get("tool_choice"),
                     extra_body=self._chat_request_extra_body(normalised),
+                    **self._chat_request_runtime_params(
+                        adapter_path=adapter_path,
+                        draft_model_id=draft_model_id,
+                    ),
                 )
 
                 # Generate IDs (full 32-char hex for proper uniqueness)
@@ -1505,7 +1612,10 @@ class ResponsesAdapter:
                 message_item_emitted = False
 
                 # Decide streaming mode: batch vs single
-                batch_fallback_reason = self._batch_fallback_reason(normalised)
+                batch_fallback_reason = self._batch_fallback_reason(
+                    normalised,
+                    draft_model_id=draft_model_id,
+                )
                 use_batch = self._should_use_batch() and batch_fallback_reason is None
                 if self._should_use_batch() and batch_fallback_reason is not None:
                     logger.info(
@@ -1536,12 +1646,17 @@ class ResponsesAdapter:
                             or normalised.get("max_tokens"),
                             tools=tool_definitions or None,
                             temperature=normalised.get("temperature"),
+                            adapter_path=adapter_path,
                         ):
                             if batch_chunk.text:
                                 yield batch_chunk.text
                     else:
                         # Single mode: use OpenAI adapter
-                        adapter = self._get_openai_adapter(model_id)
+                        adapter = self._get_openai_adapter(
+                            model_id,
+                            adapter_path=adapter_path,
+                            draft_model_id=draft_model_id,
+                        )
                         for chunk in adapter.generate_stream(chat_request):
                             if not chunk.choices:
                                 continue

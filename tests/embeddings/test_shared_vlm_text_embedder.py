@@ -12,15 +12,20 @@ from mlx_batch_server.embeddings import shared_vlm_text_embedder as embedder_mod
 
 
 def test_shared_vlm_text_embedder_pools_last_non_padding_token(monkeypatch):
-    events: list[tuple[str, str]] = []
+    events: list[tuple[str, str, str | None, str | None]] = []
 
     @contextmanager
-    def fake_vlm_execution(model_id: str):
-        events.append(("enter", model_id))
+    def fake_vlm_execution(
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ):
+        events.append(("enter", model_id, adapter_path, draft_model_id))
         try:
             yield
         finally:
-            events.append(("exit", model_id))
+            events.append(("exit", model_id, adapter_path, draft_model_id))
 
     fake_language_model = SimpleNamespace(
         model=SimpleNamespace(
@@ -61,8 +66,8 @@ def test_shared_vlm_text_embedder_pools_last_non_padding_token(monkeypatch):
     assert result.embeddings.tolist() == pytest.approx([0.0, 1.0])
     assert embedder.embedding_dim == 2
     assert events == [
-        ("enter", "mlx-community/pixtral-12b-4bit"),
-        ("exit", "mlx-community/pixtral-12b-4bit"),
+        ("enter", "mlx-community/pixtral-12b-4bit", None, None),
+        ("exit", "mlx-community/pixtral-12b-4bit", None, None),
     ]
 
 
