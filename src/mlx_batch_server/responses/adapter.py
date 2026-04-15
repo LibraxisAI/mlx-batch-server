@@ -25,6 +25,7 @@ from PIL import Image
 from ..batch import BatchStreamChunk, get_batch_coordinator
 from ..chat.mlx.chat_generator import ChatGenerator
 from ..chat.mlx.runtime_policy import endpoint_runtime_session
+from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..chat.openai.openai_adapter import OpenAIAdapter
 from ..chat.openai.schema import ChatCompletionRequest, ChatMessage, Role, Tool
 from ..core.config import get_settings
@@ -46,10 +47,6 @@ from ..utils.video_loader import build_video_prompt_and_inputs
 from ..vision.vlm_batch import (
     get_vlm_batch_coordinator,
     get_vlm_stream_coordinator,
-)
-from ..vision.vlm_cache import (
-    get_vlm_backend,
-    vlm_execution,
 )
 from .normalizer import (
     collect_system_preamble,
@@ -287,7 +284,7 @@ class ResponsesAdapter:
         draft_model_id: str | None = None,
     ) -> tuple[Any, Any]:
         """Load or reuse a vision-language model under the shared endpoint surface."""
-        return get_vlm_backend(
+        return wrapper_cache.get_vlm_backend(
             model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
@@ -1164,7 +1161,7 @@ class ResponsesAdapter:
         )
         gen_kwargs = self._vlm_generation_kwargs(normalised_body)
 
-        with vlm_execution(
+        with wrapper_cache.vlm_execution(
             model_id,
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
@@ -1311,7 +1308,7 @@ class ResponsesAdapter:
                 return
 
             async def _direct_stream_results():
-                with vlm_execution(
+                with wrapper_cache.vlm_execution(
                     model_id,
                     adapter_path=adapter_path,
                     draft_model_id=draft_model_id,
