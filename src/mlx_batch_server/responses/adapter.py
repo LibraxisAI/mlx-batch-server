@@ -287,7 +287,7 @@ class ResponsesAdapter:
         *,
         adapter_path: str | None = None,
         draft_model_id: str | None = None,
-        surface: str = "visual",
+        surface: str = "llm",
     ) -> tuple[Any, Any]:
         """Load or reuse a vision-language model under the shared endpoint surface."""
         return get_vlm_backend(
