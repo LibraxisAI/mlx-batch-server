@@ -13,9 +13,8 @@ from ..chat.mlx.runtime_attachments import (
     get_attached_runtime_targets,
     release_runtime_surface,
 )
-from ..chat.mlx.wrapper_cache import normalize_model_id
+from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 from ..utils.logger import logger
-from ..vision.vlm_cache import unload_vlm_model
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
 from .shared_vlm_text_embedder import SharedVLMTextEmbedder
 
@@ -309,7 +308,7 @@ class EmbeddingsService:
             unload_kwargs["adapter_path"] = adapter_path
         if draft_model_id is not None:
             unload_kwargs["draft_model_id"] = draft_model_id
-        return unload_vlm_model(model_id, **unload_kwargs)
+        return wrapper_cache.unload_vlm_model(model_id, **unload_kwargs)
 
     def _release_shared_vlm_runtime(
         self,

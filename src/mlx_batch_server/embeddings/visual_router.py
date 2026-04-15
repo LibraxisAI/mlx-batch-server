@@ -16,7 +16,7 @@ from ..chat.mlx.runtime_attachments import (
     release_runtime_surface,
 )
 from ..chat.mlx.runtime_policy import endpoint_runtime_session
-from ..vision.vlm_cache import unload_vlm_model
+from ..chat.mlx.wrapper_cache import wrapper_cache
 from .qwen3_vl_embedder import Qwen3VLEmbedder
 
 router = APIRouter(tags=["visual-embeddings"])
@@ -228,7 +228,7 @@ def unload_visual_embedder(
         if runtime_draft_model_id is not None:
             unload_kwargs["draft_model_id"] = runtime_draft_model_id
         runtime_unloaded.extend(
-            unload_vlm_model(
+            wrapper_cache.unload_vlm_model(
                 runtime_model_id,
                 **unload_kwargs,
             )
