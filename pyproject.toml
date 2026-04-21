@@ -48,7 +48,7 @@ dependencies = [
     "mlx-audio>=0.2.4",
     "numba>=0.57.0",
     # images
-    "mflux>=0.13.0,<0.14",
+    "mflux>=0.17.0,<0.18",
     # embeddings
     "mlx-embeddings>=0.0.3",
     "openai-harmony>=0.0.8",
@@ -80,7 +80,6 @@ dev = [
     "bandit[toml]>=1.7.0",
     # for en_core_web_sm models
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
-    "mlx-vlm @file:///Users/polyversai/Libraxis/mlx-vlm-local",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -103,7 +102,7 @@ allow-direct-references = true
 prerelease = "allow"
 
 [tool.uv.sources]
-mlx-vlm = { path = "../mlx-vlm-local" }
+mlx-vlm = { path = "../mlx-vlm-local", editable = true }
 
 [tool.pytest.ini_options]
 log_cli = true
