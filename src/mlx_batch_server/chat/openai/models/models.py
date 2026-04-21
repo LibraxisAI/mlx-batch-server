@@ -348,7 +348,9 @@ def _is_embeddings_config(config: dict) -> bool:
     if not model_type:
         return False
     model_type_norm = str(model_type).replace("-", "_").lower()
-    if model_type_norm in {"qwen3_vl", "qwen2_vl", "qwen2_5_vl"}:
+    if model_type_norm in {"qwen3_vl", "qwen3_vl_moe", "qwen2_vl", "qwen2_5_vl"}:
+        return True
+    if model_type_norm.startswith("qwen") and "vl" in model_type_norm:
         return True
     return (
         importlib.util.find_spec(f"mlx_embeddings.models.{model_type_norm}") is not None
