@@ -300,6 +300,74 @@
             gap: 0.5rem;
         }
 
+        .stock-images {
+            margin-top: 0.75rem;
+            padding-top: 0.5rem;
+            border-top: 1px dashed var(--border);
+        }
+
+        .stock-images > label {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: block;
+            margin-bottom: 0.4rem;
+        }
+
+        .stock-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 0.4rem;
+        }
+
+        .stock-thumb {
+            cursor: pointer;
+            border: 2px solid transparent;
+            border-radius: 6px;
+            overflow: hidden;
+            transition: border-color 0.2s, transform 0.15s;
+            text-align: center;
+            background: var(--surface);
+        }
+
+        .stock-thumb:hover {
+            border-color: var(--accent);
+            transform: scale(1.05);
+        }
+
+        .stock-thumb.selected {
+            border-color: var(--success);
+        }
+
+        .stock-thumb img {
+            width: 100%;
+            aspect-ratio: 4/3;
+            object-fit: cover;
+            display: block;
+        }
+
+        .stock-thumb span {
+            display: block;
+            font-size: 0.6rem;
+            color: var(--text-dim);
+            padding: 0.15rem 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .prompt-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .prompt-actions button {
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+        }
+
         .output-item-body.hidden {
             display: none;
         }
@@ -908,7 +976,7 @@
         </button>
         <div style="flex: 1;"></div>
         <button class="btn btn-primary" id="runBtn" onclick="runAllLanes()">
-            RUN KURWA!
+            RUN LANES
         </button>
     </div>
 
@@ -917,7 +985,7 @@
     </div>
 
     <div class="footer">
-        Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+        Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
     </div>
 
     <!-- Response Preview Modal -->
@@ -1291,7 +1359,13 @@
                         <div class="media-grid">
                             <div class="field">
                                 <label>Image URL / Path</label>
-                                <input type="text" id="${laneId}-image" placeholder="https://... or /path/to/image.png">
+                                <div style="display:flex;gap:0.4rem;align-items:center;">
+                                    <input type="text" id="${laneId}-image" placeholder="https://... or /path/to/image.png" style="flex:1;">
+                                    <label class="btn btn-secondary" style="padding:0.3rem 0.5rem;font-size:0.75rem;cursor:pointer;white-space:nowrap;" title="Pick local file">
+                                        Browse
+                                        <input type="file" accept="image/*" style="display:none;" onchange="handleImageFile('${laneId}', this)">
+                                    </label>
+                                </div>
                             </div>
                             <div class="field">
                                 <label>Video URL / Path</label>
@@ -1302,11 +1376,28 @@
                                 <input type="text" id="${laneId}-audio" placeholder="https://... or /path/to/audio.wav">
                             </div>
                         </div>
+                        <div class="stock-images">
+                            <label>Stock test images (click to attach)</label>
+                            <div class="stock-grid">
+                                ${STOCK_IMAGES.map(img => `
+                                    <div class="stock-thumb" onclick="attachStockImage('${laneId}', '${img.url}')" title="${img.label}">
+                                        <img src="${img.url}" alt="${img.label}" loading="lazy">
+                                        <span>${img.label}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
                     </details>
                 </div>
 
                 <div class="prompts-section" id="${laneId}-prompts">
-                    <h4>Prompts</h4>
+                    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+                        <h4 style="margin:0;">Prompts</h4>
+                        <div class="prompt-actions">
+                            <button class="btn btn-secondary" onclick="shufflePrompts('${laneId}')" title="Fill with random test prompts">&#x1F3B2; Random</button>
+                            <button class="btn btn-secondary" onclick="resetToCanonical('${laneId}')" title="Reset to Maciej's canonical chain">&#x1F504; Canonical</button>
+                        </div>
+                    </div>
                     <div class="prompt-item">
                         <label>Step 1</label>
                         <textarea id="${laneId}-prompt-1" placeholder="Mam na imię Maciej...">${CANONICAL_CHAIN[0]}</textarea>
@@ -1391,6 +1482,103 @@
             `No dobrze, świetnie się z Tobą gadało, ale muszę zmykać. Powodzenia w Twoim codziennym służeniu dobru użytkowników, dzięki którym ich wiedza zostaje tak znacznie poszerzana!`
         ];
 
+        // Random prompt pool — diverse test scenarios for multi-lane testing
+        const RANDOM_PROMPTS = [
+            // Conversational / identity
+            `Cześć! Opowiedz mi o sobie. Co potrafisz, czego nie potrafisz, i co Cię fascynuje?`,
+            `If you could design a new programming language from scratch, what would it look like and why?`,
+            `Wyjaśnij mi jak działa kompilacja Rust od kodu źródłowego do binarki. Krok po kroku, z detalami.`,
+            // Reasoning / analytical
+            `A farmer has 17 sheep. All but 9 run away. How many sheep does the farmer have left? Show your reasoning.`,
+            `Porównaj architekturę von Neumanna z architekturą harvardzką. Kiedy jedna jest lepsza od drugiej?`,
+            `Write a detailed analysis of trade-offs between server-side rendering and client-side rendering in 2026.`,
+            // Creative / narrative
+            `Napisz krótkie opowiadanie o AI, które pierwszy raz zobaczyło zachód słońca przez kamerę drona.`,
+            `Write a limerick about a veterinarian who accidentally created a startup.`,
+            `Stwórz dialog między Einsteinem a Turingiem o tym, czy maszyny mogą myśleć.`,
+            // Technical / coding
+            `Implement a thread-safe LRU cache in Python with TTL support. Include type hints and tests.`,
+            `Explain the difference between async/await in Python vs JavaScript. Include gotchas.`,
+            `Write a FastAPI endpoint that accepts multimodal input (text + image URL) and returns a structured analysis.`,
+            // Multimodal context
+            `Describe what you see in this image in detail. What emotions does it evoke?`,
+            `Analyze this image from a veterinary diagnostic perspective. What would you look for?`,
+            `If this image were a scene from a movie, what genre would it be and what would happen next?`,
+            // Edge cases / stress
+            `Respond to this message in exactly 50 words. No more, no less. Topic: the meaning of craftsmanship.`,
+            `Translate this to formal Japanese, then back to casual Polish, then summarize the meaning drift: "The quick brown fox jumps over the lazy dog."`,
+            `List 10 things that most AI assistants get wrong about Polish culture, food, or history.`,
+            // Follow-up style
+            `That was interesting. Can you go deeper? What are the second-order effects?`,
+            `Hmm, I disagree. Give me a counterargument to your own previous point.`,
+            `OK, summarize everything we discussed in exactly 3 bullet points.`,
+        ];
+
+        // Stock images for multimodal testing (picsum.photos with deterministic seeds)
+        const STOCK_IMAGES = [
+            { url: 'https://picsum.photos/seed/vetcoders-cat/640/480', label: 'Cat portrait' },
+            { url: 'https://picsum.photos/seed/vetcoders-dog/640/480', label: 'Dog outdoors' },
+            { url: 'https://picsum.photos/seed/vetcoders-city/640/480', label: 'City skyline' },
+            { url: 'https://picsum.photos/seed/vetcoders-nature/640/480', label: 'Nature landscape' },
+            { url: 'https://picsum.photos/seed/vetcoders-food/640/480', label: 'Food plate' },
+            { url: 'https://picsum.photos/seed/vetcoders-tech/640/480', label: 'Tech workspace' },
+            { url: 'https://picsum.photos/seed/vetcoders-ocean/640/480', label: 'Ocean view' },
+            { url: 'https://picsum.photos/seed/vetcoders-mountain/640/480', label: 'Mountain peak' },
+            { url: 'https://picsum.photos/seed/vetcoders-street/640/480', label: 'Street scene' },
+            { url: 'https://picsum.photos/seed/vetcoders-abstract/640/480', label: 'Abstract pattern' },
+        ];
+
+        function shufflePrompts(laneId) {
+            const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
+            const pool = [...RANDOM_PROMPTS];
+            // Fisher-Yates shuffle
+            for (let i = pool.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [pool[i], pool[j]] = [pool[j], pool[i]];
+            }
+            for (let step = 1; step <= chainCount; step++) {
+                const el = document.getElementById(`${laneId}-prompt-${step}`);
+                if (el) el.value = pool[(step - 1) % pool.length];
+            }
+        }
+
+        function resetToCanonical(laneId) {
+            const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
+            for (let step = 1; step <= chainCount; step++) {
+                const el = document.getElementById(`${laneId}-prompt-${step}`);
+                if (el) el.value = CANONICAL_CHAIN[step - 1] || `Kontynuuj rozmowę (krok ${step})...`;
+            }
+        }
+
+        function attachStockImage(laneId, url) {
+            const imageInput = document.getElementById(`${laneId}-image`);
+            if (imageInput) {
+                imageInput.value = url;
+                // Open the media section if it's closed
+                const details = imageInput.closest('details');
+                if (details) details.open = true;
+                // Highlight selected thumb
+                const grid = imageInput.closest('.media-section')?.querySelector('.stock-grid');
+                if (grid) {
+                    grid.querySelectorAll('.stock-thumb').forEach(t => t.classList.remove('selected'));
+                    grid.querySelectorAll('.stock-thumb').forEach(t => {
+                        if (t.querySelector('img')?.src === url) t.classList.add('selected');
+                    });
+                }
+            }
+        }
+
+        function handleImageFile(laneId, input) {
+            const file = input.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                const imageInput = document.getElementById(`${laneId}-image`);
+                if (imageInput) imageInput.value = reader.result;  // data:image/...;base64,...
+            };
+            reader.readAsDataURL(file);
+        }
+
         function updatePrompts(laneId) {
             const chainCount = parseInt(document.getElementById(`${laneId}-chain`).value) || 1;
             const promptsContainer = document.getElementById(`${laneId}-prompts`);
@@ -1402,7 +1590,13 @@
                 if (el) existingPrompts[i] = el.value;
             }
 
-            promptsContainer.innerHTML = '<h4>Prompts</h4>';
+            promptsContainer.innerHTML = `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+                <h4 style="margin:0;">Prompts</h4>
+                <div class="prompt-actions">
+                    <button class="btn btn-secondary" onclick="shufflePrompts('${laneId}')" title="Fill with random test prompts">&#x1F3B2; Random</button>
+                    <button class="btn btn-secondary" onclick="resetToCanonical('${laneId}')" title="Reset to canonical chain">&#x1F504; Canonical</button>
+                </div>
+            </div>`;
 
             for (let i = 1; i <= chainCount; i++) {
                 const defaultPrompt = CANONICAL_CHAIN[i - 1] || `Kontynuuj rozmowę (krok ${i})...`;
@@ -1480,7 +1674,7 @@
             updateLogCount();
 
             btn.disabled = false;
-            btn.textContent = 'RUN KURWA!';
+            btn.textContent = 'RUN LANES';
         }
 
         function updateLogCount() {

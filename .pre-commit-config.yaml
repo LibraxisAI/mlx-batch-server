@@ -63,3 +63,29 @@ repos:
         pass_filenames: false
         types: [python]
         verbose: true
+
+  # Merge conflict markers — two-stage policy.
+  # pre-commit: shout, but do not block. Salvage snapshots stay possible
+  #             (e.g. bb194a8 intentionally landed a TODO before a refactor).
+  # pre-push:   hard block. Garbage must not ride to origin.
+  # Rationale: the stock check-merge-conflict only inspects STAGED files.
+  # This repo-wide scan catches markers that already live in HEAD.
+  - repo: local
+    hooks:
+      - id: merge-markers-warn
+        name: Repo-wide merge marker guard (pre-commit, warn-only)
+        entry: bash -c 'hits=$(git grep -nE "^(<<<<<<< |>>>>>>> |=======$)" -- ":(exclude).pre-commit-config.yaml" 2>/dev/null || true); if [ -n "$hits" ]; then printf "\n[warn] merge conflict markers still in tracked tree:\n%s\n[warn] commit allowed (salvage ok), but pre-push WILL block.\n" "$hits" >&2; fi; exit 0'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        verbose: true
+
+      - id: merge-markers-block
+        name: Repo-wide merge marker guard (pre-push, blocking)
+        entry: bash -c 'hits=$(git grep -nE "^(<<<<<<< |>>>>>>> |=======$)" -- ":(exclude).pre-commit-config.yaml" 2>/dev/null || true); if [ -n "$hits" ]; then printf "\nMerge conflict markers in tracked files:\n\n%s\n\nResolve them before pushing.\n" "$hits"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+        verbose: true
