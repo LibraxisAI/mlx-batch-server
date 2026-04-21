@@ -796,6 +796,7 @@ class TestResponsesRuntimeGuards:
         assert seen["messages"] == [{"role": "user", "content": "Describe this image"}]
         assert seen["coordinator_kwargs"]["adapter_path"] == "/adapter/frontier"
         assert seen["coordinator_kwargs"]["draft_model_id"] == "draft-qwen"
+        assert seen["coordinator_kwargs"]["group_by_shape"] is True
         completed = next(
             event for event in events if event["type"] == "response.completed"
         )

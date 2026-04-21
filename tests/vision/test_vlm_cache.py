@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
@@ -347,6 +348,51 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
     ]
     assert generator_calls == [(fake_model.language_model, fake_processor, 1, 1)]
     assert state["uids"] == ["uid-0"]
+
+
+def test_vlm_stream_coordinator_groups_requests_by_image_shape() -> None:
+    from mlx_batch_server.vision import vlm_batch
+
+    coordinator = vlm_batch.VlmStreamBatchCoordinator(
+        "LibraxisAI/Qwen3-VL-30B",
+        batch_window_ms=10,
+        max_batch_size=4,
+        group_by_shape=True,
+    )
+
+    same_shape = Image.new("RGB", (32, 24), "red")
+    different_shape = Image.new("RGB", (48, 48), "blue")
+
+    grouped = coordinator._group_stream_requests(
+        [
+            vlm_batch.PendingVlmStreamRequest(
+                request_id="req-a",
+                messages=[{"role": "user", "content": "a"}],
+                images=[same_shape],
+                max_tokens=8,
+                temperature=None,
+                top_p=None,
+                response_queue=asyncio.Queue(),
+                created_at=0.0,
+            ),
+            vlm_batch.PendingVlmStreamRequest(
+                request_id="req-b",
+                messages=[{"role": "user", "content": "b"}],
+                images=[different_shape],
+                max_tokens=8,
+                temperature=None,
+                top_p=None,
+                response_queue=asyncio.Queue(),
+                created_at=0.0,
+            ),
+        ]
+    )
+
+    assert len(grouped) == 2
+    assert {tuple(req.images[0].size for req in group) for group in grouped} == {
+        ((32, 24),),
+        ((48, 48),),
+    }
 
 
 def test_get_cache_info_filters_to_multimodal_runtime_surface(monkeypatch) -> None:
