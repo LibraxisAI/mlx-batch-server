@@ -7,9 +7,11 @@ import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
+from PIL import Image
 
 from ..chat.mlx.model_types import reset_request_local_runtime_state
 from ..chat.mlx.runtime_aliases import resolve_runtime_target
@@ -328,6 +330,7 @@ class VlmStreamBatchCoordinator:
         draft_model_id: str | None = None,
         batch_window_ms: int = 50,
         max_batch_size: int = 4,
+        group_by_shape: bool = True,
     ) -> None:
         target = resolve_runtime_target(
             model_id,
@@ -339,6 +342,7 @@ class VlmStreamBatchCoordinator:
         self.draft_model_id = target.draft_model_id
         self._batch_window_ms = batch_window_ms
         self._max_batch_size = max_batch_size
+        self._group_by_shape = group_by_shape
 
         self._pending_requests: dict[str, PendingVlmStreamRequest] = {}
         self._active_requests: dict[str, asyncio.Queue] = {}
@@ -574,6 +578,7 @@ class VlmStreamBatchCoordinator:
                 bool(item.images),
                 _normalize_temperature(item.temperature),
                 _normalize_top_p(item.top_p),
+                _stream_shape_group_key(item.images) if self._group_by_shape else None,
             )
             grouped.setdefault(key, []).append(item)
         return list(grouped.values())
@@ -652,6 +657,7 @@ def get_vlm_stream_coordinator(
     draft_model_id: str | None = None,
     batch_window_ms: int,
     max_batch_size: int,
+    group_by_shape: bool = True,
 ) -> VlmStreamBatchCoordinator:
     runtime_key = _resolve_vlm_runtime_key(
         model_id,
@@ -667,6 +673,7 @@ def get_vlm_stream_coordinator(
                 draft_model_id=runtime_key[2],
                 batch_window_ms=batch_window_ms,
                 max_batch_size=max_batch_size,
+                group_by_shape=group_by_shape,
             )
             _VLM_STREAM_COORDINATORS[runtime_key] = coordinator
         return coordinator
@@ -795,6 +802,33 @@ def _chunk_list(items: list[Any], size: int) -> list[list[Any]]:
     if size <= 0:
         return [items]
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _single_image_size(image: Any) -> tuple[int, int] | None:
+    if hasattr(image, "size"):
+        size = image.size
+        if (
+            isinstance(size, tuple)
+            and len(size) == 2
+            and all(isinstance(value, int) for value in size)
+        ):
+            return size
+
+    if isinstance(image, str | Path):
+        path = Path(image).expanduser()
+        if path.exists() and path.is_file():
+            with Image.open(path) as opened:
+                return opened.size
+
+    return None
+
+
+def _stream_shape_group_key(
+    images: list[Any] | None,
+) -> tuple[tuple[int, int] | None, ...]:
+    if not images:
+        return ()
+    return tuple(_single_image_size(image) for image in images)
 
 
 def _init_stream_batch_state(
