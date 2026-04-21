@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from mlx_vlm.utils import get_model_and_args as get_vlm_model_and_args
 
 from mlx_batch_server.chat.mlx import model_types as model_types_module
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
@@ -47,6 +48,21 @@ def test_patch_transformers_auto_docstring_for_vlm_swallow_index_error(
 
     assert fake_module.get_placeholders_dict("demo") == {}
     assert calls["count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("model_type", "expected"),
+    [
+        ("qwen3.6-vl", "qwen3_vl"),
+        ("qwen3_6_vl", "qwen3_vl"),
+        ("qwen3.6-vl-moe", "qwen3_vl_moe"),
+        ("qwen3_6_vl_moe", "qwen3_vl_moe"),
+    ],
+)
+def test_mlx_vlm_supports_qwen36_aliases(model_type: str, expected: str):
+    _, resolved = get_vlm_model_and_args({"model_type": model_type})
+
+    assert resolved == expected
 
 
 def test_vlm_language_tower_without_cache_metadata_returns_empty_cache():
