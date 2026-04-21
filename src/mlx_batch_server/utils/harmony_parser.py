@@ -10,7 +10,7 @@ Includes:
 - Output entry building for Responses API
 - Harmony model detection
 
-Vibecrafted with AI Agents by VetCoders (c)2025 The LibraxisAI Team
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations

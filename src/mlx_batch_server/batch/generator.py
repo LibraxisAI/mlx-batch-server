@@ -16,8 +16,7 @@ Target metrics:
 - <500ms time-to-first-token per user
 - <150MB overhead per concurrent request
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
-Co-Authored-By: [Maciej](void@div0.space) & [Klaudiusz](the1st@whoai.am)
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations

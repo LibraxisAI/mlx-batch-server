@@ -11,11 +11,7 @@ weave.init("libraxisai/mlx-batch-server-benchmark")
 client = OpenAI(
     base_url="http://localhost:10240/v1",
     # base_url="http://localhost:11434/v1",
-<<<<<<< Updated upstream
-    api_key="libraxisai",  # not-needed for local
-=======
     api_key="mlx-batch-server",  # not-needed
->>>>>>> Stashed changes
 )
 
 
