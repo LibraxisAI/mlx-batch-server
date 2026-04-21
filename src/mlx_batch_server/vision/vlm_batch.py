@@ -515,7 +515,6 @@ class VlmStreamBatchCoordinator:
                 finished = await _dispatch_stream_tokens(
                     batch=batch,
                     gen=state["gen"],
-                    gen_kwargs=state["gen_kwargs"],
                     tokenizer=state["tokenizer"],
                     uids=state["uids"],
                 )
@@ -884,7 +883,7 @@ def _init_stream_batch_state(
         sampler=sampler,
     )
 
-    gen_kwargs = _build_stream_gen_kwargs(
+    prompt_kwargs = _build_stream_prompt_kwargs(
         model,
         input_ids,
         pixel_values,
@@ -894,8 +893,13 @@ def _init_stream_batch_state(
     return {
         "tokenizer": tokenizer,
         "gen": gen,
-        "gen_kwargs": gen_kwargs,
-        "uids": gen.insert(input_ids_list, max_tokens),
+        # Newer mlx-vlm BatchGenerator expects precomputed prompt kwargs,
+        # especially inputs_embeds, at insert-time for VLM prefill.
+        "uids": gen.insert(
+            input_ids_list,
+            max_tokens,
+            prompt_kwargs=[prompt_kwargs] * len(input_ids_list),
+        ),
     }
 
 
@@ -1052,7 +1056,7 @@ def _prepare_stream_batch_inputs(
     }
 
 
-def _build_stream_gen_kwargs(
+def _build_stream_prompt_kwargs(
     model,
     input_ids: mx.array,
     pixel_values: mx.array | None,
@@ -1081,7 +1085,6 @@ async def _dispatch_stream_tokens(
     *,
     batch: list[PendingVlmStreamRequest],
     gen,
-    gen_kwargs: dict[str, Any],
     tokenizer,
     uids: list[int],
 ) -> list[bool]:
@@ -1090,7 +1093,7 @@ async def _dispatch_stream_tokens(
     last_texts = [""] * len(batch)
     finished = [False] * len(batch)
 
-    while responses := gen.next(**gen_kwargs):
+    while responses := gen.next():
         for resp in responses:
             idx = uid_to_idx.get(resp.uid)
             if idx is None:
