@@ -245,6 +245,7 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
 
     backend_calls: list[tuple[str, str | None, str | None, str | None]] = []
     generator_calls: list[tuple[object, object, int, int]] = []
+    insert_calls: list[tuple[object, object, object]] = []
 
     class FakeBatchGenerator:
         def __init__(
@@ -265,7 +266,8 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
                 )
             )
 
-        def insert(self, input_ids_list, max_tokens):
+        def insert(self, input_ids_list, max_tokens, prompt_kwargs=None):
+            insert_calls.append((input_ids_list, max_tokens, prompt_kwargs))
             return [f"uid-{idx}" for idx, _ in enumerate(input_ids_list)]
 
     fake_model = SimpleNamespace(
@@ -316,7 +318,7 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         vlm_batch,
-        "_build_stream_gen_kwargs",
+        "_build_stream_prompt_kwargs",
         lambda model, input_ids, pixel_values, data_kwargs: {"prepared": True},
     )
 
@@ -347,6 +349,13 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
         )
     ]
     assert generator_calls == [(fake_model.language_model, fake_processor, 1, 1)]
+    assert insert_calls == [
+        (
+            [[1, 2]],
+            9,
+            [{"prepared": True}],
+        )
+    ]
     assert state["uids"] == ["uid-0"]
 
 
