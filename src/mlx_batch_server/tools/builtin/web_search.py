@@ -4,7 +4,7 @@ Web Search Tool - Search the web using Brave Search API.
 Provides web search capability as a hosted tool for the Responses API.
 Requires BRAVE_API_KEY environment variable.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations

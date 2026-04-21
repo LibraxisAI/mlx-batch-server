@@ -4,8 +4,7 @@ Persistent store for Responses API payloads and streaming events.
 Provides in-memory storage with optional Redis backend support.
 For production deployments, configure Redis via REDIS_URL environment variable.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
-Co-Authored-By: Maciej (void@div0.space) & Klaudiusz (the1st@whoai.am)
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations
