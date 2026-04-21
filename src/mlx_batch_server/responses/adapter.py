@@ -1278,6 +1278,7 @@ class ResponsesAdapter:
                 draft_model_id=draft_model_id,
                 batch_window_ms=settings.vlm_batch_window_ms,
                 max_batch_size=settings.vlm_max_batch_size,
+                group_by_shape=settings.vlm_batch_group_by_shape,
             ).stream_request(
                 messages=self._build_vlm_messages(normalised_body),
                 images=self._extract_image_inputs(normalised_body),
