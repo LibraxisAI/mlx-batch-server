@@ -1,6 +1,6 @@
 # mlx-batch-server/Makefile.include
 # Targets for inclusion in root Makefile
-# Created by M&K (c)2026 VetCoders
+# Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 #
 # Usage in root Makefile:
 #   include mlx-batch-server/Makefile.include
