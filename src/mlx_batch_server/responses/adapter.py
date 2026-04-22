@@ -1263,7 +1263,13 @@ class ResponsesAdapter:
         for event in self._vision_start_events(make_event, response_obj):
             yield event
 
-        reasoning_parser = ReasoningStreamingParser(assume_initial_reasoning=True)
+        # Match the non-VLM default (adapter.py:~1611). Hardcoding
+        # assume_initial_reasoning=True caused abliterated / non-reasoning
+        # models (e.g. Gemma 4, abliterated Qwen3.6) to emit every token
+        # on response.reasoning_summary_text.delta and nothing on
+        # response.output_text.delta. The parser still detects <think>
+        # markers mid-stream when they appear.
+        reasoning_parser = ReasoningStreamingParser()
         reasoning_text_parts: list[str] = []
         output_text_parts: list[str] = []
         reasoning_item_emitted = False
@@ -1395,10 +1401,12 @@ class ResponsesAdapter:
                     },
                 )
 
-        parsed = parse_reasoning_like_output(
-            reasoning_parser.full_text,
-            assume_initial_reasoning=True,
-        )
+        # Post-stream re-parse used to set assume_initial_reasoning=True,
+        # which reclassified already-emitted output as reasoning for models
+        # that never produced <think> markers. Use the same default as the
+        # live parser so final_text/reasoning_text align with what the
+        # client already received via SSE deltas.
+        parsed = parse_reasoning_like_output(reasoning_parser.full_text)
         final_text = parsed["final_text"]
         reasoning_text = parsed["reasoning"]
 
