@@ -80,7 +80,7 @@ class ChatTemplate(ABC):
         """
         return ChatTemplate(self.tools_parser_type, self.tokenizer)
 
-    def apply_chat_template(
+    def apply_chat_template(  # noqa: PLR0915
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
@@ -141,22 +141,32 @@ class ChatTemplate(ABC):
         else:
             skip_thinking_prefill = False
 
+        # Gemma 4 VLM processors (and possibly other multimodal processors)
+        # require `messages=` kwarg, while legacy PreTrainedTokenizer accepts
+        # `conversation=`. Try modern name first, fall back on TypeError.
+        def _apply_template(**extra):
+            call_kwargs = {
+                "tools": schema_tools,
+                "tokenize": False,
+                **extra,
+                **kwargs,
+            }
+            try:
+                return self.tokenizer.apply_chat_template(
+                    messages=conversation, **call_kwargs
+                )
+            except TypeError as e:
+                # Legacy tokenizers only accept positional or `conversation=`
+                if "messages" in str(e) or "unexpected keyword" in str(e):
+                    return self.tokenizer.apply_chat_template(
+                        conversation=conversation, **call_kwargs
+                    )
+                raise
+
         if should_prefill:
-            prompt = self.tokenizer.apply_chat_template(
-                conversation=conversation,
-                tools=schema_tools,
-                tokenize=False,
-                continue_final_message=True,
-                **kwargs,
-            )
+            prompt = _apply_template(continue_final_message=True)
         else:
-            prompt = self.tokenizer.apply_chat_template(
-                conversation=conversation,
-                tools=schema_tools,
-                tokenize=False,
-                add_generation_prompt=True,
-                **kwargs,
-            )
+            prompt = _apply_template(add_generation_prompt=True)
 
         prompt = self._process_thinking_prompt(prompt, skip_thinking_prefill)
 
