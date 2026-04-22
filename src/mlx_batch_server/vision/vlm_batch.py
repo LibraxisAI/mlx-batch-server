@@ -1093,7 +1093,32 @@ async def _dispatch_stream_tokens(
     last_texts = [""] * len(batch)
     finished = [False] * len(batch)
 
-    while responses := gen.next():
+    # Safety cap: hard limit on empty polls to prevent infinite loop if
+    # the mlx-vlm generator silently stops producing responses without
+    # setting finish_reason on any uid.
+    empty_polls = 0
+    max_empty_polls = 2000
+    while True:
+        result = gen.next()
+        if result is None:
+            break
+        # mlx-vlm BatchGenerator.next() returns
+        #   (prompt_responses, generation_responses)  — new API
+        # or a single flat list of Response objects — legacy API.
+        # Normalize to a flat list of Response objects before iteration.
+        if isinstance(result, tuple) and len(result) == 2:
+            responses = list(result[0]) + list(result[1])
+        else:
+            responses = list(result)
+        if not responses:
+            # Prefill phase or transient empty poll — only exit when all
+            # active uids have finished, or we hit the safety cap.
+            empty_polls += 1
+            if all(finished) or empty_polls >= max_empty_polls:
+                break
+            await asyncio.sleep(0)
+            continue
+        empty_polls = 0
         for resp in responses:
             idx = uid_to_idx.get(resp.uid)
             if idx is None:
