@@ -13,7 +13,7 @@
 .PHONY: install dev run stop restart logs test lint format check clean help benchmark \
 	benchmark-cli benchmark-quick benchmark-build setup install-dev install-hooks lint-fix format-check \
 	security pre-commit pre-push test-fast test-cov test-responses loctree twins build \
-	docker-build docker-run load unload list ps status batch-stats embeddings reranker \
+	docker-build docker-run operator-tools load unload list ps status batch-stats embeddings reranker \
 	vision stt tts
 .DEFAULT_GOAL := help
 
@@ -23,7 +23,7 @@ PYTHON := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),uv run python)
 PORT ?= 10240
 HOST ?= 0.0.0.0
 LOG_LEVEL ?= info
-CORS ?= http://localhost:*
+CORS ?= http://localhost:*,http://100.*:*,https://100.*:*
 
 # === Installation ===
 install: ## Install as global CLI tool (mlx-batch-server command)
@@ -162,6 +162,9 @@ loctree: ## Run loctree analysis
 twins: ## Check for duplicate code
 	@if command -v loct &>/dev/null; then loct twins; else echo "loctree not installed"; fi
 
+operator-tools: ## Verify bundled loct/aicx/prview operator tools
+	$(PYTHON) scripts/verify_operator_tools.py
+
 # === Model Management (LMS-style) ===
 MODEL ?= mlx-community/Qwen2.5-7B-Instruct-4bit
 SERVER_URL ?= http://localhost:$(PORT)
@@ -178,10 +181,17 @@ TTS_VOICE ?= af_sky
 TTS_FORMAT ?= wav
 TTS_OUTPUT ?= logs/tts-output.wav
 
-load: ## Load a model (MODEL=<model-id> [TASK=llm|embeddings|visual|images|stt|tts])
+load: ## Load a model (MODEL=<model-id> [TASK=llm|embeddings|visual|images|stt|tts] [ALIAS=<name>])
 	@echo "Loading model: $(MODEL)"
 	@payload='{"model": "$(MODEL)"}'; \
 	if [ -n "$(TASK)" ]; then payload=$$(printf '{"model": "%s", "task": "%s"}' "$(MODEL)" "$(TASK)"); fi; \
+	if [ -n "$(ALIAS)" ]; then \
+		if [ -n "$(TASK)" ]; then \
+			payload=$$(printf '{"model": "%s", "task": "%s", "alias": "%s"}' "$(MODEL)" "$(TASK)" "$(ALIAS)"); \
+		else \
+			payload=$$(printf '{"model": "%s", "alias": "%s"}' "$(MODEL)" "$(ALIAS)"); \
+		fi; \
+	fi; \
 	curl -s -X POST $(SERVER_URL)/v1/models/load \
 		-H "Content-Type: application/json" \
 		-d "$$payload" | $(PYTHON) -m json.tool 2>/dev/null || \

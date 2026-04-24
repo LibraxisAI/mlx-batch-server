@@ -141,9 +141,11 @@ class ChatTemplate(ABC):
         else:
             skip_thinking_prefill = False
 
-        # Gemma 4 VLM processors (and possibly other multimodal processors)
-        # require `messages=` kwarg, while legacy PreTrainedTokenizer accepts
-        # `conversation=`. Try modern name first, fall back on TypeError.
+        # Chat template kwarg names differ across processor classes:
+        #   - Gemma4Processor (HF Transformers 5.x VLM)    → `messages=`
+        #   - Vanilla ProcessorMixin (HF <=5.x positional) → `conversation` (positional)
+        #   - PreTrainedTokenizer legacy                   → `conversation=` (kwarg)
+        # Try each shape in turn; fall back on any TypeError.
         def _apply_template(**extra):
             call_kwargs = {
                 "tools": schema_tools,
@@ -155,13 +157,16 @@ class ChatTemplate(ABC):
                 return self.tokenizer.apply_chat_template(
                     messages=conversation, **call_kwargs
                 )
-            except TypeError as e:
-                # Legacy tokenizers only accept positional or `conversation=`
-                if "messages" in str(e) or "unexpected keyword" in str(e):
-                    return self.tokenizer.apply_chat_template(
-                        conversation=conversation, **call_kwargs
-                    )
-                raise
+            except TypeError:
+                pass
+            try:
+                return self.tokenizer.apply_chat_template(
+                    conversation=conversation, **call_kwargs
+                )
+            except TypeError:
+                pass
+            # Last resort — positional. If this still raises, surface the error.
+            return self.tokenizer.apply_chat_template(conversation, **call_kwargs)
 
         if should_prefill:
             prompt = _apply_template(continue_final_message=True)

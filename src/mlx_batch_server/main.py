@@ -12,6 +12,10 @@ import argparse
 import os
 import re
 
+DEFAULT_CORS_ALLOW_ORIGINS = (
+    "http://localhost:*,http://127.0.0.1:*,http://100.*:*,https://100.*:*"
+)
+
 
 def _build_cors_config(cors_origins: str) -> tuple[list[str], str | None]:
     """Split exact origins from wildcard origins and compile a regex for the latter."""
@@ -74,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cors-allow-origins",
         type=str,
-        default="",
+        default=DEFAULT_CORS_ALLOW_ORIGINS,
         help='CORS origins, comma-separated (e.g., "*" or "http://localhost:3000")',
     )
     return parser
@@ -117,7 +121,7 @@ def create_app():
     application.include_router(api_router)
 
     # Configure CORS from environment
-    cors_origins = os.environ.get("MLX_BATCH_CORS", "")
+    cors_origins = os.environ.get("MLX_BATCH_CORS", DEFAULT_CORS_ALLOW_ORIGINS)
     if cors_origins:
         origins, allow_origin_regex = _build_cors_config(cors_origins)
         application.add_middleware(

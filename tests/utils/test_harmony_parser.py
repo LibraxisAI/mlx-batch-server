@@ -2,6 +2,7 @@
 
 from mlx_batch_server.utils.harmony_parser import (
     HarmonyStreamingParser,
+    ReasoningStreamingParser,
     filter_harmony_tokens,
     is_harmony_model,
     parse_harmony_output,
@@ -183,6 +184,31 @@ class TestHarmonyStreamingParser:
         assert parser._awaiting_channel_name is False
         # "Hello" should be the output
         assert "Hello" in clean
+
+
+class TestReasoningStreamingParser:
+    """Regression tests for Qwen-style reasoning stream splitting."""
+
+    def test_reclassified_output_is_not_reemitted_as_reasoning(self):
+        """Already-sent output bytes must not duplicate on reasoning SSE."""
+        parser = ReasoningStreamingParser()
+
+        assert parser.process_delta("Draft answer") == [("output", "Draft answer")]
+
+        events = parser.process_delta("</think>\nFinal answer")
+
+        assert ("reasoning", "Draft answer") not in events
+        assert events == [("output", "Final answer")]
+
+    def test_near_identical_channel_reclassification_is_suppressed(self):
+        """Long near-identical text should not appear on both channels."""
+        parser = ReasoningStreamingParser()
+        repeated = "The model explains the same content twice. " * 12
+
+        assert parser.process_delta(repeated) == [("output", repeated)]
+        events = parser.process_delta("</think>")
+
+        assert events == []
 
 
 class TestParseHarmonyOutput:

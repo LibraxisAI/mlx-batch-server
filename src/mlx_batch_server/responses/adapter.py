@@ -95,8 +95,37 @@ except Exception as exc:  # pragma: no cover - optional dependency
 else:  # pragma: no cover - exercised indirectly
     _mlx_vlm_stream_generate_error = None
 
-# ChatML special tokens to filter from non-Harmony model outputs
-_CHATML_SPECIAL_TOKENS_RE = re.compile(r"<\|im_end\|>|<\|im_start\|>")
+# ChatML / Gemma special tokens to filter from non-Harmony model outputs.
+_CHATML_SPECIAL_TOKENS_RE = re.compile(
+    r"<\|im_end\|>|<\|im_start\|>|<turn\|>|<\|turn\|>"
+)
+
+_DATA_URL_BLOB_RE = re.compile(
+    r"data:(?:video|image|application)/[a-zA-Z0-9.+-]+;base64,"
+    r"[A-Za-z0-9+/=\s]{256,}"
+)
+_BASE64_BLOB_RE = re.compile(
+    r"(?<![A-Za-z0-9+/=])(?:[A-Za-z0-9+/]{512,}={0,2})(?![A-Za-z0-9+/=])"
+)
+
+
+def sanitize_error_message(message: str) -> str:
+    """Redact large inline media payloads before they reach API error envelopes."""
+    message = _DATA_URL_BLOB_RE.sub("[redacted inline media data URL]", message)
+    return _BASE64_BLOB_RE.sub("[redacted base64 media payload]", message)
+
+
+def sanitize_error_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Redact string fields in an error payload while preserving its shape."""
+    sanitized: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str):
+            sanitized[key] = sanitize_error_message(value)
+        elif isinstance(value, dict):
+            sanitized[key] = sanitize_error_payload(value)
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 class ResponsesAdapter:
@@ -308,8 +337,7 @@ class ResponsesAdapter:
     def _require_vlm_generate(self):
         if _mlx_vlm_generate is None:
             raise RuntimeError(
-                "mlx-vlm is required for vision responses: "
-                f"{_mlx_vlm_generate_error}"
+                f"mlx-vlm is required for vision responses: {_mlx_vlm_generate_error}"
             )
         return _mlx_vlm_generate
 
@@ -913,7 +941,7 @@ class ResponsesAdapter:
         except Exception as e:
             logger.error(f"Responses generation failed: {e}", exc_info=True)
             return build_error_response(
-                str(e),
+                sanitize_error_message(str(e)),
                 error_code="internal_error",
                 model=request_model,
             )
@@ -1302,7 +1330,7 @@ class ResponsesAdapter:
                     {
                         "error": {
                             "message": (
-                                "mlx-vlm is required for vision responses: " f"{exc}"
+                                f"mlx-vlm is required for vision responses: {exc}"
                             ),
                             "code": "internal_error",
                         }
@@ -1317,7 +1345,7 @@ class ResponsesAdapter:
                 draft_model_id=draft_model_id,
             )
             if model is None:
-                yield make_event("error", {"error": kwargs})
+                yield make_event("error", {"error": sanitize_error_payload(kwargs)})
                 return
 
             async def _direct_stream_results():
@@ -2098,7 +2126,7 @@ class ResponsesAdapter:
                 "error",
                 {
                     "error": {
-                        "message": str(e),
+                        "message": sanitize_error_message(str(e)),
                         "code": "internal_error",
                     }
                 },
