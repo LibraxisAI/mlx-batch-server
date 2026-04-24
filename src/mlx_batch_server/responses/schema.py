@@ -30,6 +30,7 @@ class ContentPartType(str, Enum):
 
     INPUT_TEXT = "input_text"
     INPUT_IMAGE = "input_image"
+    INPUT_VIDEO = "input_video"
     INPUT_AUDIO = "input_audio"
     OUTPUT_TEXT = "output_text"
     REASONING_TEXT = "reasoning_text"
@@ -42,6 +43,7 @@ class ContentPart(BaseModel):
     text: str | None = None
     image_url: str | None = None
     image_base64: str | None = None
+    video_url: str | None = None
     audio_url: str | None = None
     detail: str | None = None  # For images: "auto", "low", "high"
 

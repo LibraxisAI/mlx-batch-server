@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -1222,6 +1223,25 @@ class TestLoadRuntime:
         assert target.adapter_path == expanded_adapter_path
         assert target.draft_model_id == "mlx-community/qwen3-1.7b-4bit"
 
+    def test_create_model_alias_endpoint_registers_without_loading(self):
+        async def run_alias_registration():
+            return await models_module.create_model_alias(
+                models_module.ModelAliasRequest(
+                    alias="operator-chat",
+                    model="LibraxisAI/Qwen3-VL-30B",
+                    adapter_path="~/adapters/frontier-lora",
+                )
+            )
+
+        response = asyncio.run(run_alias_registration())
+
+        target = runtime_aliases_module.resolve_runtime_target("operator-chat")
+
+        assert response.alias == "operator-chat"
+        assert response.model == "libraxisai/qwen3-vl-30b"
+        assert target.model_id == "libraxisai/qwen3-vl-30b"
+        assert target.adapter_path == str(Path("~/adapters/frontier-lora").expanduser())
+
     @pytest.mark.asyncio
     async def test_load_visual_uses_shared_runtime_session(self, monkeypatch):
         state = {"switch_called": False, "loaded_model": None}
@@ -1699,15 +1719,17 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             visual_router_module,
             "unload_visual_embedder",
-            lambda model_id, **kwargs: calls.append(
-                (
-                    model_id,
-                    kwargs.get("adapter_path"),
-                    kwargs.get("draft_model_id"),
-                    kwargs.get("release_runtime"),
+            lambda model_id, **kwargs: (
+                calls.append(
+                    (
+                        model_id,
+                        kwargs.get("adapter_path"),
+                        kwargs.get("draft_model_id"),
+                        kwargs.get("release_runtime"),
+                    )
                 )
-            )
-            or [model_id],
+                or [model_id]
+            ),
         )
 
         async def fake_shutdown_vlm(model_id: str) -> int:
