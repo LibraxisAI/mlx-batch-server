@@ -15,6 +15,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mlx_batch_server.main import app
+from mlx_batch_server.responses.adapter import (
+    _CHATML_SPECIAL_TOKENS_RE,
+    sanitize_error_message,
+)
 from mlx_batch_server.responses.normalizer import (
     has_media_content,
     normalise_responses_payload,
@@ -48,6 +52,20 @@ class TestResponsesSchema:
         assert request.modalities == ["text"]
         assert request.stream is False
 
+    def test_gemma_turn_token_is_filtered(self):
+        """Gemma 4 trailing turn markers should not leak to Responses output."""
+        assert _CHATML_SPECIAL_TOKENS_RE.sub("", "Hello<turn|><|turn|>") == "Hello"
+
+    def test_error_sanitizer_redacts_inline_video_base64(self):
+        """Video probe failures must not echo large base64 payloads."""
+        payload = "A" * 2048
+        message = f"failed to decode data:video/quicktime;base64,{payload}"
+
+        sanitized = sanitize_error_message(message)
+
+        assert payload not in sanitized
+        assert "[redacted inline media data URL]" in sanitized
+
     def test_response_request_with_turns(self):
         """Request with message turns should parse correctly."""
         request = ResponseRequest(
@@ -58,6 +76,26 @@ class TestResponsesSchema:
             ],
         )
         assert len(request.input) == 2
+
+    def test_response_request_accepts_input_video_part(self):
+        """input_video parts should be first-class Responses content."""
+        request = ResponseRequest(
+            model="test-model",
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_video", "video_url": "/tmp/sample.mov"},
+                        {"type": "input_text", "text": "describe"},
+                    ],
+                }
+            ],
+        )
+
+        turn = request.input[0]
+        part = turn.content[0]
+        assert part["type"] == "input_video"
+        assert part["video_url"] == "/tmp/sample.mov"
 
     def test_response_request_max_tokens_aliases(self):
         """Both max_tokens and max_output_tokens should work."""
@@ -855,11 +893,13 @@ class TestResponsesRuntimeGuards:
         monkeypatch.setattr(
             adapter,
             "_require_vlm_generate",
-            lambda: lambda *args, **kwargs: SimpleNamespace(
-                text="direct vision",
-                prompt_tokens=5,
-                generation_tokens=2,
-                total_tokens=7,
+            lambda: (
+                lambda *args, **kwargs: SimpleNamespace(
+                    text="direct vision",
+                    prompt_tokens=5,
+                    generation_tokens=2,
+                    total_tokens=7,
+                )
             ),
         )
 
@@ -951,7 +991,7 @@ class TestResponsesRuntimeGuards:
         monkeypatch.setattr(
             adapter,
             "_require_vlm_chat_template",
-            lambda: (lambda processor, config, messages, **kwargs: "prompt"),
+            lambda: lambda processor, config, messages, **kwargs: "prompt",
         )
         monkeypatch.setattr(
             adapter,

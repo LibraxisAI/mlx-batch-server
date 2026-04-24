@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from ...mlx.runtime_aliases import (
+    get_runtime_aliases,
     register_runtime_alias,
     resolve_runtime_target,
 )
@@ -29,6 +30,8 @@ from ...mlx.wrapper_cache import serialize_runtime_key
 from .models_service import ModelsService
 from .schema import (
     Model,
+    ModelAliasRequest,
+    ModelAliasResponse,
     ModelDeletion,
     ModelList,
     ModelLoadRequest,
@@ -798,6 +801,50 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/models/aliases")
+@router.get("/v1/models/aliases")
+async def list_model_aliases() -> dict[str, Any]:
+    """List in-process runtime aliases available to operator tooling."""
+    aliases = get_runtime_aliases()
+    return {
+        "object": "list",
+        "data": [
+            {
+                "alias": alias,
+                "model": model_id,
+            }
+            for alias, model_id in sorted(aliases.items())
+        ],
+    }
+
+
+@router.post("/models/alias", response_model=ModelAliasResponse)
+@router.post("/v1/models/alias", response_model=ModelAliasResponse)
+async def create_model_alias(request: ModelAliasRequest) -> ModelAliasResponse:
+    """Register an alias for an existing or future runtime target."""
+    try:
+        target = resolve_runtime_target(
+            request.model,
+            adapter_path=request.adapter_path,
+            draft_model_id=request.draft_model_id,
+        )
+        canonical_model_id = register_runtime_alias(
+            request.alias,
+            target.model_id,
+            adapter_path=target.adapter_path,
+            draft_model_id=target.draft_model_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ModelAliasResponse(
+        alias=request.alias,
+        model=canonical_model_id,
+        adapter_path=target.adapter_path,
+        draft_model_id=target.draft_model_id,
+    )
 
 
 def _build_unload_response(

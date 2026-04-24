@@ -182,3 +182,4 @@ mlx-batch-server.log
 /logs
 /*.md
 /.vibecrafted
+/reports

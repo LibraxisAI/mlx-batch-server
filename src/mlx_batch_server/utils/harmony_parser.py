@@ -688,8 +688,78 @@ class ReasoningStreamingParser:
         self.reasoning_started: bool = False
         self.message_started: bool = False
         self.assume_initial_reasoning = assume_initial_reasoning
-        self._emitted_reasoning_len = 0
-        self._emitted_output_len = 0
+        self._emitted_reasoning_text = ""
+        self._emitted_output_text = ""
+
+    @staticmethod
+    def _normalized_for_compare(text: str) -> str:
+        return " ".join(text.split())
+
+    @classmethod
+    def _looks_duplicate(cls, candidate: str, emitted_other: str) -> bool:
+        """Return True when a reclassified channel is effectively already sent."""
+        if not candidate or not emitted_other:
+            return False
+
+        candidate_norm = cls._normalized_for_compare(candidate)
+        emitted_norm = cls._normalized_for_compare(emitted_other)
+        if not candidate_norm or not emitted_norm:
+            return False
+
+        if candidate_norm == emitted_norm:
+            return True
+        if len(candidate_norm) >= 80 and candidate_norm in emitted_norm:
+            return True
+        if len(emitted_norm) >= 80 and emitted_norm in candidate_norm:
+            return True
+
+        shared = 0
+        limit = min(len(candidate_norm), len(emitted_norm))
+        while shared < limit and candidate_norm[shared] == emitted_norm[shared]:
+            shared += 1
+        return limit >= 80 and shared / limit >= 0.98
+
+    @staticmethod
+    def _strip_cross_channel_prefix(candidate: str, emitted_other: str) -> str:
+        """Remove bytes already emitted on the other SSE channel."""
+        if not candidate or not emitted_other:
+            return candidate
+
+        if emitted_other.startswith(candidate):
+            return ""
+        if candidate.startswith(emitted_other):
+            return candidate[len(emitted_other) :]
+
+        max_overlap = min(len(candidate), len(emitted_other))
+        for size in range(max_overlap, 0, -1):
+            if emitted_other[-size:] == candidate[:size]:
+                return candidate[size:]
+        return candidate
+
+    def _new_channel_delta(
+        self,
+        *,
+        current_text: str,
+        emitted_same: str,
+        emitted_other: str,
+    ) -> str:
+        """Calculate the next monotonic delta without cross-channel duplicates."""
+        if not current_text:
+            return ""
+
+        if self._looks_duplicate(current_text, emitted_other):
+            return ""
+
+        if current_text.startswith(emitted_same):
+            delta = current_text[len(emitted_same) :]
+        elif emitted_same.startswith(current_text):
+            return ""
+        else:
+            delta = current_text
+
+        if self._looks_duplicate(delta, emitted_other):
+            return ""
+        return self._strip_cross_channel_prefix(delta, emitted_other)
 
     def process_delta(self, delta: str) -> list[tuple[str, str]]:
         """Process one raw delta and emit ordered reasoning/output fragments."""
@@ -703,19 +773,25 @@ class ReasoningStreamingParser:
 
         events: list[tuple[str, str]] = []
 
-        if len(reasoning_text) > self._emitted_reasoning_len:
-            reasoning_delta = reasoning_text[self._emitted_reasoning_len :]
-            if reasoning_delta:
-                self.reasoning_started = True
-                events.append(("reasoning", reasoning_delta))
-            self._emitted_reasoning_len = len(reasoning_text)
+        reasoning_delta = self._new_channel_delta(
+            current_text=reasoning_text,
+            emitted_same=self._emitted_reasoning_text,
+            emitted_other=self._emitted_output_text,
+        )
+        if reasoning_delta:
+            self.reasoning_started = True
+            events.append(("reasoning", reasoning_delta))
+            self._emitted_reasoning_text += reasoning_delta
 
-        if len(output_text) > self._emitted_output_len:
-            output_delta = output_text[self._emitted_output_len :]
-            if output_delta:
-                self.message_started = True
-                events.append(("output", output_delta))
-            self._emitted_output_len = len(output_text)
+        output_delta = self._new_channel_delta(
+            current_text=output_text,
+            emitted_same=self._emitted_output_text,
+            emitted_other=self._emitted_reasoning_text,
+        )
+        if output_delta:
+            self.message_started = True
+            events.append(("output", output_delta))
+            self._emitted_output_text += output_delta
 
         return events
 
@@ -725,8 +801,8 @@ class ReasoningStreamingParser:
             "reasoning_started": self.reasoning_started,
             "message_started": self.message_started,
             "full_text_size": len(self.full_text),
-            "reasoning_emitted_len": self._emitted_reasoning_len,
-            "output_emitted_len": self._emitted_output_len,
+            "reasoning_emitted_len": len(self._emitted_reasoning_text),
+            "output_emitted_len": len(self._emitted_output_text),
         }
 
 
