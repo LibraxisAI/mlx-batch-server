@@ -202,6 +202,8 @@ ignore = [
 "src/mlx_batch_server/auth/rate_limit.py" = ["PLC0415", "PLR0912", "PLR0915"]
 "src/mlx_batch_server/auth/dependency.py" = ["PLC0415", "PLR0912"]
 "src/mlx_batch_server/auth/router_access.py" = ["PLC0415", "PLR0911"]
+# Operator auth shim mirrors the multi-branch dependency surface
+"src/mlx_batch_server/operator/auth.py" = ["PLR0912"]
 "src/mlx_batch_server/health/ready.py" = ["PLC0415"]
 "src/mlx_batch_server/routers.py" = ["PLC0415"]
 # Compat module - monkeypatch jieba to avoid pkg_resources deprecation

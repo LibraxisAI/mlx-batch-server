@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from mlx_batch_server.operator.auth import operator_auth
 from mlx_batch_server.operator.config import Settings, get_settings
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
@@ -38,6 +39,7 @@ async def tail_logs(
     service: str | None = None,
     lines: int = Query(default=200, ge=1, le=5000),
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> dict[str, str | list[str]]:
     path = resolve_log_path(settings, service)
     if not path.exists():
@@ -55,6 +57,7 @@ async def follow_logs(
     request: Request,
     service: str | None = None,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> StreamingResponse:
     path = resolve_log_path(settings, service)
     if not path.exists():

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from mlx_batch_server.operator.auth import operator_auth
 from mlx_batch_server.operator.config import Settings, get_settings
 from mlx_batch_server.operator.services.session_store import session_store
 
@@ -54,7 +55,10 @@ def _inference_headers(accept: str | None = None) -> dict[str, str]:
 
 
 @router.get("/history")
-async def playground_history(session_id: str = "default") -> dict[str, Any]:
+async def playground_history(
+    session_id: str = "default",
+    _auth: dict | None = Depends(operator_auth),
+) -> dict[str, Any]:
     return {
         "session_id": session_id,
         "items": _SESSION_HISTORY.get(session_id, [])[-20:],
@@ -66,6 +70,7 @@ async def proxy_responses(
     payload: PlaygroundRequest,
     settings: Settings = Depends(get_settings),
     accept: str | None = Header(default=None),
+    _auth: dict | None = Depends(operator_auth),
 ) -> StreamingResponse:
     headers = _inference_headers(accept)
     request_body = payload.model_dump(exclude_none=True)
