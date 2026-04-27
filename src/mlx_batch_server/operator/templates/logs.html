@@ -1,0 +1,59 @@
+{% extends "_layout.html" %}
+{% block title %}MLX Batch Server Operator · Logs{% endblock %}
+{% block content %}
+<div class="toolbar"><h1>Live logs</h1></div>
+<form class="card" onsubmit="return false;">
+  <div class="field">
+    <label for="service">Service</label>
+    <select id="service-select" name="service">
+      {% for svc in services %}
+      <option value="{{ svc }}">{{ svc }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="actions">
+    <button type="button" class="primary" id="follow-btn">Follow</button>
+    <button type="button" class="ghost" id="stop-btn">Stop</button>
+    <button type="button" class="ghost" id="clear-btn">Clear</button>
+    <span class="muted" id="follow-status">idle</span>
+  </div>
+</form>
+
+<h2 style="margin-top:18px;">Tail</h2>
+<div class="console" id="log-stream"><div class="muted">Pick a service and press Follow.</div></div>
+
+<script>
+(function () {
+  var es = null;
+  var box = document.getElementById('log-stream');
+  var status = document.getElementById('follow-status');
+  var sel = document.getElementById('service-select');
+  function append(line) {
+    var div = document.createElement('div');
+    div.className = 'line';
+    div.textContent = line;
+    box.appendChild(div);
+    while (box.childNodes.length > 1000) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+  function stop() {
+    if (es) { es.close(); es = null; }
+    status.textContent = 'idle';
+  }
+  document.getElementById('follow-btn').addEventListener('click', function () {
+    stop();
+    box.innerHTML = '';
+    var svc = encodeURIComponent(sel.value);
+    es = new EventSource('{{ base }}/logs/stream?service=' + svc);
+    status.textContent = 'following ' + sel.value;
+    es.onmessage = function (e) {
+      try { var data = JSON.parse(e.data); append(data.line || e.data); }
+      catch (_err) { append(e.data); }
+    };
+    es.onerror = function () { append('[stream closed]'); stop(); };
+  });
+  document.getElementById('stop-btn').addEventListener('click', stop);
+  document.getElementById('clear-btn').addEventListener('click', function () { box.innerHTML = ''; });
+})();
+</script>
+{% endblock %}

@@ -63,6 +63,15 @@ Upstream = "https://github.com/LibraxisAI/mlx-batch-server"
 
 [project.scripts]
 mlx-batch-server = "mlx_batch_server.main:start"
+mlx-batch-operator = "mlx_batch_server.operator.cli:main"
+
+[project.optional-dependencies]
+operator = [
+    "click>=8",
+    "jinja2>=3",
+    "python-multipart",
+    "ruamel.yaml",
+]
 
 [dependency-groups]
 dev = [
