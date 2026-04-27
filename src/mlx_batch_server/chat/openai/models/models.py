@@ -8,8 +8,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ....auth.dependency import verify_auth
 from ...mlx.runtime_aliases import (
     get_runtime_aliases,
     register_runtime_alias,
@@ -462,14 +463,19 @@ def handle_model_error(e: Exception) -> None:
 
 @router.get("/models", response_model=ModelList)
 @router.get("/v1/models", response_model=ModelList)
-async def list_models(include_details: bool = False) -> ModelList:
+async def list_models(
+    include_details: bool = False,
+    _auth: dict = Depends(verify_auth),
+) -> ModelList:
     """List all available models"""
     return get_models_service().list_models(include_details)
 
 
 @router.get("/models/loaded")
 @router.get("/v1/models/loaded")
-async def list_loaded_models() -> dict:
+async def list_loaded_models(
+    _auth: dict = Depends(verify_auth),
+) -> dict:
     """
     List only models currently loaded in memory.
 
@@ -493,7 +499,11 @@ async def list_loaded_models() -> dict:
 
 @router.get("/models/{model_id:path}", response_model=Model)
 @router.get("/v1/models/{model_id:path}", response_model=Model)
-async def get_model(model_id: str, include_details: bool = False) -> Model:
+async def get_model(
+    model_id: str,
+    include_details: bool = False,
+    _auth: dict = Depends(verify_auth),
+) -> Model:
     """Get information about a specific model"""
     model = get_models_service().get_model(model_id, include_details)
     if not model:
@@ -503,7 +513,10 @@ async def get_model(model_id: str, include_details: bool = False) -> Model:
 
 @router.delete("/models/{model_id:path}", response_model=ModelDeletion)
 @router.delete("/v1/models/{model_id:path}", response_model=ModelDeletion)
-async def delete_model(request: Request) -> ModelDeletion:
+async def delete_model(
+    request: Request,
+    _auth: dict = Depends(verify_auth),
+) -> ModelDeletion:
     """
     Delete a fine-tuned model from local cache.
     """
@@ -567,6 +580,7 @@ async def _load_llm_model(request: ModelLoadRequest) -> ModelLoadResponse:
 @router.post("/v1/models/load", response_model=ModelLoadResponse)
 async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
     request: ModelLoadRequest,
+    _auth: dict = Depends(verify_auth),
 ) -> ModelLoadResponse:
     """
     Load a model into memory for inference.
@@ -805,7 +819,9 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
 
 @router.get("/models/aliases")
 @router.get("/v1/models/aliases")
-async def list_model_aliases() -> dict[str, Any]:
+async def list_model_aliases(
+    _auth: dict = Depends(verify_auth),
+) -> dict[str, Any]:
     """List in-process runtime aliases available to operator tooling."""
     aliases = get_runtime_aliases()
     return {
@@ -822,7 +838,10 @@ async def list_model_aliases() -> dict[str, Any]:
 
 @router.post("/models/alias", response_model=ModelAliasResponse)
 @router.post("/v1/models/alias", response_model=ModelAliasResponse)
-async def create_model_alias(request: ModelAliasRequest) -> ModelAliasResponse:
+async def create_model_alias(
+    request: ModelAliasRequest,
+    _auth: dict = Depends(verify_auth),
+) -> ModelAliasResponse:
     """Register an alias for an existing or future runtime target."""
     try:
         target = resolve_runtime_target(
@@ -1557,6 +1576,7 @@ async def _clear_all_models() -> ModelUnloadResponse:
 @router.post("/v1/models/unload", response_model=ModelUnloadResponse)
 async def unload_model(
     request: ModelUnloadRequest | None = None,
+    _auth: dict = Depends(verify_auth),
 ) -> ModelUnloadResponse:
     """
     Unload a model from memory to free VRAM.

@@ -1,9 +1,10 @@
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from mlx_batch_server.auth.dependency import verify_auth
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 from mlx_batch_server.chat.mlx.runtime_policy import endpoint_runtime_session
 from mlx_batch_server.chat.openai.openai_adapter import OpenAIAdapter
@@ -17,10 +18,15 @@ router = APIRouter(tags=["chat—completions"])
 
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def create_chat_completion(request: ChatCompletionRequest):
+async def create_chat_completion(
+    request: ChatCompletionRequest,
+    _auth: dict = Depends(verify_auth),
+) -> JSONResponse | StreamingResponse:
     """Create a chat completion"""
     extra_params = request.get_extra_params()
-    draft_model_id = extra_params.get("draft_model_id") or extra_params.get("draft_model")
+    draft_model_id = extra_params.get("draft_model_id") or extra_params.get(
+        "draft_model"
+    )
     adapter_path = extra_params.get("adapter_path")
     if not request.stream:
         async with endpoint_runtime_session(

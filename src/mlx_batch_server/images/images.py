@@ -1,7 +1,8 @@
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ..auth.dependency import verify_auth
 from .images_service import get_images_service
 from .schema import ImageGenerationRequest, ImageGenerationResponse
 
@@ -10,7 +11,10 @@ router = APIRouter(tags=["images"])
 
 @router.post("/images/generations")
 @router.post("/v1/images/generations")
-async def create_image(request: ImageGenerationRequest) -> ImageGenerationResponse:
+async def create_image(
+    request: ImageGenerationRequest,
+    _auth: dict = Depends(verify_auth),
+) -> ImageGenerationResponse:
     """
     Creates an image given a prompt.
     """
