@@ -181,5 +181,7 @@ mlx-batch-server.log
 /.ai-context
 /logs
 /*.md
+!/README.md
+!/CHANGELOG.md
 /.vibecrafted
 /reports

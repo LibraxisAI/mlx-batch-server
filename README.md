@@ -70,12 +70,21 @@ improvements back to the upstream project where applicable.
 git clone https://github.com/VetCoders/mlx-batch-server.git
 cd mlx-batch-server
 
-# Install with uv (recommended)
+# Core install (inference only)
 uv sync
-
-# Or with pip
+# Or
 pip install -e .
+
+# Full surface (auth + operator UI)
+uv sync --extra auth --extra operator
+# Or
+pip install -e ".[auth,operator]"
 ```
+
+| Extra      | Pulls                          | Enables |
+|------------|--------------------------------|---------|
+| `auth`     | `redis`, `pyjwt`               | Session auth + Redis-backed API keys/HMAC + rate limiting |
+| `operator` | `click`, `jinja2`, `python-multipart`, `ruamel.yaml` | `mlx-batch-operator` CLI + htmx admin UI |
 
 Local development uses the editable sibling dependency `../mlx-vlm-local`, so upstream-facing `mlx-vlm` fixes land in the server immediately after `uv sync`.
 
@@ -174,6 +183,84 @@ mlx-batch-server
 
 - Single request: ~50 tok/s
 - Batched (10 requests): ~35 tok/s per request = **350 tok/s total**
+
+---
+
+## Security
+
+The server ships **open by default** (`SECURITY_LEVEL=0`) so existing deployments keep working. Set a level to lock the surface down:
+
+| Level | Behavior |
+|-------|----------|
+| `0` | Open. No auth, every request maps to a stable pseudo-owner. Default. |
+| `1` | *Deprecated.* Treated internally as `2` with a warning. |
+| `2` | HMAC **or** session token **or** API key (any one of them). |
+| `3` | Session token only (HMAC + API key fallback disabled). |
+
+When the level is `>0`, every protected route — including `/api/admin/models/{load,unload,alias}` — requires a credential. `/health` and `/v1/ready` stay open at all levels for load balancers.
+
+```bash
+# Static API key (simplest, single-secret deploys)
+SECURITY_LEVEL=2 API_KEY=sk-mlx-… mlx-batch-server
+
+# HMAC clients (machine-to-machine, /hmac/register issues secrets)
+SECURITY_LEVEL=2 API_KEY=sk-… mlx-batch-server
+curl -H "x-api-key: sk-…" -X POST http://127.0.0.1:10240/hmac/register \
+     -d '{"client_id":"node-1","description":"build agent"}' \
+     -H "Content-Type: application/json"
+
+# Session-only (browser sessions via /auth/login)
+SECURITY_LEVEL=3 SESSION_AUTH_ENABLED=true mlx-batch-server
+```
+
+Auxiliary auth env vars: `API_KEY_HEADER` (default `x-api-key`), `REDIS_URL` (Redis-backed sessions/API keys/rate-limit), `SESSION_AUTH_ENABLED`, `SESSION_PROVIDER`, `SESSION_TTL_HOURS`, `RATE_LIMIT_ENABLED`, `ACCESS_REGISTRATION_SECRET` (enables `/access` HTML registration page), `MLX_BATCH_HMAC_SECRETS_FILE` (XDG path by default), `HMAC_TIMESTAMP_TOLERANCE`.
+
+The auth router family (`/auth/*`, `/hmac/*`, `/access`) is **opt-in** — it only mounts when at least one auth-related env var is configured.
+
+---
+
+## Operator UI
+
+A standalone htmx admin lives in `mlx_batch_server.operator` and runs as a sibling app on port **10241**:
+
+```bash
+# Inference (port 10240)
+mlx-batch-server &
+
+# Operator UI (port 10241) — connects back to inference at 10240
+mlx-batch-operator serve
+
+# Custom inference URL / port
+MLX_BATCH_OPERATOR_INFERENCE_BASE_URL=http://localhost:10240 \
+    mlx-batch-operator serve --port 10241
+```
+
+Tabs: Fleet (live runtime + model summary), Sessions (recent playground sessions with delete-guard), Logs (tail + SSE follow), Lifecycle (status + restart/stop), Playground (in-browser SSE prompt with response chaining).
+
+Auth posture inherits inference: if you start inference with `SECURITY_LEVEL=2`, the operator UI also requires that key. Override per side with:
+
+| Variable | Effect |
+|----------|--------|
+| `MLX_BATCH_OPERATOR_SECURITY_LEVEL` | Force a different operator level than inference. |
+| `MLX_BATCH_OPERATOR_REQUIRE_AUTH=true` | Force operator auth even when inference is open (useful behind a public proxy). |
+| `MLX_BATCH_INTERNAL_API_KEY` | Key the operator forwards on the loopback playground proxy. |
+
+The operator's `/health` and `/api/health` stay open at all levels so monitoring keeps working.
+
+There is also a thin landing page at `http://127.0.0.1:10240/admin` on the inference port — it links to the richer operator UI on port 10241 and is gated by the same `SECURITY_LEVEL`.
+
+---
+
+## Readiness
+
+Two health surfaces, used for different purposes:
+
+| Endpoint | Purpose | Auth | Body |
+|----------|---------|------|------|
+| `GET /health` | Lightweight liveness for load balancers | open | `{"status":"ok", …}` |
+| `GET /v1/ready` | Rich readiness — process, models loaded, batch coordinators, config, auth backends | open | `{"ready":bool, "checks":{…}}` |
+
+`/v1/ready` returns `200` only when every check passes; otherwise `503` with the failing check called out. When `SECURITY_LEVEL>0` the readiness payload also includes an `auth_backends` block reporting Redis connectivity for sessions/API keys.
 
 ---
 

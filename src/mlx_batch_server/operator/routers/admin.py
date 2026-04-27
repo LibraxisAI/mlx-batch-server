@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from mlx_batch_server.operator.auth import operator_auth
 from mlx_batch_server.operator.config import Settings, get_settings
 from mlx_batch_server.operator.model_registry import registry_rows
-from mlx_batch_server.operator.routers.lifecycle import lifecycle_status
+from mlx_batch_server.operator.routers.lifecycle import _build_status
 from mlx_batch_server.operator.routers.logs import (
     available_log_services,
     resolve_log_path,
@@ -124,6 +125,7 @@ def _status_entry(status: InferenceStatus) -> dict[str, Any]:
 async def admin_root(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     return _render(request, settings, "fleet.html", active="fleet")
 
@@ -132,6 +134,7 @@ async def admin_root(
 async def fleet_partial(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     status = await probe_inference(settings)
     return _render(
@@ -147,6 +150,7 @@ async def fleet_partial(
 async def sessions_page(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     return _render(request, settings, "sessions.html", active="sessions")
 
@@ -155,6 +159,7 @@ async def sessions_page(
 async def sessions_partial(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     sessions = session_store.list_recent(limit=50)
     return _render(
@@ -171,6 +176,7 @@ async def session_detail_partial(
     session_id: str,
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     session = session_store.get(session_id)
     return _render(
@@ -187,6 +193,7 @@ async def session_delete(
     session_id: str,
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     deleted = session_store.delete(session_id)
     sessions = session_store.list_recent(limit=50)
@@ -210,6 +217,7 @@ async def session_delete(
 async def logs_page(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     services = available_log_services(settings) or ["server"]
     return _render(
@@ -226,6 +234,7 @@ async def logs_stream(
     request: Request,
     service: str = Query(default="server", min_length=1, max_length=64),
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> StreamingResponse:
     if not service.replace("-", "").replace("_", "").replace(".", "").isalnum():
         raise HTTPException(status_code=400, detail="Invalid service name")
@@ -255,8 +264,9 @@ async def logs_stream(
 async def lifecycle_page(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
-    status = await lifecycle_status()
+    status = _build_status()
     return _render(
         request,
         settings,
@@ -270,6 +280,7 @@ async def lifecycle_page(
 async def lifecycle_restart(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     if os.environ.get("MLX_BATCH_UNDER_SUPERVISOR") != "1":
         return _render(
@@ -302,6 +313,7 @@ async def lifecycle_restart(
 async def lifecycle_stop(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     loop = asyncio.get_running_loop()
     loop.call_later(2.0, os.kill, os.getpid(), signal.SIGTERM)
@@ -321,6 +333,7 @@ async def lifecycle_stop(
 async def playground_page(
     request: Request,
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> HTMLResponse:
     return _render(
         request,
@@ -338,6 +351,7 @@ async def playground_responses(
     session_id: str = Form(default="default"),
     max_output_tokens: int | None = Form(default=None),
     settings: Settings = Depends(get_settings),
+    _auth: dict | None = Depends(operator_auth),
 ) -> StreamingResponse:
     payload = PlaygroundRequest(
         model=model,

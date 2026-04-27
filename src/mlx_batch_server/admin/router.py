@@ -8,9 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from ..auth.dependency import verify_auth
 from ..chat.mlx.runtime_aliases import get_runtime_aliases
 from ..chat.openai.models import models as model_routes
 from ..chat.openai.models.schema import (  # noqa: TC001
@@ -78,13 +79,18 @@ def _readiness_checks() -> list[dict[str, Any]]:
 
 
 @router.get("/admin", response_class=HTMLResponse)
-async def admin_panel() -> HTMLResponse:
-    """Serve the embedded operator panel."""
+async def admin_panel(_auth: dict = Depends(verify_auth)) -> HTMLResponse:
+    """Minimal landing page that points operators at the richer operator UI.
+
+    The full htmx-based admin lives in ``mlx-batch-operator`` on port 10241;
+    this inference-side ``/admin`` page is intentionally a thin stub so admins
+    landing on the wrong port get routed correctly.
+    """
     return HTMLResponse(_ADMIN_HTML)
 
 
 @router.get("/api/admin/summary")
-async def admin_summary() -> dict[str, Any]:
+async def admin_summary(_auth: dict = Depends(verify_auth)) -> dict[str, Any]:
     """Return the compact admin state used by the panel."""
     health = await model_routes.health_check()
     loaded = await model_routes.list_loaded_models()
@@ -102,19 +108,28 @@ async def admin_summary() -> dict[str, Any]:
 
 
 @router.post("/api/admin/models/load")
-async def admin_load_model(request: ModelLoadRequest) -> Any:
+async def admin_load_model(
+    request: ModelLoadRequest,
+    _auth: dict = Depends(verify_auth),
+) -> Any:
     """Load a model through the existing runtime-safe model endpoint."""
     return await model_routes.load_model(request)
 
 
 @router.post("/api/admin/models/unload")
-async def admin_unload_model(request: ModelUnloadRequest | None = None) -> Any:
+async def admin_unload_model(
+    request: ModelUnloadRequest | None = None,
+    _auth: dict = Depends(verify_auth),
+) -> Any:
     """Unload a model through the existing runtime-safe model endpoint."""
     return await model_routes.unload_model(request)
 
 
 @router.post("/api/admin/models/alias")
-async def admin_create_alias(request: ModelAliasRequest) -> Any:
+async def admin_create_alias(
+    request: ModelAliasRequest,
+    _auth: dict = Depends(verify_auth),
+) -> Any:
     """Create a runtime alias through the existing model endpoint."""
     return await model_routes.create_model_alias(request)
 
@@ -123,6 +138,7 @@ async def admin_create_alias(request: ModelAliasRequest) -> Any:
 async def admin_tail_logs(
     file: str = Query(default="mlx-batch-server.log"),
     lines: int = Query(default=200, ge=1, le=2000),
+    _auth: dict = Depends(verify_auth),
 ) -> dict[str, Any]:
     """Tail a local operator log file from the repo root."""
     path = (_REPO_ROOT / file).resolve()
@@ -224,7 +240,7 @@ _ADMIN_HTML = """<!doctype html>
   <header>
     <div>
       <h1>MLX Batch Operator</h1>
-      <div class="muted">localhost:10240 runtime console</div>
+      <div class="muted">localhost:10240 runtime console &middot; richer UI: <a href="http://127.0.0.1:10241/admin/" style="color:var(--accent)">operator on :10241</a></div>
     </div>
     <button id="refresh">Refresh</button>
   </header>
