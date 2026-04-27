@@ -98,28 +98,62 @@ def create_app():
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
+    from .core.config import get_settings
     from .middleware.logging import RequestResponseLoggingMiddleware
-    from .routers import api_router
+    from .routers import build_api_router
+
+    settings = get_settings()
+    api_router = build_api_router(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Application lifespan manager for startup/shutdown hooks."""
-        # Startup
-        yield
-        # Shutdown - cleanup batch coordinators
-        try:
-            from .batch import shutdown_all_coordinators
-            from .vision.vlm_batch import shutdown_all_vlm_coordinators
+        # Startup: opt-in session auth manager
+        if settings.session_auth_enabled:
+            os.environ.setdefault("SESSION_PROVIDER", settings.session_provider)
+            os.environ.setdefault("SESSION_REDIS_URL", settings.redis_url)
+            os.environ.setdefault(
+                "SESSION_DEFAULT_TTL_HOURS", str(settings.session_ttl_hours)
+            )
+            from .auth.session import session_auth
 
-            await shutdown_all_coordinators()
-            await shutdown_all_vlm_coordinators()
-        except ImportError:
-            pass  # Batch module may not be available
+            await session_auth.start()
+        try:
+            yield
+        finally:
+            # Shutdown - cleanup batch coordinators
+            if settings.session_auth_enabled:
+                try:
+                    from .auth.session import session_auth
+
+                    await session_auth.stop()
+                except Exception:
+                    pass
+            try:
+                from .batch import shutdown_all_coordinators
+                from .vision.vlm_batch import shutdown_all_vlm_coordinators
+
+                await shutdown_all_coordinators()
+                await shutdown_all_vlm_coordinators()
+            except ImportError:
+                pass  # Batch module may not be available
 
     application = FastAPI(title="MLX Batch Server", lifespan=lifespan)
 
     # Add request/response logging middleware
     application.add_middleware(RequestResponseLoggingMiddleware)
+
+    # Opt-in rate limiting (added BEFORE logging so it fires earlier in LIFO chain)
+    if settings.rate_limit_enabled:
+        from .auth.rate_limit import RateLimitMiddleware
+
+        application.add_middleware(
+            RateLimitMiddleware,
+            requests_per_minute=settings.rate_limit_per_minute,
+            window_size=settings.rate_limit_window_seconds,
+            concurrent_limit=settings.rate_limit_concurrent,
+            exempt_paths=settings.get_rate_limit_exempt_paths(),
+        )
 
     # Include all API routes
     application.include_router(api_router)
