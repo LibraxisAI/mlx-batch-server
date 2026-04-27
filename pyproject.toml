@@ -72,6 +72,10 @@ operator = [
     "python-multipart",
     "ruamel.yaml",
 ]
+auth = [
+    "redis>=5.0",
+    "pyjwt>=2.8",
+]
 
 [dependency-groups]
 dev = [
@@ -191,6 +195,15 @@ ignore = [
 "src/mlx_batch_server/images/schema.py" = ["ARG002"]
 # Entry point - lazy imports for fast --help, compat import must be first
 "src/mlx_batch_server/main.py" = ["PLC0415", "I001"]
+# Auth surface - lazy redis/session imports keep optional deps optional
+"src/mlx_batch_server/auth/api_keys.py" = ["PLC0415", "PLR0911"]
+"src/mlx_batch_server/auth/hmac.py" = ["PLC0415"]
+"src/mlx_batch_server/auth/session.py" = ["PLC0415"]
+"src/mlx_batch_server/auth/rate_limit.py" = ["PLC0415", "PLR0912", "PLR0915"]
+"src/mlx_batch_server/auth/dependency.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/auth/router_access.py" = ["PLC0415", "PLR0911"]
+"src/mlx_batch_server/health/ready.py" = ["PLC0415"]
+"src/mlx_batch_server/routers.py" = ["PLC0415"]
 # Compat module - monkeypatch jieba to avoid pkg_resources deprecation
 "src/mlx_batch_server/utils/compat.py" = ["PLC0415", "PLR0915", "PLR0402", "PTH120", "B904"]
 
@@ -202,7 +215,8 @@ docstring-code-format = true
 # === Bandit security configuration ===
 [tool.bandit]
 exclude_dirs = ["tests", "examples", ".venv"]
-skips = ["B101", "B104", "B311", "B605", "B607"]  # assert, 0.0.0.0, random, os.system (jieba compat)
+# B110 = try/except/pass — intentional in Redis/file best-effort fallback paths
+skips = ["B101", "B104", "B110", "B311", "B605", "B607"]  # assert, 0.0.0.0, try/except/pass, random, os.system (jieba compat)
 
 # === Mypy configuration ===
 [tool.mypy]

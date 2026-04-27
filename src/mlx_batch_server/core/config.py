@@ -216,6 +216,101 @@ class Settings(BaseSettings):
         description="Comma-separated model IDs to keep always loaded (never evict)",
     )
 
+    # === Auth Core ===
+    # 0 = open (no auth, default), 2 = HMAC/session/api_key, 3 = session-only.
+    # Level 1 is deprecated and silently treated as 2 by the dependency.
+    security_level: int = Field(
+        default=0,
+        description="Auth gate level. 0=open, 2=hmac/session/api_key, 3=session-only",
+    )
+    session_auth_enabled: bool = Field(
+        default=False,
+        description="Enable /auth/* session lifecycle and bearer-token validation",
+    )
+    session_provider: str = Field(
+        default="memory",
+        description='Session backend: "memory" (default) or "redis"',
+    )
+    session_ttl_hours: int = Field(
+        default=24,
+        description="Default session TTL in hours",
+    )
+    api_key: str | None = Field(
+        default=None,
+        description="Static admin API key (None = disabled)",
+    )
+    api_key_header: str = Field(
+        default="x-api-key",
+        description="Header name carrying the API key",
+    )
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis URL used by api_keys/hmac/sessions/rate-limit when enabled",
+    )
+
+    # === Rate Limiting ===
+    rate_limit_enabled: bool = Field(
+        default=False,
+        description="Enable global RateLimitMiddleware (opt-in)",
+    )
+    rate_limit_per_minute: int = Field(
+        default=60,
+        description="Max requests per window per client",
+    )
+    rate_limit_window_seconds: int = Field(
+        default=60,
+        description="Rate limit window in seconds",
+    )
+    rate_limit_concurrent: int = Field(
+        default=10,
+        description="Max concurrent in-flight requests per client",
+    )
+    rate_limit_exempt_paths: str = Field(
+        default="/,/health,/v1/ready,/metrics",
+        description="Comma-separated paths exempt from rate limiting",
+    )
+
+    # === Access Registration ===
+    access_registration_secret: str | None = Field(
+        default=None,
+        description="HMAC secret for /access registration tokens (None = /access disabled)",
+    )
+    access_registration_hashes: str = Field(
+        default="",
+        description="JSON array or CSV of pre-authorized registration token hashes",
+    )
+    access_rate_limit_per_minute: int = Field(
+        default=5,
+        description="Max /access issuance attempts per minute per IP",
+    )
+    access_max_ttl_hours: int = Field(
+        default=336,
+        description="Max TTL (hours) for issued API keys (default: 14 days)",
+    )
+
+    # === HMAC ===
+    mlx_batch_hmac_secrets_file: str | None = Field(
+        default=None,
+        description="Override path for HMAC secrets file (None = XDG default)",
+    )
+    hmac_timestamp_tolerance: int = Field(
+        default=300,
+        description="HMAC request timestamp tolerance window in seconds",
+    )
+
+    debug: bool = Field(
+        default=False,
+        description="Debug mode flag (downgrades a few error logs to warnings)",
+    )
+
+    def get_rate_limit_exempt_paths(self) -> list[str]:
+        """Parse rate_limit_exempt_paths into a list."""
+        return [
+            path.strip()
+            for path in self.rate_limit_exempt_paths.split(",")
+            if path.strip()
+        ]
+
     def get_pinned_models(self) -> list[str]:
         """Get list of pinned model IDs that should never be evicted."""
         if not self.pinned_models:
