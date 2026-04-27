@@ -392,14 +392,15 @@ def _load_draft_runtime(
         _fix_tokenizer_eos(draft_tokenizer)
 
         if draft_tokenizer.vocab_size != tokenizer.vocab_size:
-            logger.warn(
-                f"Draft model({draft_model_id}) tokenizer does not match model tokenizer."
+            logger.warning(
+                "Draft model(%s) tokenizer does not match model tokenizer.",
+                draft_model_id,
             )
 
-        logger.info(f"Loaded draft model: {draft_model_id}")
+        logger.info("Loaded draft model: %s", draft_model_id)
         return draft_model, draft_tokenizer
     except Exception as e:
-        logger.error(f"Failed to load draft model {draft_model_id}: {e}")
+        logger.error("Failed to load draft model %s: %s", draft_model_id, e)
         return None, None
 
 

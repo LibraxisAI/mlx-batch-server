@@ -19,16 +19,19 @@ router = APIRouter(tags=["chat—completions"])
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def create_chat_completion(request: ChatCompletionRequest):
     """Create a chat completion"""
+    extra_params = request.get_extra_params()
+    draft_model_id = extra_params.get("draft_model_id") or extra_params.get("draft_model")
+    adapter_path = extra_params.get("adapter_path")
     if not request.stream:
         async with endpoint_runtime_session(
             model_id=request.model,
-            adapter_path=request.get_extra_params().get("adapter_path"),
-            draft_model_id=request.get_extra_params().get("draft_model"),
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
         ):
             text_model = _create_text_model(
                 request.model,
-                request.get_extra_params().get("adapter_path"),
-                request.get_extra_params().get("draft_model"),
+                adapter_path,
+                draft_model_id,
             )
             completion = text_model.generate(request)
             return JSONResponse(content=completion.model_dump(exclude_none=True))
@@ -36,13 +39,13 @@ async def create_chat_completion(request: ChatCompletionRequest):
     async def event_generator() -> Generator[str, None, None]:
         async with endpoint_runtime_session(
             model_id=request.model,
-            adapter_path=request.get_extra_params().get("adapter_path"),
-            draft_model_id=request.get_extra_params().get("draft_model"),
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
         ):
             text_model = _create_text_model(
                 request.model,
-                request.get_extra_params().get("adapter_path"),
-                request.get_extra_params().get("draft_model"),
+                adapter_path,
+                draft_model_id,
             )
             for chunk in text_model.generate_stream(request):
                 yield f"data: {json.dumps(chunk.model_dump(exclude_none=True))}\n\n"

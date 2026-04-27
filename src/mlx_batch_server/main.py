@@ -15,6 +15,10 @@ import re
 DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:*,http://127.0.0.1:*,http://100.*:*,https://100.*:*"
 )
+# NOTE: The `100.*` wildcard covers Tailscale/CGNAT address ranges.
+# In a tightly controlled environment this is acceptable for local/tailnet use;
+# override via the MLX_BATCH_CORS env variable to restrict to localhost-only
+# (e.g. "http://localhost:*,http://127.0.0.1:*") in any internet-exposed deployment.
 
 
 def _build_cors_config(cors_origins: str) -> tuple[list[str], str | None]:

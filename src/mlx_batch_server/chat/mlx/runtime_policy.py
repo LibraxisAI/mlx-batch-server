@@ -35,6 +35,7 @@ from .wrapper_cache import (
 _endpoint_runtime_condition = asyncio.Condition()
 _active_runtime_key: WrapperCacheKey | None = None
 _active_runtime_count = 0
+_switch_in_progress = False
 
 
 def _normalized_batch_models() -> list[str]:
@@ -121,8 +122,15 @@ async def endpoint_runtime_session(
     adapter_path: str | None = None,
     draft_model_id: str | None = None,
 ):
-    """Reserve the endpoint for one runtime key while a request is in flight."""
-    global _active_runtime_key, _active_runtime_count
+    """Reserve the endpoint for one runtime key while a request is in flight.
+
+    The expensive runtime switch (model unloads/reloads) is performed *outside*
+    the condition lock so that concurrent requests for the same target key can
+    still proceed through the session gate without being blocked by ongoing I/O.
+    A separate ``_switch_in_progress`` flag serialises the switch itself while
+    allowing ``asyncio.Condition.wait()`` to release the lock for other waiters.
+    """
+    global _active_runtime_key, _active_runtime_count, _switch_in_progress
 
     target_key = normalize_runtime_key(
         model_id=model_id,
@@ -130,10 +138,36 @@ async def endpoint_runtime_session(
         draft_model_id=draft_model_id,
     )
 
+    need_switch = False
     async with _endpoint_runtime_condition:
-        while _active_runtime_key is not None and _active_runtime_key != target_key:
+        while _switch_in_progress or (
+            _active_runtime_key is not None and _active_runtime_key != target_key
+        ):
             await _endpoint_runtime_condition.wait()
 
+        if _active_runtime_key is None:
+            need_switch = True
+            _switch_in_progress = True
+        else:
+            _active_runtime_count += 1
+
+    if need_switch:
+        switched_ok = False
+        try:
+            switch_result: dict[str, Any] = await ensure_single_endpoint_llm_runtime(
+                model_id=model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
+            switched_ok = True
+        finally:
+            async with _endpoint_runtime_condition:
+                _switch_in_progress = False
+                if switched_ok:
+                    _active_runtime_key = target_key
+                    _active_runtime_count = 1
+                _endpoint_runtime_condition.notify_all()
+    else:
         switch_result = {
             "switched": False,
             "target_model_id": target_key.model_id,
@@ -141,16 +175,6 @@ async def endpoint_runtime_session(
             "previous_batch_models": [],
             "evicted_models": [],
         }
-        if _active_runtime_key is None:
-            switch_result = await ensure_single_endpoint_llm_runtime(
-                model_id=model_id,
-                adapter_path=adapter_path,
-                draft_model_id=draft_model_id,
-            )
-            _active_runtime_key = target_key
-            _active_runtime_count = 1
-        else:
-            _active_runtime_count += 1
 
     try:
         yield switch_result

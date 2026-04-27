@@ -35,9 +35,24 @@ def _spctl_status(path: Path) -> str:
 
 
 def main() -> int:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        tools = manifest["tools"]
+    except FileNotFoundError:
+        print(f"ERROR: Manifest file not found: {MANIFEST}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: Invalid JSON in manifest {MANIFEST}: {exc}", file=sys.stderr)
+        return 1
+    except KeyError:
+        print(
+            f"ERROR: Manifest {MANIFEST} is missing required 'tools' key",
+            file=sys.stderr,
+        )
+        return 1
+
     failed = False
-    for tool in manifest["tools"]:
+    for tool in tools:
         path = ROOT / tool["path"]
         exists = path.exists()
         checksum = _sha256(path) if exists else ""
