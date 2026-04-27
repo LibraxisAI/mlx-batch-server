@@ -1,9 +1,10 @@
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from mlx_batch_server.auth.dependency import verify_auth
 from mlx_batch_server.chat.anthropic.anthropic_messages_adapter import (
     AnthropicMessagesAdapter,
 )
@@ -52,6 +53,7 @@ async def list_anthropic_models(
         title="Limit",
         description="Number of items to return per page. Defaults to 20. Ranges from 1 to 1000.",
     ),
+    _auth: dict = Depends(verify_auth),
 ) -> AnthropicModelList:
     """List available models in Anthropic format."""
     return get_models_service().list_models(
@@ -61,7 +63,10 @@ async def list_anthropic_models(
 
 @router.post("/messages", response_model=MessagesResponse)
 @router.post("/v1/messages", response_model=MessagesResponse)
-async def create_message(request: MessagesRequest):
+async def create_message(
+    request: MessagesRequest,
+    _auth: dict = Depends(verify_auth),
+) -> JSONResponse | StreamingResponse:
     """Create an Anthropic Messages API completion"""
     if not request.stream:
         async with endpoint_runtime_session(request.model):

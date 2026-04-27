@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ..auth.dependency import verify_auth
 from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..chat.mlx.runtime_policy import endpoint_runtime_session
 from .embeddings_service import get_embeddings_service
@@ -11,7 +12,10 @@ embeddings_service = get_embeddings_service()
 
 @router.post("/embeddings", response_model=EmbeddingResponse)
 @router.post("/v1/embeddings", response_model=EmbeddingResponse)
-async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+async def create_embeddings(
+    request: EmbeddingRequest,
+    _auth: dict = Depends(verify_auth),
+) -> EmbeddingResponse:
     """Generate embeddings for text input.
 
     This endpoint generates vector representations of input text,

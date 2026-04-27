@@ -3,9 +3,10 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ..auth.dependency import verify_auth
 from ..chat.mlx.runtime_aliases import (
     normalize_runtime_model_id,
     normalize_runtime_path,
@@ -243,7 +244,10 @@ def unload_visual_embedder(
 
 @router.post("/visual-embeddings")
 @router.post("/v1/visual-embeddings")
-async def create_visual_embeddings(request: VisualEmbeddingRequest) -> dict[str, Any]:
+async def create_visual_embeddings(
+    request: VisualEmbeddingRequest,
+    _auth: dict = Depends(verify_auth),
+) -> dict[str, Any]:
     if not any([request.images, request.texts, request.pdf_path]):
         raise HTTPException(
             status_code=400, detail="Provide images, texts, or pdf_path."
@@ -328,7 +332,10 @@ async def create_visual_embeddings(request: VisualEmbeddingRequest) -> dict[str,
 
 @router.post("/maxsim")
 @router.post("/v1/maxsim")
-async def compute_maxsim(request: MaxSimRequest) -> dict[str, float]:
+async def compute_maxsim(
+    request: MaxSimRequest,
+    _auth: dict = Depends(verify_auth),
+) -> dict[str, float]:
     try:
         score = Qwen3VLEmbedder.maxsim_score(
             request.query_embedding, request.doc_embedding

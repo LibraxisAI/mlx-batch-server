@@ -46,6 +46,9 @@ project uses semver.
 
 ### Security
 
+- Business inference endpoints (`/v1/responses`, `/v1/chat/completions`,
+  `/v1/embeddings`, etc.) now respect `SECURITY_LEVEL` — full inference surface
+  requires auth when enabled.
 - Inference admin endpoints (`/api/admin/models/*`, `/api/admin/summary`,
   `/api/admin/logs/tail`, `/admin`) now respect `SECURITY_LEVEL` — model
   load/unload/alias and log access require auth when enabled. Closes a real
