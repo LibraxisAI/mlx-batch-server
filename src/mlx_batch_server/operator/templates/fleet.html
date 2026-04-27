@@ -1,0 +1,21 @@
+{% extends "_layout.html" %}
+{% block title %}MLX Batch Server Operator · Fleet{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <h1>Inference status</h1>
+  <span class="spacer"></span>
+  <span class="htmx-indicator muted">refreshing…</span>
+  <button class="ghost"
+          hx-get="{{ base }}/_partials/fleet"
+          hx-target="#fleet-cards"
+          hx-swap="innerHTML"
+          hx-indicator="closest .toolbar">refresh now</button>
+</div>
+<div id="fleet-cards"
+     class="grid"
+     hx-get="{{ base }}/_partials/fleet"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML">
+  <div class="card"><div class="muted">Loading inference status…</div></div>
+</div>
+{% endblock %}

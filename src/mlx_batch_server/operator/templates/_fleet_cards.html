@@ -1,0 +1,25 @@
+{% if not ports %}
+<div class="card"><div class="muted">No inference status available.</div></div>
+{% endif %}
+{% for entry in ports %}
+<div class="card" data-port="{{ entry.port }}">
+  <h2>
+    <span>{{ entry.service }} · :{{ entry.port }}</span>
+    {% if entry.healthy %}
+    <span class="badge ok">healthy</span>
+    {% else %}
+    <span class="badge err">down</span>
+    {% endif %}
+  </h2>
+  <div class="row"><span class="k">model</span><span class="v">{{ entry.model_id or '—' }}</span></div>
+  <div class="row"><span class="k">base url</span><span class="v">{{ inference.base_url if inference else '—' }}</span></div>
+  <div class="row"><span class="k">RSS</span><span class="v">{{ format_bytes(entry.rss_bytes) }}</span></div>
+  <div class="row"><span class="k">MLX active</span><span class="v">{{ format_bytes(entry.mlx_bytes) }}</span></div>
+  <div class="row"><span class="k">requests</span><span class="v">{{ entry.requests_total or 0 }}</span></div>
+  <div class="row"><span class="k">since</span><span class="v">{{ entry.uptime_since or '—' }}</span></div>
+  <div class="row"><span class="k">tokens/s</span><span class="v">{{ entry.tokens_per_sec if entry.tokens_per_sec is not none else '—' }}</span></div>
+  {% if entry.error %}
+  <div class="row"><span class="k">error</span><span class="v">{{ entry.error }}</span></div>
+  {% endif %}
+</div>
+{% endfor %}
