@@ -181,8 +181,12 @@ class OpenAIAdapter:
         if request.response_format and request.response_format.json_schema:
             json_schema = request.response_format.json_schema.schema_def
 
-        enable_prompt_cache = extra_body.get("enable_prompt_cache")
-        if enable_prompt_cache is None:
+        raw_prompt_cache = extra_body.get("enable_prompt_cache")
+        if isinstance(raw_prompt_cache, bool):
+            enable_prompt_cache = raw_prompt_cache
+        elif isinstance(raw_prompt_cache, int):
+            enable_prompt_cache = raw_prompt_cache != 0
+        else:
             enable_prompt_cache = True
 
         return {
@@ -192,7 +196,7 @@ class OpenAIAdapter:
             "sampler": sampler_config,
             "top_logprobs": request.top_logprobs if request.logprobs else None,
             "template_kwargs": template_kwargs,
-            "enable_prompt_cache": bool(enable_prompt_cache),
+            "enable_prompt_cache": enable_prompt_cache,
             "repetition_penalty": request.presence_penalty,
             "json_schema": json_schema,
         }

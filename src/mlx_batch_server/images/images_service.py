@@ -199,7 +199,7 @@ class ImagesService:
         generated_images = []
         generator = self._get_generator(model_name=request.model or "flux")
 
-        for i in range(request.n or 1):
+        for i in range(1 if request.n is None else request.n):
             # Generate unique identifier for this image
             uid = f"{int(time.time())}_{i}"
             output_path = self._get_output_path(uid)
