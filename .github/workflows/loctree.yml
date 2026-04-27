@@ -16,10 +16,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/loct
-          key: loctree-0.8.4
+          key: loctree-0.8.16
 
       - name: Install loctree
-        run: command -v loct || cargo install loctree --version 0.8.4
+        run: command -v loct || cargo install loctree --version 0.8.16
 
       - name: Health check
         run: |
