@@ -14,7 +14,8 @@
 	benchmark-cli benchmark-quick benchmark-build setup install-dev install-hooks lint-fix format-check \
 	security pre-commit pre-push test-fast test-cov test-responses loctree twins build \
 	docker-build docker-run operator-tools load unload list ps status batch-stats embeddings reranker \
-	vision stt tts
+	vision stt tts hf-rewrite hf-rewrite-apply hf-backfill-inference hf-backfill-inference-apply \
+	hf-backfill-footer hf-backfill-footer-apply
 .DEFAULT_GOAL := help
 
 # === Configuration ===
@@ -164,6 +165,35 @@ twins: ## Check for duplicate code
 
 operator-tools: ## Verify bundled loct/aicx/prview operator tools
 	$(PYTHON) scripts/verify_operator_tools.py
+
+# === HF Model Card Publishing ===
+# Tooling for keeping LibraxisAI model cards on Hugging Face consistent.
+# All commands default to dry-run; the *-apply variants actually push.
+# Authentication: run `hf auth login` once before using *-apply targets.
+#
+# Optional flags forwarded to the underlying scripts:
+#   HF_LIMIT=5            -- only process the first N models
+#   HF_ONLY="Bielik Qwen" -- substring filter on model IDs
+
+HF_FLAGS := $(if $(HF_LIMIT),--limit $(HF_LIMIT)) $(if $(HF_ONLY),--only $(HF_ONLY))
+
+hf-rewrite: ## Dry-run: rewrite all LibraxisAI HF model cards from canonical template
+	$(PYTHON) scripts/rewrite_hf_model_cards.py $(HF_FLAGS)
+
+hf-rewrite-apply: ## Push: rewrite all LibraxisAI HF model cards from canonical template
+	$(PYTHON) scripts/rewrite_hf_model_cards.py --apply $(HF_FLAGS)
+
+hf-backfill-inference: ## Dry-run: backfill `## Inference tested on` link into existing cards
+	$(PYTHON) scripts/backfill_hf_inference_section.py $(HF_FLAGS)
+
+hf-backfill-inference-apply: ## Push: backfill `## Inference tested on` link into existing cards
+	$(PYTHON) scripts/backfill_hf_inference_section.py --apply $(HF_FLAGS)
+
+hf-backfill-footer: ## Dry-run: backfill canonical Vibecrafted footer into existing cards
+	$(PYTHON) scripts/backfill_hf_canonical_footer.py $(HF_FLAGS)
+
+hf-backfill-footer-apply: ## Push: backfill canonical Vibecrafted footer into existing cards
+	$(PYTHON) scripts/backfill_hf_canonical_footer.py --apply $(HF_FLAGS)
 
 # === Model Management (LMS-style) ===
 MODEL ?= mlx-community/Qwen2.5-7B-Instruct-4bit

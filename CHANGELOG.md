@@ -23,6 +23,17 @@ project uses semver.
   python-multipart, ruamel.yaml).
 - Integration test suite (`tests/integration/`) covering inference + operator
   + auth + loopback playground proxy across open and gated modes.
+- HF model card publishing toolkit:
+  - `templates/HF_MODEL_CARD.md` canonical card template (fixed
+    `## Inference tested on` section, canonical Vibecrafted footer).
+  - `scripts/rewrite_hf_model_cards.py` (commit `fcfaf1c`) — full rewrite of
+    every LibraxisAI HF card from the template.
+  - `scripts/backfill_hf_inference_section.py` — conservative backfill of the
+    `## Inference tested on` link into cards that lack it.
+  - `scripts/backfill_hf_canonical_footer.py` — conservative backfill of the
+    canonical Vibecrafted footer into cards that lack any form of it.
+  - Makefile targets: `hf-rewrite`, `hf-backfill-inference`,
+    `hf-backfill-footer` (dry-run by default; `*-apply` variants push).
 
 ### Changed
 
