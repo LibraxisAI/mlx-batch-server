@@ -264,6 +264,44 @@ Two health surfaces, used for different purposes:
 
 ---
 
+## HF Model Cards
+
+Tooling for keeping the LibraxisAI Hugging Face model cards consistent. Sources of truth:
+
+- `templates/HF_MODEL_CARD.md` — canonical card template with placeholders, fixed `## Inference tested on` section pointing here, and the canonical Vibecrafted footer.
+- `scripts/rewrite_hf_model_cards.py` — full rewrite of every LibraxisAI card from the template, preserving metrics and base lineage when present.
+- `scripts/backfill_hf_inference_section.py` — conservative patch that only adds `## Inference tested on` to cards that don't have it yet.
+- `scripts/backfill_hf_canonical_footer.py` — conservative patch that only appends the canonical Vibecrafted footer to cards that don't have any form of it yet.
+
+All scripts default to **dry-run** (list which cards would change without pushing). Add `--apply` to actually push, or use the `*-apply` Make targets:
+
+```bash
+# One-time auth
+hf auth login
+
+# Dry-run a full rewrite
+make hf-rewrite
+
+# Push a full rewrite (idempotent commit message: "card: full rewrite from canonical template")
+make hf-rewrite-apply
+
+# Backfill only the inference section across cards that lack it
+make hf-backfill-inference         # dry-run
+make hf-backfill-inference-apply   # push
+
+# Backfill only the canonical footer across cards that lack any form of it
+make hf-backfill-footer            # dry-run
+make hf-backfill-footer-apply      # push
+
+# Filters (work with all the above)
+make hf-rewrite HF_LIMIT=5
+make hf-backfill-inference HF_ONLY="Bielik Qwen"
+```
+
+The backfill scripts are intentionally conservative: they never delete content, never replace existing variants, and skip any card that already has the target section. Use `hf-rewrite` when you want a full normalisation pass.
+
+---
+
 ## Development
 
 ```bash
