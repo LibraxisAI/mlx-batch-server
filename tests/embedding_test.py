@@ -74,11 +74,13 @@ def test_embeddings_multiple_texts(openai_client):
         for i, embedding_data in enumerate(response.data):
             assert (
                 embedding_data.embedding is not None
-            ), f"Embedding {i+1} should not be empty"
+            ), f"Embedding {i + 1} should not be empty"
             assert (
                 len(embedding_data.embedding) > 0
-            ), f"Embedding {i+1} should contain vector data"
-            assert embedding_data.index == i, f"Index for embedding {i+1} should be {i}"
+            ), f"Embedding {i + 1} should contain vector data"
+            assert (
+                embedding_data.index == i
+            ), f"Index for embedding {i + 1} should be {i}"
 
     except Exception as e:
         logger.error(f"Test error: {e!s}")

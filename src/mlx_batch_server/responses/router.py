@@ -10,7 +10,7 @@ Features:
 - SSE streaming with event logging
 - Background response processing
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations
@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..auth.dependency import verify_auth
 from ..utils.logger import logger
 from .adapter import ResponsesAdapter
 from .context_builder import build_context_from_previous_response
@@ -61,6 +62,7 @@ async def create_response(
     request: Request,
     body: ResponseRequest,
     authorization: str | None = Header(default=None),
+    _auth: dict = Depends(verify_auth),
 ) -> JSONResponse | StreamingResponse:
     """
     Create a response using the Responses API.
@@ -197,6 +199,7 @@ async def get_response(
     request: Request,
     response_id: str,
     authorization: str | None = Header(default=None),
+    _auth: dict = Depends(verify_auth),
 ) -> JSONResponse:
     """
     Retrieve a stored response by ID.
@@ -231,6 +234,7 @@ async def delete_response(
     request: Request,
     response_id: str,
     authorization: str | None = Header(default=None),
+    _auth: dict = Depends(verify_auth),
 ) -> JSONResponse:
     """
     Delete a stored response.
@@ -280,6 +284,7 @@ async def cancel_response(
     request: Request,
     response_id: str,
     authorization: str | None = Header(default=None),
+    _auth: dict = Depends(verify_auth),
 ) -> JSONResponse:
     """
     Cancel an in-progress response.
@@ -326,6 +331,7 @@ async def list_input_items(
     request: Request,
     response_id: str,
     authorization: str | None = Header(default=None),
+    _auth: dict = Depends(verify_auth),
 ) -> JSONResponse:
     """
     List input items for a response.

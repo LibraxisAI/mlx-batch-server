@@ -2,6 +2,7 @@
 
 from mlx_batch_server.utils.harmony_parser import (
     HarmonyStreamingParser,
+    ReasoningStreamingParser,
     filter_harmony_tokens,
     is_harmony_model,
     parse_harmony_output,
@@ -98,12 +99,12 @@ class TestHarmonyStreamingParser:
 
         # Analysis channel
         parser.process_delta("<|channel|>analysis<|message|>")
-        event_type, clean = parser.process_delta("Thinking")
+        event_type, _clean = parser.process_delta("Thinking")
         assert event_type == "reasoning"
 
         # Switch to final
         parser.process_delta("<|channel|>final<|message|>")
-        event_type, clean = parser.process_delta("Answer")
+        event_type, _clean = parser.process_delta("Answer")
         assert event_type == "output"
 
     def test_accumulates_full_text(self):
@@ -140,11 +141,11 @@ class TestHarmonyStreamingParser:
         parser = HarmonyStreamingParser()
 
         # Send partial token
-        event_type, clean = parser.process_delta("Hello<|chan")
+        _event_type, clean = parser.process_delta("Hello<|chan")
         assert clean == "Hello"  # Partial token buffered
 
         # Complete the token
-        event_type, clean = parser.process_delta("nel|>final")
+        _event_type, clean = parser.process_delta("nel|>final")
         assert parser.current_channel == "final"
 
     def test_fragmented_channel_name(self):
@@ -178,11 +179,36 @@ class TestHarmonyStreamingParser:
         assert parser._awaiting_channel_name is True
 
         # Chunk 2: channel name + message marker
-        event_type, clean = parser.process_delta("final<|message|>Hello")
+        _event_type, clean = parser.process_delta("final<|message|>Hello")
         assert parser.current_channel == "final"
         assert parser._awaiting_channel_name is False
         # "Hello" should be the output
         assert "Hello" in clean
+
+
+class TestReasoningStreamingParser:
+    """Regression tests for Qwen-style reasoning stream splitting."""
+
+    def test_reclassified_output_is_not_reemitted_as_reasoning(self):
+        """Already-sent output bytes must not duplicate on reasoning SSE."""
+        parser = ReasoningStreamingParser()
+
+        assert parser.process_delta("Draft answer") == [("output", "Draft answer")]
+
+        events = parser.process_delta("</think>\nFinal answer")
+
+        assert ("reasoning", "Draft answer") not in events
+        assert events == [("output", "Final answer")]
+
+    def test_near_identical_channel_reclassification_is_suppressed(self):
+        """Long near-identical text should not appear on both channels."""
+        parser = ReasoningStreamingParser()
+        repeated = "The model explains the same content twice. " * 12
+
+        assert parser.process_delta(repeated) == [("output", repeated)]
+        events = parser.process_delta("</think>")
+
+        assert events == []
 
 
 class TestParseHarmonyOutput:

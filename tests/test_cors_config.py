@@ -1,5 +1,4 @@
-import pytest
-from httpx import ASGITransport, AsyncClient
+from fastapi.testclient import TestClient
 
 from mlx_batch_server.main import _build_cors_config, create_app
 
@@ -15,18 +14,29 @@ def test_build_cors_config_supports_wildcards():
     assert r"fold\-antares\.ts\.net" in regex
 
 
-@pytest.mark.asyncio
-async def test_cors_allows_tailnet_wildcards(monkeypatch):
+def test_default_cors_allows_tailscale_100_space(monkeypatch):
+    monkeypatch.delenv("MLX_BATCH_CORS", raising=False)
+    app = create_app()
+
+    cors = [
+        middleware
+        for middleware in app.user_middleware
+        if middleware.cls.__name__ == "CORSMiddleware"
+    ]
+
+    assert cors
+    assert "100\\." in (cors[0].kwargs.get("allow_origin_regex") or "")
+
+
+def test_cors_allows_tailnet_wildcards(monkeypatch):
     monkeypatch.setenv(
         "MLX_BATCH_CORS",
         "https://*.fold-antares.ts.net,http://*.fold-antares.ts.net",
     )
     app = create_app()
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.options(
+    with TestClient(app) as client:
+        response = client.options(
             "/v1/models",
             headers={
                 "Origin": "https://mgbook16.fold-antares.ts.net",

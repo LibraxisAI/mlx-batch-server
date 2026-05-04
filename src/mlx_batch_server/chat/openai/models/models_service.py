@@ -1,5 +1,6 @@
 import importlib
 import json
+import re
 
 from huggingface_hub import CachedRepoInfo, scan_cache_dir
 
@@ -11,6 +12,7 @@ MODEL_REMAPPING = {
     "phi-msft": "phixtral",
     "falcon_mamba": "mamba",
 }
+_SAFE_MODEL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ModelCacheScanner:
@@ -46,9 +48,17 @@ class ModelCacheScanner:
             model_type = MODEL_REMAPPING.get(model_type, model_type)
             if not model_type:
                 return None
+            if not _SAFE_MODEL_TYPE_RE.fullmatch(model_type):
+                logger.warning(
+                    "Rejected unsupported model_type import path: %s",
+                    model_type,
+                )
+                return None
 
             # Try to import the model architecture module
-            arch = importlib.import_module(f"mlx_lm.models.{model_type}")
+            arch = importlib.import_module(  # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import - regex-whitelisted and constrained to mlx_lm.models.*
+                f"mlx_lm.models.{model_type}"
+            )
             return arch.Model, arch.ModelArgs
 
         except ImportError:
@@ -224,8 +234,13 @@ class ModelsService:
         # Lazy import to avoid circular dependencies and startup overhead
         from ...mlx.wrapper_cache import wrapper_cache
 
-        # Check if already loaded
-        already_loaded = wrapper_cache.is_model_loaded(model_id)
+        # Check exact runtime residency, not only the coarse model id. Operator-facing
+        # status must match the concrete cache key the runtime actually uses.
+        already_loaded = wrapper_cache.is_runtime_loaded(
+            model_id=model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
 
         # Load model (get_wrapper handles caching)
         wrapper_cache.get_wrapper(
@@ -245,11 +260,19 @@ class ModelsService:
             "cache_info": wrapper_cache.get_cache_info(),
         }
 
-    def unload_model(self, model_id: str | None = None) -> dict:
+    def unload_model(
+        self,
+        model_id: str | None = None,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+        release_runtime: bool = True,
+    ) -> dict:
         """Unload a model from memory.
 
         Args:
             model_id: Model ID to unload. If None, unloads all models.
+            release_runtime: When False, keep the shared runtime resident.
 
         Returns:
             Dict with unload status and cache info
@@ -260,14 +283,46 @@ class ModelsService:
         unloaded_models = []
 
         if model_id:
+            exact_runtime = adapter_path is not None or draft_model_id is not None
+            display_id = model_id
+            if not release_runtime:
+                runtime_loaded = (
+                    wrapper_cache.is_runtime_loaded(
+                        model_id,
+                        adapter_path=adapter_path,
+                        draft_model_id=draft_model_id,
+                    )
+                    if exact_runtime
+                    else wrapper_cache.is_model_loaded(model_id)
+                )
+                if runtime_loaded:
+                    unloaded_models.append(display_id)
+                    status = "detached"
+                    message = (
+                        f"Model {display_id} detached while shared runtime stayed hot"
+                    )
+                else:
+                    status = "not_found"
+                    message = f"Model {display_id} was not loaded"
+                return {
+                    "status": status,
+                    "message": message,
+                    "unloaded_models": unloaded_models,
+                    "cache_info": wrapper_cache.get_cache_info(),
+                }
+
             # Unload specific model
-            if wrapper_cache.unload_model(model_id):
-                unloaded_models.append(model_id)
+            if wrapper_cache.unload_model(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            ):
+                unloaded_models.append(display_id)
                 status = "unloaded"
-                message = f"Model {model_id} unloaded successfully"
+                message = f"Model {display_id} unloaded successfully"
             else:
                 status = "not_found"
-                message = f"Model {model_id} was not loaded"
+                message = f"Model {display_id} was not loaded"
         else:
             # Unload all models
             unloaded_models = wrapper_cache.get_loaded_models()

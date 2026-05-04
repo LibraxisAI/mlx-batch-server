@@ -14,13 +14,18 @@ from PIL import Image
 from safetensors import safe_open
 from transformers import AutoProcessor
 
+from ..chat.mlx.model_types import reset_request_local_runtime_state
+from ..chat.mlx.runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+    resolve_runtime_target,
+)
+from ..chat.mlx.wrapper_cache import wrapper_cache
 from ..utils.logger import logger
 
 try:
-    from mlx_vlm import load as load_vlm
     from mlx_vlm.utils import get_model_path
 except Exception as exc:
-    load_vlm = None
     get_model_path = None
     _mlx_vlm_import_error = exc
 else:
@@ -36,6 +41,11 @@ else:
 
 IMAGE_PAD_TOKEN = 151655
 
+# Keep a monkeypatchable seam for tests while resolving the real runtime through
+# the unified wrapper cache.
+get_vlm_backend = wrapper_cache.get_vlm_backend
+vlm_execution = wrapper_cache.vlm_execution
+
 
 @dataclass
 class EmbeddingResult:
@@ -48,14 +58,26 @@ class Qwen3VLEmbedder:
     def __init__(
         self,
         model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
         projection_path: str | None = None,
         processor_id: str | None = None,
     ) -> None:
-        self.model_id = model_id
-        self.projection_path = projection_path or os.environ.get(
-            "QWEN3_VL_PROJECTION_PATH"
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
         )
-        self.processor_id = processor_id or os.environ.get("QWEN3_VL_PROCESSOR_ID")
+        self.model_id = target.model_id
+        self.adapter_path = target.adapter_path
+        self.draft_model_id = target.draft_model_id
+        self.projection_path = normalize_runtime_path(
+            projection_path or os.environ.get("QWEN3_VL_PROJECTION_PATH")
+        )
+        raw_processor_id = processor_id or os.environ.get("QWEN3_VL_PROCESSOR_ID")
+        self.processor_id = (
+            normalize_runtime_model_id(raw_processor_id) if raw_processor_id else None
+        )
 
         self.model: Any | None = None
         self.processor: Any | None = None
@@ -67,11 +89,20 @@ class Qwen3VLEmbedder:
         self._loaded = False
         self._has_vision = False
 
+    def _get_backend(self) -> tuple[Any, Any]:
+        """Resolve the shared resident VLM backend from the unified runtime cache."""
+        return get_vlm_backend(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+            surface="visual",
+        )
+
     def load(self) -> None:
         if self._loaded:
             return
 
-        if load_vlm is None or get_model_path is None:
+        if get_model_path is None:
             raise RuntimeError(
                 "mlx-vlm is required for qwen3_vl visual embeddings."
             ) from _mlx_vlm_import_error
@@ -79,14 +110,8 @@ class Qwen3VLEmbedder:
         model_path = get_model_path(self.model_id)
         self._has_vision = self._detect_vision_assets(model_path)
 
-        try:
-            self.model, self.processor = load_vlm(self.model_id)
-        except Exception as e:
-            raise RuntimeError(
-                "Failed to load qwen3_vl model via mlx-vlm. "
-                "Use a vision-capable MLX model or update mlx-vlm."
-            ) from e
-        if self.model is None or self.processor is None:
+        model, processor = self._get_backend()
+        if model is None or processor is None:
             raise RuntimeError("mlx-vlm returned an empty model/processor")
 
         processor_id = self.processor_id or self.model_id
@@ -94,9 +119,9 @@ class Qwen3VLEmbedder:
             processor_id, trust_remote_code=True
         )
 
-        image_token_id = getattr(self.model.config, "image_token_id", None)
+        image_token_id = getattr(model.config, "image_token_id", None)
         if image_token_id is None:
-            for source in self._processor_sources():
+            for source in self._processor_sources(processor):
                 if source is None:
                     continue
                 image_token_id = getattr(source, "image_token_id", None) or getattr(
@@ -184,15 +209,15 @@ class Qwen3VLEmbedder:
         except Exception:
             return None
 
-    def _get_language_model(self):
-        language_model = self._get_child(self.model, "language_model")
+    def _get_language_model(self, model: Any):
+        language_model = self._get_child(model, "language_model")
         if language_model is None:
             raise RuntimeError("language_model not found in qwen3_vl model")
         inner_model = self._get_child(language_model, "model") or language_model
         return inner_model
 
-    def _get_vision_tower(self):
-        vision_tower = self._get_child(self.model, "vision_tower")
+    def _get_vision_tower(self, model: Any):
+        vision_tower = self._get_child(model, "vision_tower")
         if vision_tower is None:
             raise RuntimeError("vision_tower not found in qwen3_vl model")
         return vision_tower
@@ -209,6 +234,30 @@ class Qwen3VLEmbedder:
         for layer in layers:
             h = layer(h, position_ids=position_ids)
         return norm(h)
+
+    def _count_text_tokens(
+        self,
+        input_ids: mx.array,
+        attention_mask: mx.array | None,
+    ) -> int:
+        if attention_mask is None:
+            return int(input_ids.shape[1])
+        return int(mx.sum(attention_mask).item())
+
+    def _last_token_pool(
+        self,
+        hidden_states: mx.array,
+        attention_mask: mx.array | None,
+    ) -> mx.array:
+        if attention_mask is None:
+            return hidden_states[:, -1, :]
+
+        if bool(mx.all(attention_mask[:, -1]).item()):
+            return hidden_states[:, -1, :]
+
+        sequence_lengths = mx.sum(attention_mask, axis=1) - 1
+        batch_size = hidden_states.shape[0]
+        return hidden_states[mx.arange(batch_size), sequence_lengths]
 
     def _processor_call(self, **kwargs):
         last_error = None
@@ -228,16 +277,16 @@ class Qwen3VLEmbedder:
                 last_error = e
         raise RuntimeError(f"Tokenizer failed for text: {last_error}") from last_error
 
-    def _processor_sources(self):
+    def _processor_sources(self, processor: Any):
         return (
             self.tomoro_processor,
             getattr(self.tomoro_processor, "tokenizer", None),
-            self.processor,
-            getattr(self.processor, "tokenizer", None),
+            processor,
+            getattr(processor, "tokenizer", None),
         )
 
-    def _find_image_token_text(self) -> str | None:
-        for source in self._processor_sources():
+    def _find_image_token_text(self, processor: Any) -> str | None:
+        for source in self._processor_sources(processor):
             if source is None:
                 continue
             image_token = getattr(source, "image_token", None)
@@ -246,12 +295,12 @@ class Qwen3VLEmbedder:
         return None
 
     def _prepare_image_inputs(
-        self, pil_image: Image.Image
+        self, processor: Any, pil_image: Image.Image
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         inputs = self._processor_call(text="", images=[pil_image])
         input_ids = self._to_numpy(inputs["input_ids"])
         if input_ids.size == 0:
-            image_token = self._find_image_token_text()
+            image_token = self._find_image_token_text(processor)
             inputs = self._processor_call(
                 text=image_token or "<|image_pad|>", images=[pil_image]
             )
@@ -287,9 +336,12 @@ class Qwen3VLEmbedder:
         return image_mask, image_positions
 
     def _vision_embeddings(
-        self, pixel_values: np.ndarray, image_grid_thw: np.ndarray
+        self,
+        model: Any,
+        pixel_values: np.ndarray,
+        image_grid_thw: np.ndarray,
     ) -> np.ndarray:
-        vision_tower = self._get_vision_tower()
+        vision_tower = self._get_vision_tower(model)
         vision_out = vision_tower(
             mx.array(pixel_values), mx.array(image_grid_thw, dtype=mx.int64)
         )
@@ -297,9 +349,13 @@ class Qwen3VLEmbedder:
         return self._to_numpy(hidden_states)
 
     def _combine_text_vision_embeddings(
-        self, input_ids: np.ndarray, vision_np: np.ndarray, image_positions: list[int]
+        self,
+        model: Any,
+        input_ids: np.ndarray,
+        vision_np: np.ndarray,
+        image_positions: list[int],
     ) -> tuple[Any, mx.array]:
-        inner_model = self._get_language_model()
+        inner_model = self._get_language_model(model)
         embed_tokens = self._get_child(inner_model, "embed_tokens")
         if embed_tokens is None:
             raise RuntimeError("embed_tokens missing in qwen3_vl language model")
@@ -345,21 +401,36 @@ class Qwen3VLEmbedder:
 
         raise ValueError("Unsupported image input")
 
-    def embed_text(self, text: str) -> EmbeddingResult:
+    def _embed_text_hidden_states(
+        self,
+        text: str,
+    ) -> tuple[mx.array, mx.array, mx.array | None, int]:
         self.load()
+
+        model, processor = self._get_backend()
+        reset_request_local_runtime_state(model)
 
         tokenizer = getattr(self.tomoro_processor, "tokenizer", None)
         if tokenizer is None:
-            tokenizer = getattr(self.processor, "tokenizer", None)
+            tokenizer = getattr(processor, "tokenizer", None)
         if tokenizer is None:
-            tokenizer = self.processor
+            tokenizer = processor
 
         inputs = self._tokenize_text(tokenizer, text)
-        input_ids = self._to_numpy(inputs["input_ids"]).astype(np.int64, copy=False)
-        input_ids = mx.array(input_ids, dtype=mx.int64)
+        input_ids_np = self._to_numpy(inputs["input_ids"]).astype(np.int64, copy=False)
+        input_ids = mx.array(input_ids_np, dtype=mx.int64)
+
+        attention_mask = inputs.get("attention_mask")
+        attention_mask_mx: mx.array | None = None
+        if attention_mask is not None:
+            attention_mask_np = self._to_numpy(attention_mask).astype(
+                np.int32, copy=False
+            )
+            attention_mask_mx = mx.array(attention_mask_np, dtype=mx.int32)
+
         batch_size, seq_len = input_ids.shape
 
-        inner_model = self._get_language_model()
+        inner_model = self._get_language_model(model)
         embed_tokens = self._get_child(inner_model, "embed_tokens")
         if embed_tokens is None:
             raise RuntimeError("embed_tokens missing in qwen3_vl language model")
@@ -369,17 +440,52 @@ class Qwen3VLEmbedder:
         hidden_states = self._run_language_layers(
             inner_model, inputs_embeds, position_ids
         )
+        token_count = self._count_text_tokens(input_ids, attention_mask_mx)
+        return hidden_states, input_ids, attention_mask_mx, token_count
 
-        embeddings = self._project_and_normalize(hidden_states)
-        embeddings = embeddings.squeeze(0)
-        mx.eval(embeddings)
-        mx.clear_cache()
+    def embed_text(self, text: str) -> EmbeddingResult:
+        with vlm_execution(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+        ):
+            hidden_states, _, _, token_count = self._embed_text_hidden_states(text)
+            embeddings = self._project_and_normalize(hidden_states).squeeze(0)
+            mx.eval(embeddings)
 
-        return EmbeddingResult(
-            embeddings=embeddings,
-            num_tokens=embeddings.shape[0],
-            source_type="text",
-        )
+            del hidden_states
+            mx.clear_cache()
+
+            return EmbeddingResult(
+                embeddings=embeddings,
+                num_tokens=token_count,
+                source_type="text",
+            )
+
+    def embed_text_pooled(self, text: str) -> EmbeddingResult:
+        """Return one sentence embedding from the shared VLM language tower."""
+        with wrapper_cache.vlm_execution(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+        ):
+            hidden_states, _, attention_mask, token_count = (
+                self._embed_text_hidden_states(text)
+            )
+            pooled = self._last_token_pool(hidden_states, attention_mask)
+            embeddings = self._project_and_normalize(pooled).squeeze(0)
+            mx.eval(embeddings)
+
+            del hidden_states
+            del attention_mask
+            del pooled
+            mx.clear_cache()
+
+            return EmbeddingResult(
+                embeddings=embeddings,
+                num_tokens=token_count,
+                source_type="text",
+            )
 
     def embed_image(self, image: str | Path | Image.Image) -> EmbeddingResult:
         self.load()
@@ -389,29 +495,44 @@ class Qwen3VLEmbedder:
                 "qwen3_vl model has no vision assets. Use a vision-capable model."
             )
 
-        pil_image = self._decode_image(image)
-        input_ids, pixel_values, image_grid_thw = self._prepare_image_inputs(pil_image)
-        image_mask, image_positions = self._image_mask_positions(input_ids)
-        vision_np = self._vision_embeddings(pixel_values, image_grid_thw)
-        inner_model, combined_embeddings = self._combine_text_vision_embeddings(
-            input_ids, vision_np, image_positions
-        )
-        batch_size, seq_len, _ = combined_embeddings.shape
-        position_ids = self._build_position_ids(batch_size, seq_len)
+        with wrapper_cache.vlm_execution(
+            self.model_id,
+            adapter_path=self.adapter_path,
+            draft_model_id=self.draft_model_id,
+        ):
+            model, processor = self._get_backend()
+            reset_request_local_runtime_state(model)
 
-        hidden_states = self._run_language_layers(
-            inner_model, combined_embeddings, position_ids
-        )
-        image_hidden_states = self._select_image_hidden(hidden_states, image_mask)
-        embeddings = self._project_and_normalize(image_hidden_states)
-        mx.eval(embeddings)
-        mx.clear_cache()
+            pil_image = self._decode_image(image)
+            input_ids, pixel_values, image_grid_thw = self._prepare_image_inputs(
+                processor, pil_image
+            )
+            image_mask, image_positions = self._image_mask_positions(input_ids)
+            vision_np = self._vision_embeddings(model, pixel_values, image_grid_thw)
+            inner_model, combined_embeddings = self._combine_text_vision_embeddings(
+                model, input_ids, vision_np, image_positions
+            )
+            batch_size, seq_len, _ = combined_embeddings.shape
+            position_ids = self._build_position_ids(batch_size, seq_len)
 
-        return EmbeddingResult(
-            embeddings=embeddings,
-            num_tokens=embeddings.shape[0],
-            source_type="image",
-        )
+            hidden_states = self._run_language_layers(
+                inner_model, combined_embeddings, position_ids
+            )
+            image_hidden_states = self._select_image_hidden(hidden_states, image_mask)
+            embeddings = self._project_and_normalize(image_hidden_states)
+            mx.eval(embeddings)
+
+            del hidden_states
+            del image_hidden_states
+            del combined_embeddings
+            del vision_np
+            mx.clear_cache()
+
+            return EmbeddingResult(
+                embeddings=embeddings,
+                num_tokens=embeddings.shape[0],
+                source_type="image",
+            )
 
     def embed_pdf(
         self,
@@ -430,15 +551,15 @@ class Qwen3VLEmbedder:
         for i in range(num_pages):
             page = doc.load_page(i)
             pix = page.get_pixmap(dpi=dpi)
-            image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
             results.append(self.embed_image(image))
         doc.close()
         return results
 
     @staticmethod
     def maxsim_score(query_embedding: Iterable, doc_embedding: Iterable) -> float:
-        query_mx = mx.array(query_embedding)
-        doc_mx = mx.array(doc_embedding)
+        query_mx = mx.array(list(query_embedding))
+        doc_mx = mx.array(list(doc_embedding))
         similarities = query_mx @ doc_mx.T
         max_sims = mx.max(similarities, axis=1)
         score = mx.sum(max_sims)

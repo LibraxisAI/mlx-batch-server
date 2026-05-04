@@ -1,13 +1,15 @@
 """Tests for BatchRequestCoordinator.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from mlx_batch_server.batch import coordinator as batch_coordinator_module
 from mlx_batch_server.batch.coordinator import (
     BatchRequestCoordinator,
     PendingRequest,
@@ -16,7 +18,17 @@ from mlx_batch_server.batch.coordinator import (
     shutdown_batch_coordinator,
 )
 from mlx_batch_server.batch.generator import BatchChatGenerator
+from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
+
+
+@pytest.fixture(autouse=True)
+def _reset_batch_coordinators():
+    batch_coordinator_module._coordinators.clear()
+    runtime_aliases_module.clear_runtime_aliases()
+    yield
+    batch_coordinator_module._coordinators.clear()
+    runtime_aliases_module.clear_runtime_aliases()
 
 
 class TestPendingRequest:
@@ -127,6 +139,70 @@ class TestGetBatchCoordinator:
 
         assert coord1 is not coord2
 
+    def test_case_variants_share_one_coordinator(self):
+        """Remote model IDs should collapse to one batch lane regardless of case."""
+        coord1 = get_batch_coordinator("LibraxisAI/Qwen3-VL-30B")
+        coord2 = get_batch_coordinator("libraxisai/qwen3-vl-30b")
+
+        assert coord1 is coord2
+        assert coord1.model_id == "libraxisai/qwen3-vl-30b"
+
+    def test_runtime_alias_reuses_canonical_coordinator(self):
+        """Runtime aliases should not fragment the batch coordinator surface."""
+        runtime_aliases_module.register_runtime_alias(
+            "frontier-vlm",
+            "libraxisai/qwen3-vl-30b",
+        )
+
+        coord1 = get_batch_coordinator("frontier-vlm")
+        coord2 = get_batch_coordinator("LibraxisAI/Qwen3-VL-30B")
+
+        assert coord1 is coord2
+        assert coord1.model_id == "libraxisai/qwen3-vl-30b"
+
+    def test_home_relative_path_reuses_canonical_coordinator(self):
+        """Home-relative model paths should collapse to one batch lane."""
+        home_relative = "~/models/frontier-vlm"
+        expanded = str(Path(home_relative).expanduser())
+
+        coord1 = get_batch_coordinator(home_relative)
+        coord2 = get_batch_coordinator(expanded)
+
+        assert coord1 is coord2
+        assert coord1.model_id == expanded
+
+    def test_runtime_alias_with_adapter_reuses_exact_batch_lane(self):
+        """Alias-scoped adapter runtimes should converge on one batch coordinator."""
+        adapter_path = "~/adapters/frontier-lora"
+        expanded_adapter_path = str(Path(adapter_path).expanduser())
+        runtime_aliases_module.register_runtime_alias(
+            "frontier-vlm",
+            "LibraxisAI/Qwen3-VL-30B",
+            adapter_path=adapter_path,
+        )
+
+        coord1 = get_batch_coordinator(
+            "frontier-vlm",
+        )
+        coord2 = get_batch_coordinator(
+            "libraxisai/qwen3-vl-30b",
+            adapter_path=expanded_adapter_path,
+        )
+
+        assert coord1 is coord2
+        assert coord1.model_id == "libraxisai/qwen3-vl-30b"
+        assert coord1.adapter_path == expanded_adapter_path
+
+    def test_home_relative_adapter_path_reuses_canonical_coordinator(self):
+        """Home-relative adapter paths should collapse to one batch lane."""
+        home_relative = "~/adapters/frontier-lora"
+        expanded = str(Path(home_relative).expanduser())
+
+        coord1 = get_batch_coordinator("model-with-adapter", adapter_path=home_relative)
+        coord2 = get_batch_coordinator("model-with-adapter", adapter_path=expanded)
+
+        assert coord1 is coord2
+
     def test_loaded_batch_models_only_include_initialized_generators(self):
         """Only coordinators with live generators should be reported as loaded."""
         loaded_model = "model-loaded-generator"
@@ -175,3 +251,54 @@ class TestGetBatchCoordinator:
         assert state["target_shutdown"] is True
         assert state["other_shutdown"] is False
         assert get_batch_coordinator(other_model) is other
+
+    @pytest.mark.asyncio
+    async def test_shutdown_batch_coordinator_accepts_runtime_alias(self):
+        """Shutdown should resolve aliases to the canonical batch lane."""
+        runtime_aliases_module.register_runtime_alias(
+            "frontier-vlm",
+            "libraxisai/qwen3-vl-30b",
+        )
+        target = get_batch_coordinator("LibraxisAI/Qwen3-VL-30B")
+        state = {"shutdown": False}
+
+        async def target_shutdown():
+            state["shutdown"] = True
+
+        target.shutdown = target_shutdown
+
+        removed = await shutdown_batch_coordinator("frontier-vlm")
+
+        assert removed == 1
+        assert state["shutdown"] is True
+
+    @pytest.mark.asyncio
+    async def test_shutdown_batch_coordinator_exact_adapter_preserves_sibling_lane(
+        self,
+    ):
+        """Exact adapter shutdown must not tear down sibling batch variants."""
+        target = get_batch_coordinator("model-with-adapter", adapter_path="/adapter-a")
+        sibling = get_batch_coordinator("model-with-adapter", adapter_path="/adapter-b")
+        state = {"target_shutdown": False, "sibling_shutdown": False}
+
+        async def target_shutdown():
+            state["target_shutdown"] = True
+
+        async def sibling_shutdown():
+            state["sibling_shutdown"] = True
+
+        target.shutdown = target_shutdown
+        sibling.shutdown = sibling_shutdown
+
+        removed = await shutdown_batch_coordinator(
+            "model-with-adapter",
+            adapter_path="/adapter-a",
+        )
+
+        assert removed == 1
+        assert state["target_shutdown"] is True
+        assert state["sibling_shutdown"] is False
+        assert (
+            get_batch_coordinator("model-with-adapter", adapter_path="/adapter-b")
+            is sibling
+        )

@@ -2,12 +2,13 @@
 
 Provides endpoints for batch processing statistics and control.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from ..auth.dependency import verify_auth
 from ..core.config import get_settings
 
 router = APIRouter(prefix="/v1/batch", tags=["batch"])
@@ -23,7 +24,9 @@ class BatchStatsResponse(BaseModel):
 
 
 @router.get("/stats", response_model=BatchStatsResponse)
-async def get_batch_stats() -> BatchStatsResponse:
+async def get_batch_stats(
+    _auth: dict = Depends(verify_auth),
+) -> BatchStatsResponse:
     """Get batch processing statistics.
 
     Returns:

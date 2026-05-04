@@ -48,7 +48,7 @@ dependencies = [
     "mlx-audio>=0.2.4",
     "numba>=0.57.0",
     # images
-    "mflux>=0.13.0,<0.14",
+    "mflux>=0.17.0,<0.18",
     # embeddings
     "mlx-embeddings>=0.0.3",
     "openai-harmony>=0.0.8",
@@ -63,6 +63,19 @@ Upstream = "https://github.com/LibraxisAI/mlx-batch-server"
 
 [project.scripts]
 mlx-batch-server = "mlx_batch_server.main:start"
+mlx-batch-operator = "mlx_batch_server.operator.cli:main"
+
+[project.optional-dependencies]
+operator = [
+    "click>=8",
+    "jinja2>=3",
+    "python-multipart",
+    "ruamel.yaml",
+]
+auth = [
+    "redis>=5.0",
+    "pyjwt>=2.8",
+]
 
 [dependency-groups]
 dev = [
@@ -80,7 +93,6 @@ dev = [
     "bandit[toml]>=1.7.0",
     # for en_core_web_sm models
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
-    "mlx-vlm @file:///Users/polyversai/Libraxis/mlx-vlm-local",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -103,7 +115,7 @@ allow-direct-references = true
 prerelease = "allow"
 
 [tool.uv.sources]
-mlx-vlm = { path = "../mlx-vlm-local" }
+mlx-vlm = { path = "../mlx-vlm-local", editable = true }
 
 [tool.pytest.ini_options]
 log_cli = true
@@ -112,6 +124,11 @@ log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(linen
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:importlib._bootstrap",
+    "ignore:builtin type Swig:DeprecationWarning",
+    "ignore:BPE.__init__:DeprecationWarning:transformers",
 ]
 
 # === Ruff configuration (LibraxisAI) ===
@@ -178,6 +195,17 @@ ignore = [
 "src/mlx_batch_server/images/schema.py" = ["ARG002"]
 # Entry point - lazy imports for fast --help, compat import must be first
 "src/mlx_batch_server/main.py" = ["PLC0415", "I001"]
+# Auth surface - lazy redis/session imports keep optional deps optional
+"src/mlx_batch_server/auth/api_keys.py" = ["PLC0415", "PLR0911"]
+"src/mlx_batch_server/auth/hmac.py" = ["PLC0415"]
+"src/mlx_batch_server/auth/session.py" = ["PLC0415"]
+"src/mlx_batch_server/auth/rate_limit.py" = ["PLC0415", "PLR0912", "PLR0915"]
+"src/mlx_batch_server/auth/dependency.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/auth/router_access.py" = ["PLC0415", "PLR0911"]
+# Operator auth shim mirrors the multi-branch dependency surface
+"src/mlx_batch_server/operator/auth.py" = ["PLR0912"]
+"src/mlx_batch_server/health/ready.py" = ["PLC0415"]
+"src/mlx_batch_server/routers.py" = ["PLC0415"]
 # Compat module - monkeypatch jieba to avoid pkg_resources deprecation
 "src/mlx_batch_server/utils/compat.py" = ["PLC0415", "PLR0915", "PLR0402", "PTH120", "B904"]
 
@@ -189,7 +217,8 @@ docstring-code-format = true
 # === Bandit security configuration ===
 [tool.bandit]
 exclude_dirs = ["tests", "examples", ".venv"]
-skips = ["B101", "B104", "B311", "B605", "B607"]  # assert, 0.0.0.0, random, os.system (jieba compat)
+# B110 = try/except/pass — intentional in Redis/file best-effort fallback paths
+skips = ["B101", "B104", "B110", "B311", "B605", "B607"]  # assert, 0.0.0.0, try/except/pass, random, os.system (jieba compat)
 
 # === Mypy configuration ===
 [tool.mypy]
@@ -237,4 +266,4 @@ ignore_errors = true
 module = "mlx_batch_server.tts.*"
 ignore_errors = true
 
-# Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+# Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team

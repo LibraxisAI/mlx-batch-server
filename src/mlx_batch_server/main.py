@@ -12,6 +12,14 @@ import argparse
 import os
 import re
 
+DEFAULT_CORS_ALLOW_ORIGINS = (
+    "http://localhost:*,http://127.0.0.1:*,http://100.*:*,https://100.*:*"
+)
+# NOTE: The `100.*` wildcard covers Tailscale/CGNAT address ranges.
+# In a tightly controlled environment this is acceptable for local/tailnet use;
+# override via the MLX_BATCH_CORS env variable to restrict to localhost-only
+# (e.g. "http://localhost:*,http://127.0.0.1:*") in any internet-exposed deployment.
+
 
 def _build_cors_config(cors_origins: str) -> tuple[list[str], str | None]:
     """Split exact origins from wildcard origins and compile a regex for the latter."""
@@ -74,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cors-allow-origins",
         type=str,
-        default="",
+        default=DEFAULT_CORS_ALLOW_ORIGINS,
         help='CORS origins, comma-separated (e.g., "*" or "http://localhost:3000")',
     )
     return parser
@@ -90,32 +98,68 @@ def create_app():
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
+    from .core.config import get_settings
     from .middleware.logging import RequestResponseLoggingMiddleware
-    from .routers import api_router
+    from .routers import build_api_router
+
+    settings = get_settings()
+    api_router = build_api_router(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Application lifespan manager for startup/shutdown hooks."""
-        # Startup
-        yield
-        # Shutdown - cleanup batch coordinators
-        try:
-            from .batch import shutdown_all_coordinators
+        # Startup: opt-in session auth manager
+        if settings.session_auth_enabled:
+            os.environ.setdefault("SESSION_PROVIDER", settings.session_provider)
+            os.environ.setdefault("SESSION_REDIS_URL", settings.redis_url)
+            os.environ.setdefault(
+                "SESSION_DEFAULT_TTL_HOURS", str(settings.session_ttl_hours)
+            )
+            from .auth.session import session_auth
 
-            await shutdown_all_coordinators()
-        except ImportError:
-            pass  # Batch module may not be available
+            await session_auth.start()
+        try:
+            yield
+        finally:
+            # Shutdown - cleanup batch coordinators
+            if settings.session_auth_enabled:
+                try:
+                    from .auth.session import session_auth
+
+                    await session_auth.stop()
+                except Exception:
+                    pass
+            try:
+                from .batch import shutdown_all_coordinators
+                from .vision.vlm_batch import shutdown_all_vlm_coordinators
+
+                await shutdown_all_coordinators()
+                await shutdown_all_vlm_coordinators()
+            except ImportError:
+                pass  # Batch module may not be available
 
     application = FastAPI(title="MLX Batch Server", lifespan=lifespan)
 
     # Add request/response logging middleware
     application.add_middleware(RequestResponseLoggingMiddleware)
 
+    # Opt-in rate limiting (added BEFORE logging so it fires earlier in LIFO chain)
+    if settings.rate_limit_enabled:
+        from .auth.rate_limit import RateLimitMiddleware
+
+        application.add_middleware(
+            RateLimitMiddleware,
+            requests_per_minute=settings.rate_limit_per_minute,
+            window_size=settings.rate_limit_window_seconds,
+            concurrent_limit=settings.rate_limit_concurrent,
+            exempt_paths=settings.get_rate_limit_exempt_paths(),
+        )
+
     # Include all API routes
     application.include_router(api_router)
 
     # Configure CORS from environment
-    cors_origins = os.environ.get("MLX_BATCH_CORS", "")
+    cors_origins = os.environ.get("MLX_BATCH_CORS", DEFAULT_CORS_ALLOW_ORIGINS)
     if cors_origins:
         origins, allow_origin_regex = _build_cors_config(cors_origins)
         application.add_middleware(

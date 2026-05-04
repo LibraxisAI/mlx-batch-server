@@ -6,10 +6,13 @@ LRU eviction, thread safety, and edge case handling.
 
 import threading
 import time
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
+from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
+from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
 from mlx_batch_server.chat.mlx.wrapper_cache import MLXWrapperCache, WrapperCacheKey
 
 
@@ -57,6 +60,7 @@ class TestMLXWrapperCache:
 
     def setup_method(self):
         """Set up test fixtures."""
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=3)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -140,12 +144,106 @@ class TestMLXWrapperCache:
             self.cache.get_wrapper("broken_model")
         assert self.cache.get_cache_info()["cache_size"] == 0
 
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_attached_runtime_survives_lru_pressure(self, mock_create):
+        """Surface-retained VLM runtimes should not be silently evicted by LRU."""
+        cache = MLXWrapperCache(max_size=1)
+        mock_create.side_effect = [
+            MockChatGenerator("model-vlm", multimodal=True),
+            MockChatGenerator("model-b"),
+            MockChatGenerator("model-c"),
+        ]
+
+        cache.get_wrapper("model-vlm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+
+        cache.get_wrapper("model-b")
+        info = cache.get_cache_info()
+        assert info["cache_size"] == 2
+        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert any("model-b" in key for key in info["cached_keys"])
+
+        cache.get_wrapper("model-c")
+        info = cache.get_cache_info()
+        assert info["cache_size"] == 2
+        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert any("model-c" in key for key in info["cached_keys"])
+        assert all("model-b" not in key for key in info["cached_keys"])
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_runtime_is_cached_even_when_max_size_zero(self, mock_create):
+        """Surface-owned runtimes must stay resident even in pinned-only mode."""
+        cache = MLXWrapperCache(max_size=0)
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+
+        first = cache.get_wrapper("model-vlm", surface="visual")
+        second = cache.get_wrapper("model-vlm", surface="visual")
+
+        assert second is first
+        assert cache.get_cache_info()["cache_size"] == 1
+        assert cache.is_model_loaded("model-vlm") is True
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["visual"]
+        assert mock_create.call_count == 1
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_attachment_only_retain_exact_runtime_variant(self, mock_create):
+        """One retained variant must not keep sibling adapter variants resident."""
+        cache = MLXWrapperCache(max_size=0)
+        mock_create.side_effect = [
+            MockChatGenerator("model-vlm-adapter-a", multimodal=True),
+            MockChatGenerator("model-vlm-adapter-b", multimodal=True),
+        ]
+
+        retained = cache.get_wrapper(
+            "model-vlm",
+            adapter_path="/adapter-a",
+            surface="visual",
+        )
+        transient = cache.get_wrapper(
+            "model-vlm",
+            adapter_path="/adapter-b",
+        )
+
+        assert retained is not transient
+        assert cache.is_runtime_loaded("model-vlm", adapter_path="/adapter-a") is True
+        assert cache.is_runtime_loaded("model-vlm", adapter_path="/adapter-b") is False
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm",
+            adapter_path="/adapter-a",
+        ) == ["visual"]
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments(
+                "model-vlm",
+                adapter_path="/adapter-b",
+            )
+            == []
+        )
+        assert cache.get_cache_info()["cache_size"] == 1
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_surface_attachment_rolls_back_when_runtime_load_fails(self, mock_create):
+        """Failed retained loads must not leave a fake attachment behind."""
+        cache = MLXWrapperCache(max_size=0)
+        mock_create.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            cache.get_wrapper("model-vlm", surface="embeddings")
+
+        assert cache.get_cache_info()["cache_size"] == 0
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments("model-vlm")
+            == []
+        )
+
 
 class TestMLXWrapperCacheThreadSafety:
     """Test thread safety of MLXWrapperCache."""
 
     def setup_method(self):
         """Set up test fixtures."""
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=10)
         self.results = []
         self.creation_count = 0
@@ -210,6 +308,7 @@ class TestMLXWrapperCacheTTL:
     def setup_method(self):
         """Set up test fixtures."""
         # Use short TTL for faster testing
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=5, ttl_seconds=1)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -287,6 +386,23 @@ class TestMLXWrapperCacheTTL:
             assert info["cache_size"] == 1
             assert any("model3" in key for key in info["cached_keys"])
 
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_ttl_does_not_expire_surface_attached_runtime(self, mock_create):
+        """TTL must not drop a runtime while a product surface still retains it."""
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+
+        self.cache.get_wrapper("model-vlm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "embeddings")
+
+        time.sleep(1.2)
+        info = self.cache.get_cache_info()
+
+        assert info["cache_size"] == 1
+        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["embeddings"]
+
 
 class TestMLXWrapperCacheEdgeCases:
     """Test edge cases and boundary conditions."""
@@ -333,6 +449,7 @@ class TestMLXWrapperCacheModelManagement:
 
     def setup_method(self):
         """Set up test fixtures."""
+        runtime_attachments_module.clear_runtime_surface_attachments()
         self.cache = MLXWrapperCache(max_size=5)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -386,6 +503,25 @@ class TestMLXWrapperCacheModelManagement:
         assert self.cache.get_cache_info()["cache_size"] == 0
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_unload_model_clears_runtime_surface_attachments(self, mock_create):
+        """Actual runtime eviction should remove stale surface ownership metadata."""
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+
+        self.cache.get_wrapper("model-vlm")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+        runtime_attachments_module.attach_runtime_surface("model-vlm", "embeddings")
+
+        assert runtime_attachments_module.get_runtime_surface_attachments(
+            "model-vlm"
+        ) == ["embeddings", "visual"]
+
+        assert self.cache.unload_model("model-vlm") is True
+        assert (
+            runtime_attachments_module.get_runtime_surface_attachments("model-vlm")
+            == []
+        )
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_is_model_loaded(self, mock_create):
         """Test checking if a model is loaded."""
         mock_create.return_value = MockChatGenerator("model1")
@@ -397,6 +533,35 @@ class TestMLXWrapperCacheModelManagement:
 
         self.cache.clear_cache()
         assert self.cache.is_model_loaded("model1") is False
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_is_runtime_loaded_tracks_exact_runtime_key(self, mock_create):
+        """Exact runtime checks must distinguish adapter and draft variants."""
+        mock_create.side_effect = [
+            MockChatGenerator("model1"),
+            MockChatGenerator("model1_adapter"),
+        ]
+
+        self.cache.get_wrapper("model1")
+        self.cache.get_wrapper("model1", adapter_path="/adapter")
+
+        assert self.cache.is_runtime_loaded("model1") is True
+        assert self.cache.is_runtime_loaded("model1", adapter_path="/adapter") is True
+        assert (
+            self.cache.is_runtime_loaded(
+                "model1",
+                adapter_path="/other-adapter",
+            )
+            is False
+        )
+        assert (
+            self.cache.is_runtime_loaded(
+                "model1",
+                adapter_path="/adapter",
+                draft_model_id="draft-a",
+            )
+            is False
+        )
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_get_loaded_models(self, mock_create):
@@ -437,6 +602,164 @@ class TestMLXWrapperCacheModelManagement:
         assert model is wrapper.model.model
         assert processor is wrapper.model.processor
         assert self.cache.get_loaded_vlm_models() == ["model-vlm"]
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_runtime_alias_reuses_single_cached_wrapper(self, mock_create):
+        """Dynamic runtime aliases should not create duplicate residency."""
+        runtime_aliases_module.clear_runtime_aliases()
+        try:
+            runtime_aliases_module.register_runtime_alias(
+                "qwen3.5-vl-crack",
+                "libraxisai/gpt-oss-120b-mlx-mxfp4",
+            )
+            mock_create.return_value = MockChatGenerator(
+                "libraxisai/gpt-oss-120b-mlx-mxfp4",
+                multimodal=True,
+            )
+
+            canonical = self.cache.get_wrapper("libraxisai/gpt-oss-120b-mlx-mxfp4")
+            alias = self.cache.get_wrapper("qwen3.5-vl-crack")
+
+            assert alias is canonical
+            assert mock_create.call_count == 1
+            assert self.cache.get_loaded_models() == [
+                "libraxisai/gpt-oss-120b-mlx-mxfp4"
+            ]
+            assert self.cache.get_loaded_vlm_models() == [
+                "libraxisai/gpt-oss-120b-mlx-mxfp4"
+            ]
+        finally:
+            runtime_aliases_module.clear_runtime_aliases()
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_runtime_alias_with_adapter_reuses_exact_runtime_key(self, mock_create):
+        """Alias-scoped adapter runtimes should converge on one shared wrapper."""
+        runtime_aliases_module.clear_runtime_aliases()
+        try:
+            adapter_path = "~/adapters/frontier-lora"
+            expanded_adapter_path = str(Path(adapter_path).expanduser())
+            runtime_aliases_module.register_runtime_alias(
+                "frontier-vlm",
+                "LibraxisAI/Qwen3-VL-30B",
+                adapter_path=adapter_path,
+            )
+            mock_create.return_value = MockChatGenerator(
+                "libraxisai/qwen3-vl-30b",
+                multimodal=True,
+            )
+
+            canonical = self.cache.get_wrapper(
+                "libraxisai/qwen3-vl-30b",
+                adapter_path=expanded_adapter_path,
+            )
+            alias = self.cache.get_wrapper("frontier-vlm")
+
+            assert alias is canonical
+            assert mock_create.call_count == 1
+            assert mock_create.call_args.kwargs["adapter_path"] == expanded_adapter_path
+            assert self.cache.is_runtime_loaded(
+                "frontier-vlm",
+                adapter_path=None,
+                draft_model_id=None,
+            )
+        finally:
+            runtime_aliases_module.clear_runtime_aliases()
+
+    def test_vlm_execution_scopes_locks_to_exact_runtime_key(self):
+        """Different VLM runtime variants should not serialize on one coarse lock."""
+        entered_same = threading.Event()
+        entered_other = threading.Event()
+        release_same = threading.Event()
+        release_other = threading.Event()
+        events: list[tuple[str, str]] = []
+
+        def run_variant(
+            adapter_path: str,
+            label: str,
+            entered: threading.Event,
+            release: threading.Event,
+        ) -> None:
+            with self.cache.vlm_execution("model-vlm", adapter_path=adapter_path):
+                events.append(("enter", label))
+                entered.set()
+                release.wait(timeout=1.0)
+                events.append(("exit", label))
+
+        with self.cache.vlm_execution("model-vlm", adapter_path="/adapter-a"):
+            same_variant = threading.Thread(
+                target=run_variant,
+                args=("/adapter-a", "same", entered_same, release_same),
+            )
+            other_variant = threading.Thread(
+                target=run_variant,
+                args=("/adapter-b", "other", entered_other, release_other),
+            )
+            same_variant.start()
+            other_variant.start()
+
+            assert entered_other.wait(timeout=1.0) is True
+            assert entered_same.wait(timeout=0.1) is False
+
+            release_other.set()
+            other_variant.join(timeout=1.0)
+            assert other_variant.is_alive() is False
+
+        assert entered_same.wait(timeout=1.0) is True
+        release_same.set()
+        same_variant.join(timeout=1.0)
+        assert same_variant.is_alive() is False
+        assert events == [
+            ("enter", "other"),
+            ("exit", "other"),
+            ("enter", "same"),
+            ("exit", "same"),
+        ]
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_home_relative_path_reuses_single_cached_wrapper(self, mock_create):
+        """Home-relative model paths should collapse to one cache identity."""
+        model_path = "~/models/frontier-vlm"
+        expanded_path = str(Path(model_path).expanduser())
+        mock_create.return_value = MockChatGenerator(expanded_path, multimodal=True)
+
+        first = self.cache.get_wrapper(model_path)
+        second = self.cache.get_wrapper(expanded_path)
+
+        assert second is first
+        assert mock_create.call_count == 1
+        assert self.cache.get_loaded_models() == [expanded_path]
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_home_relative_adapter_path_reuses_single_cached_wrapper(self, mock_create):
+        """Home-relative adapter paths should collapse to one cache identity."""
+        adapter_path = "~/adapters/frontier-lora"
+        expanded_adapter_path = str(Path(adapter_path).expanduser())
+        mock_create.return_value = MockChatGenerator("model-with-adapter")
+
+        first = self.cache.get_wrapper("model-with-adapter", adapter_path=adapter_path)
+        second = self.cache.get_wrapper(
+            "model-with-adapter",
+            adapter_path=expanded_adapter_path,
+        )
+
+        assert second is first
+        assert mock_create.call_count == 1
+        assert self.cache.get_cache_info()["cache_size"] == 1
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_home_relative_adapter_path_is_canonicalized_before_wrapper_creation(
+        self,
+        mock_create,
+    ):
+        """Cache identity and downstream runtime args should share one adapter path."""
+        adapter_path = "~/adapters/frontier-lora"
+        expanded_adapter_path = str(Path(adapter_path).expanduser())
+        mock_create.return_value = MockChatGenerator("model-with-adapter")
+
+        self.cache.get_wrapper("model-with-adapter", adapter_path=adapter_path)
+
+        assert mock_create.call_count == 1
+        assert mock_create.call_args.kwargs["adapter_path"] == expanded_adapter_path
 
 
 class TestMLXWrapperCachePinnedOnly:

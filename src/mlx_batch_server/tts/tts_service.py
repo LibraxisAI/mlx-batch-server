@@ -20,7 +20,7 @@ class TTSModelAdapter(BaseModel):
     def generate_audio(self, request: TTSRequest, output_path: str | Path) -> bool:
         """
         Generate audio from input text.
-        ¨
+
         Args:
             request (TTSRequest): The request object containing the input text and other parameters.
             output_path (str | Path): The path to save the generated audio file.

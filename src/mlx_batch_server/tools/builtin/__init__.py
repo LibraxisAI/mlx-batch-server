@@ -3,7 +3,7 @@ Built-in hosted tools for Mlx batch Server.
 
 These tools are executed server-side when the model generates tool calls.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from .code_interpreter import execute_code

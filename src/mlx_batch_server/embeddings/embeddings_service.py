@@ -1,4 +1,3 @@
-import os
 from typing import Any
 
 import mlx.core as mx
@@ -6,8 +5,18 @@ import numpy as np
 import tiktoken
 from mlx_embeddings import generate, load
 
+from ..chat.mlx.model_types import resolves_to_multimodal_runtime
+from ..chat.mlx.runtime_aliases import resolve_runtime_target
+from ..chat.mlx.runtime_attachments import (
+    attach_runtime_surface,
+    get_attached_models,
+    get_attached_runtime_targets,
+    release_runtime_surface,
+)
+from ..chat.mlx.wrapper_cache import normalize_model_id, wrapper_cache
 from ..utils.logger import logger
 from .schema import EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage
+from .shared_vlm_text_embedder import SharedVLMTextEmbedder
 
 
 class EmbeddingsService:
@@ -16,6 +25,10 @@ class EmbeddingsService:
     def __init__(self):
         # Map of loaded models for caching
         self._models: dict[str, tuple[Any, Any]] = {}
+        # Qwen3-VL embeddings reuse the shared visual/VLM runtime instead of
+        # loading a second text-only fallback into a private cache.
+        self._shared_vlm_models: set[str] = set()
+        self._shared_vlm_runtime_keys: set[tuple[str, str | None, str | None]] = set()
         # Default encoder for token counting
         try:
             self._default_tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -29,149 +42,289 @@ class EmbeddingsService:
                 )
                 self._default_tokenizer = None
 
+    def canonicalize_model_id(self, model_id: str) -> str:
+        """Resolve aliases and normalize remote IDs for stable cache keys."""
+        return normalize_model_id(resolve_runtime_target(model_id).model_id)
+
+    @staticmethod
+    def _shared_runtime_key(
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        target = resolve_runtime_target(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        return (target.model_id, target.adapter_path, target.draft_model_id)
+
     def _get_model(self, model_id: str) -> tuple[Any, Any]:
         """Get or load a model based on its ID"""
-        if model_id not in self._models:
-            logger.info(f"Loading embedding model: {model_id}")
-            if self._should_use_qwen3_vl_fallback(model_id):
-                logger.warning(
-                    "mlx-embeddings missing qwen3_vl support. "
-                    "Using text-only qwen3 fallback."
-                )
-                try:
-                    model, processor = self._load_qwen3_vl_text_model(model_id)
-                    self._models[model_id] = (model, processor)
-                    return self._models[model_id]
-                except Exception as fallback_error:
-                    logger.error(
-                        f"Error loading qwen3_vl text fallback for {model_id}: "
-                        f"{fallback_error!s}"
-                    )
-                    raise RuntimeError(
-                        f"Failed to load qwen3_vl embedding model: {fallback_error!s}"
-                    ) from fallback_error
+        canonical_model_id = self.canonicalize_model_id(model_id)
+        if canonical_model_id not in self._models:
+            logger.info(f"Loading embedding model: {canonical_model_id}")
             try:
-                model, processor = load(model_id)
-                self._models[model_id] = (model, processor)
+                model, processor = load(canonical_model_id)
+                self._models[canonical_model_id] = (model, processor)
             except Exception as e:
-                err = str(e)
-                if "qwen3_vl" in err.lower():
-                    logger.warning(
-                        "Model type qwen3_vl not supported by mlx-embeddings. "
-                        "Falling back to text-only qwen3 loader."
-                    )
-                    try:
-                        model, processor = self._load_qwen3_vl_text_model(model_id)
-                        self._models[model_id] = (model, processor)
-                    except Exception as fallback_error:
-                        logger.error(
-                            f"Error loading qwen3_vl text fallback for {model_id}: "
-                            f"{fallback_error!s}"
-                        )
-                        raise RuntimeError(
-                            f"Failed to load qwen3_vl embedding model: {fallback_error!s}"
-                        ) from fallback_error
-                else:
-                    logger.error(f"Error loading embedding model {model_id}: {e!s}")
-                    raise RuntimeError(f"Failed to load embedding model: {e!s}") from e
+                logger.error(
+                    f"Error loading embedding model {canonical_model_id}: {e!s}"
+                )
+                raise RuntimeError(f"Failed to load embedding model: {e!s}") from e
 
-        return self._models[model_id]
+        return self._models[canonical_model_id]
 
-    def load_model(self, model_id: str) -> bool:
+    def load_model(
+        self,
+        model_id: str,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> bool:
         """Preload an embeddings model. Returns True if it was already loaded."""
-        already_loaded = model_id in self._models
-        self._get_model(model_id)
+        if self._should_use_shared_vlm_embeddings(model_id):
+            runtime_target = resolve_runtime_target(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
+            runtime_key = (
+                runtime_target.model_id,
+                runtime_target.adapter_path,
+                runtime_target.draft_model_id,
+            )
+            canonical_model_id = runtime_key[0]
+            already_loaded = runtime_key in self._shared_vlm_runtime_keys
+            if not already_loaded:
+                runtime_kwargs: dict[str, str] = {}
+                if runtime_target.adapter_path is not None:
+                    runtime_kwargs["adapter_path"] = runtime_target.adapter_path
+                if runtime_target.draft_model_id is not None:
+                    runtime_kwargs["draft_model_id"] = runtime_target.draft_model_id
+                self._get_shared_vlm_embedder(canonical_model_id, **runtime_kwargs)
+                self._shared_vlm_models.add(canonical_model_id)
+                self._shared_vlm_runtime_keys.add(runtime_key)
+            return already_loaded
+
+        canonical_model_id = self.canonicalize_model_id(model_id)
+        already_loaded = canonical_model_id in self._models
+        self._get_model(canonical_model_id)
         return already_loaded
 
-    def unload_model(self, model_id: str) -> bool:
-        """Unload a specific embeddings model. Returns True if it was loaded."""
-        if model_id in self._models:
-            self._models.pop(model_id, None)
-            mx.clear_cache()
-            return True
-        return False
+    def get_loaded_native_models(self) -> list[str]:
+        """Return non-shared embeddings model ids currently cached privately."""
+        return list(self._models.keys())
 
-    def clear_models(self) -> list[str]:
-        """Unload all embeddings models and return the unloaded model IDs."""
+    def clear_native_models(self) -> list[str]:
+        """Clear only the private embeddings cache, leaving shared VLM runtime alone."""
         unloaded = list(self._models.keys())
         if unloaded:
             self._models.clear()
             mx.clear_cache()
         return unloaded
 
-    def _should_use_qwen3_vl_fallback(self, model_id: str) -> bool:
-        """Return True when qwen3_vl is requested but not supported by mlx-embeddings."""
-        model_lower = model_id.lower()
-        if "qwen3-vl" not in model_lower and "qwen3_vl" not in model_lower:
-            return False
+    def get_shared_vlm_models(self) -> list[str]:
+        """Return canonical shared-runtime VLM model ids seen by the service."""
+        return sorted(self._shared_vlm_models)
 
-        if os.environ.get("MLX_EMBED_USE_MLX_EMBEDDINGS_QWEN3_VL") == "1":
-            return False
+    def get_shared_vlm_runtime_keys(self) -> list[tuple[str, str | None, str | None]]:
+        """Return exact shared-runtime VLM keys currently tracked by embeddings."""
+        return sorted(self._shared_vlm_runtime_keys)
 
-        try:
-            import importlib.util
+    def unload_model(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+        release_runtime: bool = True,
+    ) -> bool:
+        """Unload a specific embeddings model. Returns True if it was loaded."""
+        if self._should_use_shared_vlm_embeddings(model_id):
+            runtime_target = resolve_runtime_target(
+                model_id,
+                adapter_path=adapter_path,
+                draft_model_id=draft_model_id,
+            )
+            canonical_model_id = runtime_target.model_id
+            runtime_key = (
+                runtime_target.model_id,
+                runtime_target.adapter_path,
+                runtime_target.draft_model_id,
+            )
+            exact_runtime_requested = (
+                runtime_target.adapter_path is not None
+                or runtime_target.draft_model_id is not None
+            )
 
-            if importlib.util.find_spec("mlx_embeddings.models.qwen3_vl") is not None:
-                return False
-        except Exception:
-            return True
-
-        return True
-
-    def _load_qwen3_vl_text_model(self, model_id: str) -> tuple[Any, Any]:
-        """Load Qwen3-VL embeddings using the text tower only (mlx-lm weights)."""
-        from pathlib import Path
-
-        from mlx import nn
-        from mlx_embeddings.models import qwen3 as qwen3_embeddings
-        from mlx_embeddings.tokenizer_utils import load_tokenizer
-        from mlx_embeddings.utils import get_model_path, load_config
-
-        model_path = Path(get_model_path(model_id))
-        config = load_config(model_path)
-        text_config = config.get("text_config") or {}
-
-        model_args = qwen3_embeddings.ModelArgs.from_dict(text_config)
-        model = qwen3_embeddings.Model(model_args)
-
-        weight_files = list(model_path.rglob("model*.safetensors"))
-        if not weight_files:
-            weight_files = list(model_path.glob("weight*.safetensors"))
-        if not weight_files:
-            raise FileNotFoundError(f"No safetensors found in {model_path}")
-
-        weights = {}
-        for wf in weight_files:
-            loaded_weights = mx.load(str(wf))
-            if wf.parent != model_path:
-                folder_name = wf.parent.name
-                loaded_weights = {
-                    f"{folder_name}.{k}": v for k, v in loaded_weights.items()
+            if exact_runtime_requested:
+                runtime_keys = (
+                    {runtime_key}
+                    if runtime_key in self._shared_vlm_runtime_keys
+                    else set()
+                )
+                was_loaded = bool(runtime_keys)
+                self._shared_vlm_runtime_keys.discard(runtime_key)
+            else:
+                runtime_keys = {
+                    key
+                    for key in self._shared_vlm_runtime_keys
+                    if key[0] == canonical_model_id
                 }
-            for raw_key, value in loaded_weights.items():
-                if not raw_key.startswith("language_model."):
+                was_loaded = (
+                    bool(runtime_keys) or canonical_model_id in self._shared_vlm_models
+                )
+                self._shared_vlm_runtime_keys = {
+                    key
+                    for key in self._shared_vlm_runtime_keys
+                    if key[0] != canonical_model_id
+                }
+
+            if not any(
+                key[0] == canonical_model_id for key in self._shared_vlm_runtime_keys
+            ):
+                self._shared_vlm_models.discard(canonical_model_id)
+
+            unloaded_any = False
+            attachment_found = False
+            runtime_targets = runtime_keys or {runtime_key}
+
+            for (
+                runtime_model_id,
+                runtime_adapter_path,
+                runtime_draft_model_id,
+            ) in sorted(runtime_targets):
+                attachment_state = release_runtime_surface(
+                    runtime_model_id,
+                    "embeddings",
+                    adapter_path=runtime_adapter_path,
+                    draft_model_id=runtime_draft_model_id,
+                )
+                attachment_found = attachment_found or attachment_state.was_attached
+                if not release_runtime or attachment_state.remaining_surfaces:
                     continue
-                clean_key = raw_key[len("language_model.") :]
-                if "lm_head." in clean_key:
-                    continue
-                weights[clean_key] = value
+                unloaded = self._release_shared_vlm_runtime(
+                    runtime_model_id,
+                    adapter_path=runtime_adapter_path,
+                    draft_model_id=runtime_draft_model_id,
+                )
+                unloaded_any = unloaded_any or bool(unloaded)
 
-        if hasattr(model, "sanitize"):
-            weights = model.sanitize(weights)
+            return was_loaded or attachment_found or unloaded_any
 
-        quantization = config.get("quantization") or config.get("quantization_config")
-        if quantization:
+        canonical_model_id = self.canonicalize_model_id(model_id)
+        if canonical_model_id in self._models:
+            self._models.pop(canonical_model_id, None)
+            mx.clear_cache()
+            return True
+        return False
 
-            def class_predicate(p, m):
-                if not hasattr(m, "to_quantized"):
-                    return False
-                return f"{p}.scales" in weights
+    def clear_models(self, *, release_runtime: bool = True) -> list[str]:
+        """Unload all embeddings models and return the unloaded model IDs."""
+        unloaded = self.clear_native_models()
+        shared_vlm_models = sorted(
+            set(self.get_shared_vlm_models()).union(get_attached_models("embeddings"))
+        )
+        self._shared_vlm_models.clear()
+        runtime_targets = {
+            *{
+                resolve_runtime_target(
+                    model_id,
+                    adapter_path=adapter_path,
+                    draft_model_id=draft_model_id,
+                )
+                for model_id, adapter_path, draft_model_id in self._shared_vlm_runtime_keys
+            },
+            *get_attached_runtime_targets("embeddings"),
+        }
+        self._shared_vlm_runtime_keys.clear()
+        for target in sorted(
+            runtime_targets,
+            key=lambda target: (
+                target.model_id,
+                target.adapter_path or "",
+                target.draft_model_id or "",
+            ),
+        ):
+            attachment_state = release_runtime_surface(
+                target.model_id,
+                "embeddings",
+                adapter_path=target.adapter_path,
+                draft_model_id=target.draft_model_id,
+            )
+            if release_runtime and not attachment_state.remaining_surfaces:
+                self._release_shared_vlm_runtime(
+                    target.model_id,
+                    adapter_path=target.adapter_path,
+                    draft_model_id=target.draft_model_id,
+                )
+        return list(dict.fromkeys([*unloaded, *shared_vlm_models]))
 
-            nn.quantize(model, **quantization, class_predicate=class_predicate)
+    def _should_use_shared_vlm_embeddings(self, model_id: str) -> bool:
+        """Route any multimodal model through the shared VLM runtime spine."""
+        return resolves_to_multimodal_runtime(model_id)
 
-        model.load_weights(list(weights.items()))
-        tokenizer = load_tokenizer(model_path)
-        return model, tokenizer
+    def uses_shared_vlm_runtime(self, model_id: str) -> bool:
+        """Expose whether this embeddings request rides on the shared VLM cache."""
+        return self._should_use_shared_vlm_embeddings(model_id)
+
+    def has_shared_vlm_runtime_models(self) -> bool:
+        """Return True when shared VLM embeddings models are currently attached."""
+        return bool(self._shared_vlm_models)
+
+    def _get_shared_vlm_embedder(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> SharedVLMTextEmbedder:
+        """Pool text embeddings directly from the shared resident VLM runtime."""
+        embedder = SharedVLMTextEmbedder(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        embedder.load()
+        attach_runtime_surface(
+            model_id,
+            "embeddings",
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
+        return embedder
+
+    def _unload_shared_vlm_embedder(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> list[str]:
+        """Release the shared VLM runtime backing multimodal text embeddings."""
+        unload_kwargs: dict[str, str] = {}
+        if adapter_path is not None:
+            unload_kwargs["adapter_path"] = adapter_path
+        if draft_model_id is not None:
+            unload_kwargs["draft_model_id"] = draft_model_id
+        return wrapper_cache.unload_vlm_model(model_id, **unload_kwargs)
+
+    def _release_shared_vlm_runtime(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> list[str]:
+        """Bridge exact runtime-key unload with the older model-id-only contract."""
+        if adapter_path is None and draft_model_id is None:
+            return self._unload_shared_vlm_embedder(model_id)
+        return self._unload_shared_vlm_embedder(
+            model_id,
+            adapter_path=adapter_path,
+            draft_model_id=draft_model_id,
+        )
 
     def _count_tokens(self, text: str | list[str]) -> int:
         """Count tokens in input text"""
@@ -258,46 +411,79 @@ class EmbeddingsService:
     def generate_embeddings(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """Generate embeddings based on the request"""
         model_id = request.model
-        model, processor = self._get_model(model_id)
-
         # Handle both string and list of strings
         inputs = request.input if isinstance(request.input, list) else [request.input]
 
         # Count tokens for usage info
         token_count = self._count_tokens(inputs)
+        shared_vlm_embedder = None
+        model = None
+        processor = None
+        if self._should_use_shared_vlm_embeddings(model_id):
+            runtime_target = resolve_runtime_target(model_id)
+            canonical_model_id = runtime_target.model_id
+            runtime_kwargs: dict[str, str] = {}
+            if runtime_target.adapter_path is not None:
+                runtime_kwargs["adapter_path"] = runtime_target.adapter_path
+            if runtime_target.draft_model_id is not None:
+                runtime_kwargs["draft_model_id"] = runtime_target.draft_model_id
+            shared_vlm_embedder = self._get_shared_vlm_embedder(
+                canonical_model_id,
+                **runtime_kwargs,
+            )
+            self._shared_vlm_models.add(canonical_model_id)
+            token_count = 0
+        else:
+            model, processor = self._get_model(model_id)
 
         # Generate embeddings for all inputs
         embeddings = []
-        for idx, text in enumerate(inputs):
-            try:
-                # Generate embedding using the model
+        try:
+            for idx, text in enumerate(inputs):
+                embedding = None
                 try:
-                    # First try the specific BERT extraction method
-                    embedding = self._get_bert_embeddings(
-                        model, processor, text, model_id
+                    if shared_vlm_embedder is not None:
+                        result = shared_vlm_embedder.embed_text_pooled(text)
+                        embedding_list = self._ensure_float_list(result.embeddings)
+                        token_count += result.num_tokens
+                    else:
+                        try:
+                            # First try the specific BERT extraction method
+                            embedding = self._get_bert_embeddings(
+                                model, processor, text, model_id
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                f"Failed with BERT method: {e!s}. "
+                                "Trying general generate() function."
+                            )
+                            # Fall back to the generate function
+                            output = generate(model, processor, text)
+                            embedding = self._extract_output_embeddings(
+                                output, model_id
+                            )
+
+                        # Finalize lazy MLX graphs before converting to Python
+                        # floats so long embedding runs do not pin intermediates.
+                        if isinstance(embedding, mx.array):
+                            mx.eval(embedding)
+
+                        # Convert to list of floats with proper formatting
+                        embedding_list = self._ensure_float_list(embedding)
+                        embedding = None
+
+                    # Create embedding data
+                    embedding_data = EmbeddingData(
+                        embedding=embedding_list,
+                        index=idx,
                     )
+                    embeddings.append(embedding_data)
+
                 except Exception as e:
-                    logger.debug(
-                        f"Failed with BERT method: {e!s}. "
-                        "Trying general generate() function."
-                    )
-                    # Fall back to the generate function
-                    output = generate(model, processor, text)
-                    embedding = self._extract_output_embeddings(output, model_id)
-
-                # Convert to list of floats with proper formatting
-                embedding_list = self._ensure_float_list(embedding)
-
-                # Create embedding data
-                embedding_data = EmbeddingData(
-                    embedding=embedding_list,
-                    index=idx,
-                )
-                embeddings.append(embedding_data)
-
-            except Exception as e:
-                logger.error(f"Error generating embedding: {e!s}", exc_info=True)
-                raise RuntimeError(f"Failed to generate embedding: {e!s}") from e
+                    logger.error(f"Error generating embedding: {e!s}", exc_info=True)
+                    raise RuntimeError(f"Failed to generate embedding: {e!s}") from e
+        finally:
+            mx.clear_cache()
 
         # Create the full response
         response = EmbeddingResponse(

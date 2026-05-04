@@ -30,6 +30,7 @@ class ContentPartType(str, Enum):
 
     INPUT_TEXT = "input_text"
     INPUT_IMAGE = "input_image"
+    INPUT_VIDEO = "input_video"
     INPUT_AUDIO = "input_audio"
     OUTPUT_TEXT = "output_text"
     REASONING_TEXT = "reasoning_text"
@@ -42,6 +43,7 @@ class ContentPart(BaseModel):
     text: str | None = None
     image_url: str | None = None
     image_base64: str | None = None
+    video_url: str | None = None
     audio_url: str | None = None
     detail: str | None = None  # For images: "auto", "low", "high"
 
@@ -101,6 +103,11 @@ class ResponseRequest(BaseModel):
     store: bool = True
     metadata: dict[str, Any] | None = None
     previous_response_id: str | None = None  # Chain responses
+    adapter_path: str | None = None
+    draft_model_id: str | None = None
+    draft_model: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
     def get_max_tokens(self) -> int | None:
         """Get max tokens from either field."""
@@ -109,6 +116,10 @@ class ResponseRequest(BaseModel):
     def get_system_instruction(self) -> str | None:
         """Get system instruction from either field."""
         return self.system_instruction or self.instructions
+
+    def get_draft_model_id(self) -> str | None:
+        """Return the canonical draft model override across both request spellings."""
+        return self.draft_model_id or self.draft_model
 
 
 class ResponseUsage(BaseModel):

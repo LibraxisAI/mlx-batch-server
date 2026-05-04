@@ -16,8 +16,7 @@ Target metrics:
 - <500ms time-to-first-token per user
 - <150MB overhead per concurrent request
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
-Co-Authored-By: [Maciej](void@div0.space) & [Klaudiusz](the1st@whoai.am)
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations
@@ -331,7 +330,7 @@ class BatchChatGenerator:
 
             if self._generator is None:
                 self._generator = BatchGenerator(
-                    model=self.model.text_model,
+                    model=self.model.language_model,
                     max_tokens=max_tokens,
                     stop_tokens=stop_tokens,
                     completion_batch_size=self._completion_batch_size,
@@ -517,27 +516,30 @@ class BatchChatGenerator:
         if not requests:
             return
 
-        # Prepare and insert requests
-        prompts, max_tokens_list, samplers = self._prepare_batch_requests(requests)
-
-        # The generator-level max_tokens is only the default. Per-request limits
-        # and samplers are applied at insert time.
-        gen = self._get_or_create_generator(max_tokens=max(max_tokens_list))
-        uids = gen.insert(prompts, max_tokens=max_tokens_list, samplers=samplers)
-
-        # Map UIDs to request IDs
-        for uid, req in zip(uids, requests, strict=True):
-            self._uid_to_request[uid] = req.id
-            self._request_to_uid[req.id] = uid
-            self._active_requests.add(req.id)
-
-        self._stats.active_requests = len(self._active_requests)
-        logger.info(
-            f"Inserted {len(requests)} requests, active={self._stats.active_requests}"
-        )
-
         # Stream tokens
         try:
+            if hasattr(self.model, "reset_runtime_state"):
+                self.model.reset_runtime_state()
+
+            # Prepare and insert requests
+            prompts, max_tokens_list, samplers = self._prepare_batch_requests(requests)
+
+            # The generator-level max_tokens is only the default. Per-request limits
+            # and samplers are applied at insert time.
+            gen = self._get_or_create_generator(max_tokens=max(max_tokens_list))
+            uids = gen.insert(prompts, max_tokens=max_tokens_list, samplers=samplers)
+
+            # Map UIDs to request IDs
+            for uid, req in zip(uids, requests, strict=True):
+                self._uid_to_request[uid] = req.id
+                self._request_to_uid[req.id] = uid
+                self._active_requests.add(req.id)
+
+            self._stats.active_requests = len(self._active_requests)
+            logger.info(
+                f"Inserted {len(requests)} requests, active={self._stats.active_requests}"
+            )
+
             while self._active_requests:
                 responses = gen.next()
                 if not responses:
