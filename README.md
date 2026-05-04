@@ -23,9 +23,9 @@ processing, OpenAI Responses API, and Harmony parser for GPT-OSS models.
 
 ## Origin & Acknowledgments
 
-This project is a **standalone fork** of [mlx-batch-server](https://github.com/madroidmaq/mlx-batch-server) by **[@madroidmaq](https://github.com/madroidmaq)**, whose excellent work laid the foundation for local MLX inference with OpenAI/Anthropic API compatibility.
+This project is a **standalone fork** of [mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server) by **[@madroidmaq](https://github.com/madroidmaq)**, whose excellent work laid the foundation for local MLX inference with OpenAI/Anthropic API compatibility.
 
-**VetCoders** extended the original project with:
+**LibraxisAI** extended the original project with:
 
 - Batch inference coordinator (10+ concurrent requests)
 - Full OpenAI Responses API (`/v1/responses`)
@@ -67,7 +67,7 @@ improvements back to the upstream project where applicable.
 
 ```bash
 # Clone
-git clone https://github.com/VetCoders/mlx-batch-server.git
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
 cd mlx-batch-server
 
 # Core install (inference only)
@@ -355,7 +355,7 @@ make batch-stats     # Coordinator stats
 ## Contributing
 
 ```bash
-git clone https://github.com/VetCoders/mlx-batch-server.git
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
 cd mlx-batch-server
 make setup && make test
 ```
@@ -372,9 +372,9 @@ Pull requests welcome! For major changes, please open an issue first.
 
 ---
 
-**Original project:** [mlx-batch-server](https://github.com/madroidmaq/mlx-batch-server) by [@madroidmaq](https://github.com/madroidmaq)
+**Original project:** [mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server) by [@madroidmaq](https://github.com/madroidmaq)
 
-**Fork maintained by:** [VetCoders](https://github.com/VetCoders) — M&K (c)2026
+**Maintained by:** [LibraxisAI](https://github.com/LibraxisAI)
 
 Built with [MLX](https://github.com/ml-explore/mlx) by Apple • [FastAPI](https://fastapi.tiangolo.com/) • [MLX-LM](https://github.com/ml-explore/mlx-lm)
 
