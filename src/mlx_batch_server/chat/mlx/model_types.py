@@ -1,11 +1,13 @@
 """MLX Model types and management."""
 
 import importlib
+import logging
 from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
 from mlx import nn
+from mlx_lm.models.cache import KVCache
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.utils import load as load_text_runtime
 from mlx_lm.utils import load_config as load_text_config
@@ -36,9 +38,40 @@ except ImportError:
             )
 
 
+from ...core.config import get_settings
 from ...utils.logger import logger
 from ...utils.model_limits import extract_context_length
+from .runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+)
 from .tools.chat_template import ChatTemplate
+
+
+def _patch_transformers_auto_docstring_for_vlm() -> None:
+    """Avoid the transformers 4.57.x auto-docstring crash on some VLM processors."""
+    try:
+        auto_docstring = importlib.import_module("transformers.utils.auto_docstring")
+        original = getattr(auto_docstring, "get_placeholders_dict", None)
+        if original is None or getattr(original, "_mlx_batch_safe_wrapper", False):
+            return
+
+        def _safe_get_placeholders_dict(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            except IndexError:
+                return {}
+
+        _safe_get_placeholders_dict._mlx_batch_safe_wrapper = True
+        auto_docstring.get_placeholders_dict = _safe_get_placeholders_dict
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Skipping transformers auto_docstring patch in model_types: %s",
+            type(exc).__name__,
+        )
+
+
+_patch_transformers_auto_docstring_for_vlm()
 
 _MULTIMODAL_CONFIG_KEYS = (
     "vision_config",
@@ -96,6 +129,35 @@ class _MLXLMCompatibleCacheProxy:
         self.base_cache[idx] = value
 
 
+def _iter_runtime_state_targets(model: Any):
+    """Yield unique runtime objects that may hold request-local VLM state."""
+    seen: set[int] = set()
+    language_model = getattr(model, "language_model", None)
+    nested_language_model = getattr(language_model, "model", None)
+
+    for candidate in (model, language_model, nested_language_model):
+        if candidate is None:
+            continue
+        candidate_id = id(candidate)
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        yield candidate
+
+
+def reset_request_local_runtime_state(model: Any) -> bool:
+    """Clear transient rope/position fields from nested shared VLM runtimes."""
+    cleared = False
+
+    for candidate in _iter_runtime_state_targets(model):
+        for attr in ("_position_ids", "_rope_deltas"):
+            if hasattr(candidate, attr):
+                setattr(candidate, attr, None)
+                cleared = True
+
+    return cleared
+
+
 class MLXLMCompatibleLanguageModel(nn.Module):
     """Adapt VLM language towers to the logits tensor contract used by mlx_lm.
 
@@ -109,6 +171,7 @@ class MLXLMCompatibleLanguageModel(nn.Module):
     def __init__(self, base_model: Any):
         super().__init__()
         self.base_model = base_model
+        self._cache_owner = getattr(base_model, "model", base_model)
 
     def _normalize_cache(self, cache):
         if cache is None:
@@ -137,25 +200,41 @@ class MLXLMCompatibleLanguageModel(nn.Module):
     def make_cache(self):
         if hasattr(self.base_model, "make_cache"):
             return self.base_model.make_cache()
-        raise AttributeError("Wrapped language model does not define make_cache()")
+        if self._cache_owner is not self.base_model and hasattr(
+            self._cache_owner, "make_cache"
+        ):
+            return self._cache_owner.make_cache()
+        if hasattr(self._cache_owner, "layers"):
+            return [KVCache() for _ in self._cache_owner.layers]
+        # Some frontier VLM language towers keep cache ownership outside the tower
+        # object. mlx_lm accepts an empty prompt-cache list for those runtimes.
+        return []
 
     @property
     def layers(self):
-        return self.base_model.layers
+        return self._cache_owner.layers
 
     @property
     def head_dim(self):
-        return self.base_model.head_dim
+        return self._cache_owner.head_dim
 
     @property
     def n_kv_heads(self):
-        return self.base_model.n_kv_heads
+        return self._cache_owner.n_kv_heads
 
     def __getattr__(self, name: str):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            return getattr(object.__getattribute__(self, "base_model"), name)
+            base_model = object.__getattribute__(self, "base_model")
+            if hasattr(base_model, name):
+                return getattr(base_model, name)
+
+            cache_owner = object.__getattribute__(self, "_cache_owner")
+            if cache_owner is not base_model and hasattr(cache_owner, name):
+                return getattr(cache_owner, name)
+
+            raise
 
 
 def _fix_tokenizer_eos(tokenizer: TokenizerWrapper) -> None:
@@ -204,6 +283,27 @@ def _is_local_path(model_id: str) -> bool:
     )
 
 
+def _enforce_pinned_only_vlm_guard(model_id: str) -> None:
+    """Reject foreign VLM loads when the runtime is configured for pinned-only."""
+    settings = get_settings()
+    pinned = {
+        normalize_runtime_model_id(candidate)
+        for candidate in settings.get_pinned_models()
+    }
+
+    if settings.model_cache_max_size > 0 or not pinned:
+        return
+
+    normalized = normalize_runtime_model_id(model_id)
+    if normalized in pinned:
+        return
+
+    allowed = ", ".join(sorted(pinned))
+    raise ValueError(
+        f"VLM model '{model_id}' is not allowed in pinned-only mode. Allowed: {allowed}"
+    )
+
+
 def _looks_multimodal_config(config: dict[str, Any]) -> bool:
     if any(config.get(key) is not None for key in _MULTIMODAL_CONFIG_KEYS):
         return True
@@ -243,6 +343,17 @@ def _should_use_vlm_runtime(config: dict[str, Any]) -> bool:
     return True
 
 
+def resolves_to_multimodal_runtime(model_id: str) -> bool:
+    """Return True when the resolved model config advertises multimodal runtime."""
+    resolved_model_id = normalize_runtime_model_id(model_id)
+    try:
+        model_path = get_model_path(resolved_model_id)
+        config = load_text_config(model_path)
+    except Exception:
+        return False
+    return _looks_multimodal_config(config)
+
+
 def _load_vlm_runtime(
     model_id: str,
     adapter_path: str | None,
@@ -262,6 +373,35 @@ def _load_vlm_runtime(
         processor if hasattr(processor, "apply_chat_template") else tokenizer
     )
     return model, tokenizer, processor, chat_template_source
+
+
+def _load_draft_runtime(
+    draft_model_id: str | None,
+    tokenizer: TokenizerWrapper,
+) -> tuple[nn.Module | None, TokenizerWrapper | None]:
+    """Load optional draft runtime for speculative decoding."""
+    if not draft_model_id:
+        return None, None
+
+    try:
+        draft_model, draft_tokenizer = load_text_runtime(
+            draft_model_id,
+            tokenizer_config={"trust_remote_code": True},
+        )
+        draft_tokenizer = _wrap_tokenizer(draft_tokenizer)
+        _fix_tokenizer_eos(draft_tokenizer)
+
+        if draft_tokenizer.vocab_size != tokenizer.vocab_size:
+            logger.warning(
+                "Draft model(%s) tokenizer does not match model tokenizer.",
+                draft_model_id,
+            )
+
+        logger.info("Loaded draft model: %s", draft_model_id)
+        return draft_model, draft_tokenizer
+    except Exception as e:
+        logger.error("Failed to load draft model %s: %s", draft_model_id, e)
+        return None, None
 
 
 def load_mlx_model(
@@ -286,11 +426,10 @@ def load_mlx_model(
     if not model_id or not model_id.strip():
         raise ValueError("model_id cannot be empty")
 
-    model_id = model_id.strip()
-
-    # Expand home directory if needed
-    if model_id.startswith("~"):
-        model_id = str(Path(model_id).expanduser())
+    model_id = normalize_runtime_model_id(model_id)
+    if draft_model_id:
+        draft_model_id = normalize_runtime_model_id(draft_model_id)
+    adapter_path = normalize_runtime_path(adapter_path)
 
     try:
         # Load configuration - use path directly for local models
@@ -302,6 +441,7 @@ def load_mlx_model(
         processor = None
 
         if _should_use_vlm_runtime(config):
+            _enforce_pinned_only_vlm_guard(model_id)
             model, tokenizer, processor, chat_template_source = _load_vlm_runtime(
                 model_id=model_id,
                 adapter_path=adapter_path,
@@ -320,31 +460,7 @@ def load_mlx_model(
 
         chat_template = ChatTemplate(config["model_type"], chat_template_source)
 
-        # Load draft model if specified
-        draft_model = None
-        draft_tokenizer = None
-        if draft_model_id:
-            try:
-                draft_model, draft_tokenizer = load_text_runtime(
-                    draft_model_id,
-                    tokenizer_config={"trust_remote_code": True},
-                )
-                draft_tokenizer = _wrap_tokenizer(draft_tokenizer)
-                # Fix potential eos_token_ids mismatch for draft model
-                _fix_tokenizer_eos(draft_tokenizer)
-
-                # Check if vocabulary sizes match
-                if draft_tokenizer.vocab_size != tokenizer.vocab_size:
-                    logger.warn(
-                        f"Draft model({draft_model_id}) tokenizer does not match model tokenizer."
-                    )
-
-                logger.info(f"Loaded draft model: {draft_model_id}")
-            except Exception as e:
-                logger.error(f"Failed to load draft model {draft_model_id}: {e}")
-                # Continue without draft model
-                draft_model = None
-                draft_tokenizer = None
+        draft_model, draft_tokenizer = _load_draft_runtime(draft_model_id, tokenizer)
 
         return MLXModel(
             model_id=model_id,
@@ -359,6 +475,8 @@ def load_mlx_model(
             draft_tokenizer=draft_tokenizer,
         )
 
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"Failed to load model {model_id}: {e}")
         raise RuntimeError(f"Model loading failed for {model_id}: {e}") from e
@@ -414,17 +532,29 @@ class MLXModel:
         self.draft_model = draft_model
         self.draft_tokenizer = draft_tokenizer
         self._text_model_proxy: nn.Module | None = None
+        self._language_model: nn.Module | None = None
+
+    def reset_runtime_state(self) -> None:
+        """Clear request-local transient state left behind by some VLM towers."""
+        cleared = reset_request_local_runtime_state(self.model)
+        if cleared:
+            logger.debug("Cleared transient runtime state for %s", self.model_id)
 
     @property
-    def text_model(self) -> nn.Module:
+    def language_model(self) -> nn.Module:
         """Return the text-generation tower for both LLM and VLM runtimes."""
         base_model = getattr(self.model, "language_model", self.model)
         if not self.supports_multimodal:
-            return base_model
+            return self.model
 
-        if self._text_model_proxy is None:
-            self._text_model_proxy = MLXLMCompatibleLanguageModel(base_model)
-        return self._text_model_proxy
+        if self._language_model is None:
+            self._language_model = MLXLMCompatibleLanguageModel(base_model)
+        return self._language_model
+
+    @property
+    def text_model(self) -> nn.Module:
+        """Compatibility alias to the canonical language model projection."""
+        return self.language_model
 
     @property
     def supports_multimodal(self) -> bool:

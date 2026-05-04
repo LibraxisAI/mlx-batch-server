@@ -2,7 +2,7 @@
 
 Tests the full pipeline from /v1/responses endpoint through batch coordinator.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 import pytest

@@ -13,8 +13,9 @@
 .PHONY: install dev run stop restart logs test lint format check clean help benchmark \
 	benchmark-cli benchmark-quick benchmark-build setup install-dev install-hooks lint-fix format-check \
 	security pre-commit pre-push test-fast test-cov test-responses loctree twins build \
-	docker-build docker-run load unload list ps status batch-stats embeddings reranker \
-	vision stt tts
+	docker-build docker-run operator-tools load unload list ps status batch-stats embeddings reranker \
+	vision stt tts hf-rewrite hf-rewrite-apply hf-backfill-inference hf-backfill-inference-apply \
+	hf-backfill-footer hf-backfill-footer-apply
 .DEFAULT_GOAL := help
 
 # === Configuration ===
@@ -23,7 +24,7 @@ PYTHON := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),uv run python)
 PORT ?= 10240
 HOST ?= 0.0.0.0
 LOG_LEVEL ?= info
-CORS ?= http://localhost:*
+CORS ?= http://localhost:*,http://100.*:*,https://100.*:*
 
 # === Installation ===
 install: ## Install as global CLI tool (mlx-batch-server command)
@@ -102,6 +103,7 @@ benchmark: benchmark-build ## Run API tester (Gradio UI on http://localhost:7860
 benchmark-build: ## Build HTML tester static assets
 	$(PYTHON) playground/build_static.py
 
+
 benchmark-cli: ## Run CLI benchmark (BENCH_WORKERS=10 BENCH_MODEL=chat)
 	$(PYTHON) playground/api_tester.py --cli -w $(BENCH_WORKERS) -e $(BENCH_ENDPOINT) -m $(BENCH_MODEL)
 
@@ -161,6 +163,38 @@ loctree: ## Run loctree analysis
 twins: ## Check for duplicate code
 	@if command -v loct &>/dev/null; then loct twins; else echo "loctree not installed"; fi
 
+operator-tools: ## Verify bundled loct/aicx/prview operator tools
+	$(PYTHON) scripts/verify_operator_tools.py
+
+# === HF Model Card Publishing ===
+# Tooling for keeping LibraxisAI model cards on Hugging Face consistent.
+# All commands default to dry-run; the *-apply variants actually push.
+# Authentication: run `hf auth login` once before using *-apply targets.
+#
+# Optional flags forwarded to the underlying scripts:
+#   HF_LIMIT=5            -- only process the first N models
+#   HF_ONLY="Bielik Qwen" -- substring filter on model IDs
+
+HF_FLAGS := $(if $(HF_LIMIT),--limit $(HF_LIMIT)) $(if $(HF_ONLY),--only $(HF_ONLY))
+
+hf-rewrite: ## Dry-run: rewrite all LibraxisAI HF model cards from canonical template
+	$(PYTHON) scripts/rewrite_hf_model_cards.py $(HF_FLAGS)
+
+hf-rewrite-apply: ## Push: rewrite all LibraxisAI HF model cards from canonical template
+	$(PYTHON) scripts/rewrite_hf_model_cards.py --apply $(HF_FLAGS)
+
+hf-backfill-inference: ## Dry-run: backfill `## Inference tested on` link into existing cards
+	$(PYTHON) scripts/backfill_hf_inference_section.py $(HF_FLAGS)
+
+hf-backfill-inference-apply: ## Push: backfill `## Inference tested on` link into existing cards
+	$(PYTHON) scripts/backfill_hf_inference_section.py --apply $(HF_FLAGS)
+
+hf-backfill-footer: ## Dry-run: backfill canonical Vibecrafted footer into existing cards
+	$(PYTHON) scripts/backfill_hf_canonical_footer.py $(HF_FLAGS)
+
+hf-backfill-footer-apply: ## Push: backfill canonical Vibecrafted footer into existing cards
+	$(PYTHON) scripts/backfill_hf_canonical_footer.py --apply $(HF_FLAGS)
+
 # === Model Management (LMS-style) ===
 MODEL ?= mlx-community/Qwen2.5-7B-Instruct-4bit
 SERVER_URL ?= http://localhost:$(PORT)
@@ -177,10 +211,17 @@ TTS_VOICE ?= af_sky
 TTS_FORMAT ?= wav
 TTS_OUTPUT ?= logs/tts-output.wav
 
-load: ## Load a model (MODEL=<model-id> [TASK=llm|embeddings|visual|images|stt|tts])
+load: ## Load a model (MODEL=<model-id> [TASK=llm|embeddings|visual|images|stt|tts] [ALIAS=<name>])
 	@echo "Loading model: $(MODEL)"
 	@payload='{"model": "$(MODEL)"}'; \
 	if [ -n "$(TASK)" ]; then payload=$$(printf '{"model": "%s", "task": "%s"}' "$(MODEL)" "$(TASK)"); fi; \
+	if [ -n "$(ALIAS)" ]; then \
+		if [ -n "$(TASK)" ]; then \
+			payload=$$(printf '{"model": "%s", "task": "%s", "alias": "%s"}' "$(MODEL)" "$(TASK)" "$(ALIAS)"); \
+		else \
+			payload=$$(printf '{"model": "%s", "alias": "%s"}' "$(MODEL)" "$(ALIAS)"); \
+		fi; \
+	fi; \
 	curl -s -X POST $(SERVER_URL)/v1/models/load \
 		-H "Content-Type: application/json" \
 		-d "$$payload" | $(PYTHON) -m json.tool 2>/dev/null || \
@@ -216,6 +257,7 @@ list: ## List all models in HuggingFace cache (local disk)
 [print(f'  \033[32m● loaded\033[0m  {p[6:]:50} {s:>8}') if p[6:] in loaded else print(f'  \033[90m○ cached\033[0m  {p[6:]:50} {s:>8}') \
 for line in sys.stdin if (parts := line.strip().split()) and len(parts) >= 2 and (p := parts[0]) and (s := parts[1])]" 2>/dev/null || \
 		echo "  (hf CLI not available - install: cargo install hf-cli)"
+
 
 status: ## Server status with loaded models
 	@echo "=== MLX Batch Server Status ==="
@@ -279,6 +321,7 @@ tts: ## Run tts model (MODEL=<model-id> PORT=<port>)
 		echo "Saved audio to $(TTS_OUTPUT)" || \
 		echo "Server not running or endpoint not available"
 
+
 # === Build & Release ===
 build: ## Build package
 	uv build
@@ -305,4 +348,4 @@ help: ## Show this help
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-# Created by M&K (c)2026 The LibraxisAI Team
+# Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
 from starlette.responses import PlainTextResponse
 
+from ..auth.dependency import verify_auth
 from .schema import ResponseFormat, STTRequestForm, TranscriptionResponse
 from .whisper_model import STTService
 
@@ -10,7 +11,10 @@ router = APIRouter(tags=["speech-to-text"])
 
 @router.post("/audio/transcriptions", response_model=TranscriptionResponse)
 @router.post("/v1/audio/transcriptions", response_model=TranscriptionResponse)
-async def create_transcription(request: STTRequestForm = Depends()):
+async def create_transcription(
+    request: STTRequestForm = Depends(),
+    _auth: dict = Depends(verify_auth),
+):
     """
     Transcribe audio file to text.
     """

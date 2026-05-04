@@ -618,7 +618,7 @@ curl -v "http://localhost:10240/anthropic/v1/messages" \
 For complete Anthropic API specifications, see:
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - [Anthropic Models API](https://docs.anthropic.com/en/api/models)
-- [MLX Batch Server Source Code](https://github.com/madroidmaq/mlx-batch-server)
+- [MLX Batch Server Source Code](https://github.com/LibraxisAI/mlx-batch-server) (fork of [madroidmaq/mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server))
 
 ## 🤝 Contributing
 

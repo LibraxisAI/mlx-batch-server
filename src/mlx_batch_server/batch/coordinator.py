@@ -11,8 +11,7 @@ Architecture:
 - Background worker runs the batch generation loop
 - Automatic batch collection with configurable window
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
-Co-Authored-By: [Maciej](void@div0.space) & [Klaudiusz](the1st@whoai.am)
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations
@@ -26,6 +25,11 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..chat.mlx.runtime_aliases import (
+    normalize_runtime_model_id,
+    normalize_runtime_path,
+    resolve_runtime_target,
+)
 from ..utils.logger import logger
 
 if TYPE_CHECKING:
@@ -38,6 +42,23 @@ __all__ = [
     "shutdown_all_coordinators",
     "shutdown_batch_coordinator",
 ]
+
+
+def _normalize_batch_model_id(model_id: str) -> str:
+    """Canonicalize coordinator keys to the same runtime identity as the cache."""
+    return normalize_runtime_model_id(model_id)
+
+
+def _normalize_batch_adapter_path(adapter_path: str | None) -> str | None:
+    return normalize_runtime_path(adapter_path)
+
+
+def _resolve_batch_runtime(
+    model_id: str,
+    adapter_path: str | None = None,
+) -> tuple[str, str | None]:
+    target = resolve_runtime_target(model_id, adapter_path=adapter_path)
+    return target.model_id, target.adapter_path
 
 
 @dataclass
@@ -100,8 +121,10 @@ class BatchRequestCoordinator:
             batch_window_ms: Time window to collect requests (ms)
             max_batch_size: Maximum requests per batch
         """
-        self.model_id = model_id
-        self.adapter_path = adapter_path
+        self.model_id, self.adapter_path = _resolve_batch_runtime(
+            model_id,
+            adapter_path,
+        )
         self._completion_batch_size = completion_batch_size
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
@@ -474,13 +497,17 @@ def get_batch_coordinator(
     Returns:
         BatchRequestCoordinator instance
     """
-    cache_key = f"{model_id}:{adapter_path or ''}"
+    normalized_model_id, normalized_adapter_path = _resolve_batch_runtime(
+        model_id,
+        adapter_path,
+    )
+    cache_key = f"{normalized_model_id}:{normalized_adapter_path or ''}"
 
     with _coordinator_lock:
         if cache_key not in _coordinators:
             _coordinators[cache_key] = BatchRequestCoordinator(
-                model_id=model_id,
-                adapter_path=adapter_path,
+                model_id=normalized_model_id,
+                adapter_path=normalized_adapter_path,
                 completion_batch_size=completion_batch_size,
                 prefill_batch_size=prefill_batch_size,
                 prefill_step_size=prefill_step_size,
@@ -507,23 +534,54 @@ async def shutdown_all_coordinators() -> None:
     logger.info("All batch coordinators shutdown")
 
 
-async def shutdown_batch_coordinator(model_id: str) -> int:
-    """Shutdown coordinator instances for a specific model ID."""
+async def shutdown_batch_coordinator(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+) -> int:
+    """Shutdown coordinator instances for one runtime target.
+
+    When ``adapter_path`` is omitted we preserve the legacy coarse behavior and
+    remove every coordinator bound to the canonical ``model_id``. When it is
+    provided we only tear down the exact adapter-scoped batch lane.
+    """
+    normalized_model_id, normalized_adapter_path = _resolve_batch_runtime(
+        model_id,
+        adapter_path,
+    )
     with _coordinator_lock:
-        keys_to_remove = [
-            key for key, coord in _coordinators.items() if coord.model_id == model_id
-        ]
+        if normalized_adapter_path is None:
+            keys_to_remove = [
+                key
+                for key, coord in _coordinators.items()
+                if coord.model_id == normalized_model_id
+            ]
+        else:
+            keys_to_remove = [
+                key
+                for key, coord in _coordinators.items()
+                if coord.model_id == normalized_model_id
+                and coord.adapter_path == normalized_adapter_path
+            ]
         coords = [_coordinators.pop(key) for key in keys_to_remove]
 
     for coord in coords:
         await coord.shutdown()
 
     if coords:
-        logger.info(
-            "Shutdown %s batch coordinator(s) for model=%s",
-            len(coords),
-            model_id,
-        )
+        if normalized_adapter_path is None:
+            logger.info(
+                "Shutdown %s batch coordinator(s) for model=%s",
+                len(coords),
+                normalized_model_id,
+            )
+        else:
+            logger.info(
+                "Shutdown %s batch coordinator(s) for model=%s adapter=%s",
+                len(coords),
+                normalized_model_id,
+                normalized_adapter_path,
+            )
 
     return len(coords)
 

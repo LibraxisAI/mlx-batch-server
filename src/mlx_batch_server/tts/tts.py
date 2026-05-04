@@ -1,8 +1,9 @@
 import io
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from ..auth.dependency import verify_auth
 from .schema import AudioFormat, TTSRequest
 from .tts_service import TTSService
 
@@ -11,7 +12,10 @@ router = APIRouter(tags=["text-to-speech"])
 
 @router.post("/audio/speech")
 @router.post("/v1/audio/speech")
-async def create_speech(request: TTSRequest):
+async def create_speech(
+    request: TTSRequest,
+    _auth: dict = Depends(verify_auth),
+):
     """
     Generate audio from input text.
 

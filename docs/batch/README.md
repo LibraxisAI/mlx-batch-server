@@ -46,4 +46,4 @@ Request 3 ─┘         │                          │
 Refer to `HowToUse.md` for detailed configuration and testing instructions.
 
 ---
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team

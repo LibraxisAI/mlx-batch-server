@@ -181,6 +181,14 @@ class OpenAIAdapter:
         if request.response_format and request.response_format.json_schema:
             json_schema = request.response_format.json_schema.schema_def
 
+        raw_prompt_cache = extra_body.get("enable_prompt_cache")
+        if isinstance(raw_prompt_cache, bool):
+            enable_prompt_cache = raw_prompt_cache
+        elif isinstance(raw_prompt_cache, int):
+            enable_prompt_cache = raw_prompt_cache != 0
+        else:
+            enable_prompt_cache = True
+
         return {
             "messages": messages,
             "tools": tools,
@@ -188,7 +196,7 @@ class OpenAIAdapter:
             "sampler": sampler_config,
             "top_logprobs": request.top_logprobs if request.logprobs else None,
             "template_kwargs": template_kwargs,
-            "enable_prompt_cache": True,
+            "enable_prompt_cache": enable_prompt_cache,
             "repetition_penalty": request.presence_penalty,
             "json_schema": json_schema,
         }
@@ -276,12 +284,13 @@ class OpenAIAdapter:
 
         if chat_result.tool_calls:
             tool_calls = _convert_tool_calls(chat_result.tool_calls)
-            logger.info(f"Found {len(tool_calls)} tool calls in stream")
-            for i, tc in enumerate(tool_calls):
-                logger.info(
-                    f"  Tool call {i}: {tc.function.name}({tc.function.arguments})"
-                )
-            return tool_calls, "tool_calls"
+            if tool_calls:
+                logger.info(f"Found {len(tool_calls)} tool calls in stream")
+                for i, tc in enumerate(tool_calls):
+                    logger.info(
+                        f"  Tool call {i}: {tc.function.name}({tc.function.arguments})"
+                    )
+                return tool_calls, "tool_calls"
 
         logger.info("No tool calls found in stream response")
         return None, "stop"
@@ -429,12 +438,13 @@ class OpenAIAdapter:
 
             result = None
             accumulated_text = ""
-            has_tools = request.tools is not None and len(request.tools) > 0
+            tools = request.tools or []
+            has_tools = len(tools) > 0
             in_tool_call = False
             pending_buffer = ""
 
             if has_tools:
-                logger.info(f"Streaming with {len(request.tools)} tools available")
+                logger.info(f"Streaming with {len(tools)} tools available")
 
             # Stream content chunks
             for chunk in self._generate_wrapper.generate_stream(**params):

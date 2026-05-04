@@ -10,7 +10,7 @@ class TestChatTemplate:
 
     def test_thinking_enabled(self):
         # Test explicitly enabling thinking
-        model, tokenizer = load(self.thinking_model_id)
+        _model, tokenizer = load(self.thinking_model_id)
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         messages = [{"role": "user", "content": "hello"}]
@@ -25,7 +25,7 @@ class TestChatTemplate:
 
     def test_thinking_disabled(self):
         # Test explicitly disabling thinking - should do no modification
-        model, tokenizer = load(self.thinking_model_id)
+        _model, tokenizer = load(self.thinking_model_id)
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         messages = [{"role": "user", "content": "hello"}]
@@ -42,7 +42,7 @@ class TestChatTemplate:
 
     def test_thinking_auto_detect(self):
         # Test comprehensive None behavior: default value and auto-detection
-        model, tokenizer = load(self.thinking_model_id)
+        _model, tokenizer = load(self.thinking_model_id)
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         # Test 1: Default value should be None
@@ -58,7 +58,7 @@ class TestChatTemplate:
         assert chat_template.reason_decoder is None
 
         # Test 3: Auto-detection when prompt ends with <think>
-        model2, tokenizer2 = load("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+        _model2, tokenizer2 = load("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
         chat_template2 = ChatTemplate(tools_parser_type="hf", tokenizer=tokenizer2)
 
         prompt2 = chat_template2.apply_chat_template(messages=messages)
@@ -70,7 +70,7 @@ class TestChatTemplate:
 
     def test_multimodal_content(self):
         """Test handling of multimodal content (text + other types)"""
-        model, tokenizer = load(self.nonthinking_model_id)
+        _model, tokenizer = load(self.nonthinking_model_id)
         chat_template = ChatTemplate(tools_parser_type="hf", tokenizer=tokenizer)
 
         messages = [
@@ -92,7 +92,7 @@ class TestChatTemplate:
 
     def test_assistant_prefill(self):
         """Test prefill mode with assistant message"""
-        model, tokenizer = load(self.nonthinking_model_id)
+        _model, tokenizer = load(self.nonthinking_model_id)
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         messages = [
@@ -108,7 +108,7 @@ class TestChatTemplate:
 
     def test_tools_basic(self):
         """Test basic tool integration"""
-        model, tokenizer = load(self.tools_model_id)
+        _model, tokenizer = load(self.tools_model_id)
         chat_template = ChatTemplate(tools_parser_type="llama", tokenizer=tokenizer)
 
         messages = [{"role": "user", "content": "What's the weather?"}]
@@ -135,7 +135,7 @@ class TestChatTemplate:
 
     def test_tools_choice_variations(self):
         """Test different tool choice options"""
-        model, tokenizer = load(self.tools_model_id)
+        _model, tokenizer = load(self.tools_model_id)
         chat_template = ChatTemplate(tools_parser_type="llama", tokenizer=tokenizer)
 
         messages = [{"role": "user", "content": "Call a function"}]
@@ -171,7 +171,7 @@ class TestChatTemplate:
 
     def test_thinking_with_tools(self):
         """Test thinking mode combined with tools"""
-        model, tokenizer = load("mlx-community/Qwen3-0.6B-4bit-DWQ")
+        _model, tokenizer = load("mlx-community/Qwen3-0.6B-4bit-DWQ")
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         messages = [{"role": "user", "content": "Use tools to help me"}]
@@ -187,7 +187,7 @@ class TestChatTemplate:
 
     def test_conversation_history(self):
         """Test multiple message conversation"""
-        model, tokenizer = load("mlx-community/Qwen3-0.6B-4bit-DWQ")
+        _model, tokenizer = load("mlx-community/Qwen3-0.6B-4bit-DWQ")
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         messages = [
@@ -207,7 +207,7 @@ class TestChatTemplate:
 
     def test_kwargs_passthrough(self):
         """Test that additional kwargs are passed through to tokenizer"""
-        model, tokenizer = load("mlx-community/Qwen3-0.6B-4bit-DWQ")
+        _model, tokenizer = load("mlx-community/Qwen3-0.6B-4bit-DWQ")
         chat_template = ChatTemplate(tools_parser_type="qwen3", tokenizer=tokenizer)
 
         messages = [{"role": "user", "content": "test"}]

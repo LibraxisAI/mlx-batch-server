@@ -4,7 +4,7 @@ Compatibility patches for deprecated APIs in dependencies.
 Patches pkg_resources usage in jieba to use importlib.resources instead.
 Must be imported BEFORE any module that imports jieba (e.g., f5_tts_mlx).
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations

@@ -80,7 +80,7 @@ class ChatTemplate(ABC):
         """
         return ChatTemplate(self.tools_parser_type, self.tokenizer)
 
-    def apply_chat_template(
+    def apply_chat_template(  # noqa: PLR0915
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
@@ -141,22 +141,37 @@ class ChatTemplate(ABC):
         else:
             skip_thinking_prefill = False
 
+        # Chat template kwarg names differ across processor classes:
+        #   - Gemma4Processor (HF Transformers 5.x VLM)    → `messages=`
+        #   - Vanilla ProcessorMixin (HF <=5.x positional) → `conversation` (positional)
+        #   - PreTrainedTokenizer legacy                   → `conversation=` (kwarg)
+        # Try each shape in turn; fall back on any TypeError.
+        def _apply_template(**extra):
+            call_kwargs = {
+                "tools": schema_tools,
+                "tokenize": False,
+                **extra,
+                **kwargs,
+            }
+            try:
+                return self.tokenizer.apply_chat_template(
+                    messages=conversation, **call_kwargs
+                )
+            except TypeError:
+                pass
+            try:
+                return self.tokenizer.apply_chat_template(
+                    conversation=conversation, **call_kwargs
+                )
+            except TypeError:
+                pass
+            # Last resort — positional. If this still raises, surface the error.
+            return self.tokenizer.apply_chat_template(conversation, **call_kwargs)
+
         if should_prefill:
-            prompt = self.tokenizer.apply_chat_template(
-                conversation=conversation,
-                tools=schema_tools,
-                tokenize=False,
-                continue_final_message=True,
-                **kwargs,
-            )
+            prompt = _apply_template(continue_final_message=True)
         else:
-            prompt = self.tokenizer.apply_chat_template(
-                conversation=conversation,
-                tools=schema_tools,
-                tokenize=False,
-                add_generation_prompt=True,
-                **kwargs,
-            )
+            prompt = _apply_template(add_generation_prompt=True)
 
         prompt = self._process_thinking_prompt(prompt, skip_thinking_prefill)
 

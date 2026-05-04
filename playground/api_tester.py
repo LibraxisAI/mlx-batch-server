@@ -3,7 +3,7 @@
 LibraxisAI API Tester - Gradio Edition
 Multi-lane parallel comparison tool for API endpoints
 
-Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 import json
@@ -627,7 +627,7 @@ def create_app() -> tuple[gr.Blocks, str]:
                 # Footer
                 gr.HTML("""
                     <div style="text-align: center; padding: 1rem; color: #666; font-size: 0.8rem;">
-                        Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders | LibraxisAI
+                        Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
                     </div>
                 """)
 

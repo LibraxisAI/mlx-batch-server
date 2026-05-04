@@ -67,6 +67,10 @@ class ModelLoadRequest(BaseModel):
     draft_model_id: str | None = Field(
         default=None, description="Optional draft model for speculative decoding"
     )
+    alias: str | None = Field(
+        default=None,
+        description="Optional runtime alias to register for this model in the current server process",
+    )
 
 
 class ModelLoadResponse(BaseModel):
@@ -82,6 +86,29 @@ class ModelLoadResponse(BaseModel):
     )
 
 
+class ModelAliasRequest(BaseModel):
+    """Request body for registering a runtime alias without loading a model."""
+
+    alias: str = Field(..., description="Operator-facing alias to register")
+    model: str = Field(..., description="Target model ID, path, or existing alias")
+    adapter_path: str | None = Field(
+        default=None, description="Optional path to LoRA adapter"
+    )
+    draft_model_id: str | None = Field(
+        default=None, description="Optional draft model for speculative decoding"
+    )
+
+
+class ModelAliasResponse(BaseModel):
+    """Response for runtime alias operations."""
+
+    alias: str = Field(..., description="Registered alias")
+    model: str = Field(..., description="Canonical target model ID")
+    adapter_path: str | None = None
+    draft_model_id: str | None = None
+    status: str = "registered"
+
+
 class ModelUnloadRequest(BaseModel):
     """Request body for unloading a model from memory."""
 
@@ -95,6 +122,14 @@ class ModelUnloadRequest(BaseModel):
             "Optional task hint (llm, embeddings, visual, images, stt, tts). "
             "If omitted, the server will attempt to auto-detect."
         ),
+    )
+    adapter_path: str | None = Field(
+        default=None,
+        description="Optional path to the exact LoRA-adapted runtime to unload",
+    )
+    draft_model_id: str | None = Field(
+        default=None,
+        description="Optional draft model tied to the exact runtime to unload",
     )
 
 

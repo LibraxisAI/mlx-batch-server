@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>{% block title %}MLX Batch Server Operator{% endblock %}</title>
+  <link rel="stylesheet" href="{{ static_url }}/admin.css" />
+  <script src="{{ static_url }}/htmx.min.js" defer></script>
+  <script src="{{ static_url }}/htmx-sse.js" defer></script>
+</head>
+<body hx-ext="sse">
+  <header class="topbar">
+    <div class="brand">MLX Batch Server Operator <small>:{{ port }}</small></div>
+    <div class="muted" id="now"></div>
+  </header>
+  <nav class="tabs" aria-label="Sections">
+    <a href="{{ base }}/" class="{% if active == 'fleet' %}active{% endif %}">Fleet</a>
+    <a href="{{ base }}/sessions" class="{% if active == 'sessions' %}active{% endif %}">Sessions</a>
+    <a href="{{ base }}/logs" class="{% if active == 'logs' %}active{% endif %}">Logs</a>
+    <a href="{{ base }}/lifecycle" class="{% if active == 'lifecycle' %}active{% endif %}">Lifecycle</a>
+    <a href="{{ base }}/playground" class="{% if active == 'playground' %}active{% endif %}">Playground</a>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="bottom">
+    Local operator backend for {{ inference_base_url }}
+  </footer>
+  <script>
+    (function () {
+      var n = document.getElementById('now');
+      function tick() {
+        if (n) n.textContent = new Date().toLocaleTimeString();
+      }
+      tick();
+      setInterval(tick, 1000);
+    })();
+  </script>
+</body>
+</html>

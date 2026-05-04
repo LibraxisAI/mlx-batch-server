@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -11,6 +12,9 @@ from mlx_batch_server.batch.generator import BatchChatGenerator, BatchRequest
 from mlx_batch_server.chat.mlx.model_types import (
     MLXLMCompatibleLanguageModel,
     MLXModel,
+)
+from mlx_batch_server.chat.mlx.wrapper_cache import (
+    wrapper_cache as shared_wrapper_cache,
 )
 
 
@@ -94,15 +98,19 @@ class _FakeBatchOffsetSensitiveTower:
         return [KVCache()]
 
 
-def _fake_model(context_length: int) -> SimpleNamespace:
+def _fake_model(context_length: int, *, multimodal: bool = False) -> SimpleNamespace:
     text_model = object()
+    runtime_model = (
+        SimpleNamespace(language_model=text_model) if multimodal else text_model
+    )
     return SimpleNamespace(
         model_id="test-model",
         config={"max_position_embeddings": context_length},
         tokenizer=_FakeTokenizer(),
         chat_template=_FakeChatTemplate(),
-        model=text_model,
+        model=runtime_model,
         text_model=text_model,
+        supports_multimodal=multimodal,
     )
 
 
@@ -283,6 +291,82 @@ class TestBatchChatGenerator:
         assert stats.prompt_tps == 0.0
         assert stats.generation_tps == 0.0
         assert stats.peak_memory_gb == 1.25
+
+    @pytest.mark.asyncio
+    async def test_stream_batch_serializes_shared_vlm_runtime(self, monkeypatch):
+        """VLM text batches should acquire the shared multimodal execution lock."""
+        generator = BatchChatGenerator(
+            model=_fake_model(context_length=16, multimodal=True)
+        )
+        events: list[tuple[str, str, str | None, str | None]] = []
+
+        @contextmanager
+        def fake_execution(
+            model_id: str,
+            *,
+            adapter_path: str | None = None,
+            draft_model_id: str | None = None,
+        ):
+            events.append(("enter", model_id, adapter_path, draft_model_id))
+            try:
+                yield
+            finally:
+                events.append(("exit", model_id, adapter_path, draft_model_id))
+
+        class FakeBatchGenerator:
+            def insert(self, prompts, max_tokens, samplers=None):
+                del prompts, max_tokens, samplers
+                assert events == [("enter", "test-model", None, None)]
+                return [11]
+
+            def next(self):
+                assert events == [("enter", "test-model", None, None)]
+                return [
+                    SimpleNamespace(
+                        uid=11,
+                        token=1,
+                        logprobs=None,
+                        finish_reason="stop",
+                    )
+                ]
+
+            def stats(self):
+                return SimpleNamespace(
+                    prompt_tokens=3,
+                    generation_tokens=1,
+                    prompt_tps=10.0,
+                    generation_tps=20.0,
+                    peak_memory=1.0,
+                )
+
+        fake_batch_gen = FakeBatchGenerator()
+        generator._generator = fake_batch_gen
+
+        monkeypatch.setattr(shared_wrapper_cache, "vlm_execution", fake_execution)
+        monkeypatch.setattr(
+            generator,
+            "_get_or_create_generator",
+            lambda max_tokens: fake_batch_gen,
+        )
+
+        chunks = []
+        async for chunk in generator.stream_batch(
+            [
+                BatchRequest(
+                    id="req-vlm",
+                    messages=[{"role": "user", "content": "hello"}],
+                    max_tokens=2,
+                )
+            ]
+        ):
+            chunks.append(chunk)
+
+        assert len(chunks) == 1
+        assert chunks[0].finish_reason == "stop"
+        assert events == [
+            ("enter", "test-model", None, None),
+            ("exit", "test-model", None, None),
+        ]
 
     def test_get_or_create_generator_uses_language_model_for_vlm_runtime(
         self, monkeypatch

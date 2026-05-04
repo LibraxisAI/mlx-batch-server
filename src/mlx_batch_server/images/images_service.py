@@ -65,8 +65,8 @@ class MFluxImageGenerator:
                 model_config=ModelConfig.from_name(
                     model_name=model_name, base_model=base_model
                 ),
-                quantize=params.get("quantize"),
-                model_path=params.get("model_path"),
+                quantize=(params or {}).get("quantize"),
+                model_path=(params or {}).get("model_path"),
                 lora_paths=params.get("lora-paths") if params else None,
                 lora_scales=params.get("lora-scales") if params else None,
             )
@@ -89,7 +89,7 @@ class MFluxImageGenerator:
     ) -> Image.Image:
         """Generate image using mflux"""
         # Parse image dimensions
-        width, height = self._parse_size(request.size)
+        width, height = self._parse_size(request.size or "1024x1024")
 
         # Get extra parameters from request
         request_extra_params = request.get_extra_params()
@@ -197,9 +197,9 @@ class ImagesService:
     ) -> list[ImageObject]:
         """Generate images based on the request"""
         generated_images = []
-        generator = self._get_generator(model_name=request.model)
+        generator = self._get_generator(model_name=request.model or "flux")
 
-        for i in range(request.n):
+        for i in range(1 if request.n is None else request.n):
             # Generate unique identifier for this image
             uid = f"{int(time.time())}_{i}"
             output_path = self._get_output_path(uid)

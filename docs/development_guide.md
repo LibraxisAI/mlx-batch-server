@@ -6,7 +6,7 @@ This guide is intended for developers who want to contribute to MLX Batch Server
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/madroidmaq/mlx-batch-server.git
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
 cd mlx-batch-server
 ```
 

@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AudioFormat(str, Enum):
@@ -24,8 +24,7 @@ class TTSRequest(BaseModel):
     speed: float | None = Field(default=1.0)
 
     # Allow any additional fields
-    class Config:
-        extra = "allow"  # This allows additional fields not defined in the model
+    model_config = ConfigDict(extra="allow")
 
     def get_extra_params(self) -> dict[str, Any]:
         """Get all extra parameters that aren't part of the standard OpenAI API."""

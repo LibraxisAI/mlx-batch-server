@@ -6,7 +6,7 @@ from datasets import load_dataset
 from openai import OpenAI
 from tqdm import tqdm
 
-weave.init("mlx-omni-function-calling-benchmark")
+weave.init("libraxisai/mlx-batch-server-benchmark")
 
 client = OpenAI(
     base_url="http://localhost:10240/v1",

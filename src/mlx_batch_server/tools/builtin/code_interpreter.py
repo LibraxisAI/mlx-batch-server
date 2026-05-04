@@ -7,7 +7,7 @@ Uses restricted builtins for safety.
 WARNING: This is a simplified implementation. For production use,
 consider using a proper sandbox like Docker or firecracker.
 
-Vibecrafted with AI Agents by VetCoders (c)2026 The LibraxisAI Team
+Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
 from __future__ import annotations
