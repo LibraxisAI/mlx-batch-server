@@ -1,0 +1,3 @@
+src/mlx_batch_server/operator/static/htmx.js
+src/mlx_batch_server/operator/static/htmx.min.js
+src/mlx_batch_server/operator/static/htmx-sse.js

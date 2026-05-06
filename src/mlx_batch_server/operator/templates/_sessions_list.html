@@ -1,0 +1,23 @@
+{% include "_alert.html" %}
+{% if not sessions %}
+<div class="card"><div class="muted">No sessions yet.</div></div>
+{% endif %}
+{% for s in sessions %}
+<div class="card" style="margin-bottom:8px;">
+  <div class="row"><span class="k">id</span><span class="v">{{ s.session_id }}</span></div>
+  <div class="row"><span class="k">created</span><span class="v">{{ s.created_at }}</span></div>
+  <div class="row"><span class="k">responses</span><span class="v">{{ s.response_count }}</span></div>
+  <div class="row"><span class="k">last model</span><span class="v">{{ s.last_model or '—' }}</span></div>
+  <div class="actions">
+    <button class="ghost"
+            hx-get="{{ base }}/_partials/session/{{ s.session_id }}"
+            hx-target="#session-detail"
+            hx-swap="innerHTML">view chain</button>
+    <button class="danger"
+            hx-delete="{{ base }}/sessions/{{ s.session_id }}"
+            hx-confirm="Delete session {{ s.session_id }}?"
+            hx-target="#sessions-list"
+            hx-swap="innerHTML">delete</button>
+  </div>
+</div>
+{% endfor %}

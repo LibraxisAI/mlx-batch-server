@@ -11,21 +11,20 @@ client (e.g., Zed editor) expects to receive, not how the implementation works.
 
 import json
 import unittest
-from typing import Dict, List
 
 
 class TestToolCallTypeConversion(unittest.TestCase):
     """Test that tool call arguments have proper JSON types matching OpenAI API."""
 
-    def _parse_tool_call_with_schema(self, model_output: str, tools: List[Dict]):
+    def _parse_tool_call_with_schema(self, model_output: str, tools: list[dict]):
         """Parse model output with tools schema and return arguments dict.
 
         This helper simulates the full flow from model output to client response.
         """
-        from mlx_omni_server.chat.mlx.tools.qwen3_moe_tools_parser import (
+        from mlx_batch_server.chat.mlx.tools.qwen3_moe_tools_parser import (
             Qwen3MoeToolParser,
         )
-        from mlx_omni_server.chat.openai.openai_adapter import _convert_tool_calls
+        from mlx_batch_server.chat.openai.openai_adapter import _convert_tool_calls
 
         parser = Qwen3MoeToolParser()
 

@@ -1,0 +1,30 @@
+{% extends "_layout.html" %}
+{% block title %}MLX Batch Server Operator · Sessions{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <h1>Sessions</h1>
+  <span class="spacer"></span>
+  <button class="ghost"
+          hx-get="{{ base }}/_partials/sessions"
+          hx-target="#sessions-list"
+          hx-swap="innerHTML">refresh</button>
+</div>
+{% include "_alert.html" %}
+<div class="split">
+  <section>
+    <h3>Recent</h3>
+    <div id="sessions-list"
+         hx-get="{{ base }}/_partials/sessions"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <div class="muted">Loading…</div>
+    </div>
+  </section>
+  <section>
+    <h3>Detail</h3>
+    <div id="session-detail" class="card">
+      <div class="muted">Pick a session.</div>
+    </div>
+  </section>
+</div>
+{% endblock %}

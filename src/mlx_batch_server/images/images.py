@@ -1,0 +1,33 @@
+import time
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from ..auth.dependency import verify_auth
+from .images_service import get_images_service
+from .schema import ImageGenerationRequest, ImageGenerationResponse
+
+router = APIRouter(tags=["images"])
+
+
+@router.post("/images/generations")
+@router.post("/v1/images/generations")
+async def create_image(
+    request: ImageGenerationRequest,
+    _auth: dict = Depends(verify_auth),
+) -> ImageGenerationResponse:
+    """
+    Creates an image given a prompt.
+    """
+    try:
+        service = get_images_service()
+
+        # Generate images
+        images = service.generate_images(request)
+
+        # Create response
+        return ImageGenerationResponse(created=int(time.time()), data=images)
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve)) from ve
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e

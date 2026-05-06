@@ -2,7 +2,7 @@ import anthropic
 import pytest
 from fastapi.testclient import TestClient
 
-from mlx_omni_server.main import app
+from mlx_batch_server.main import app
 
 
 @pytest.fixture

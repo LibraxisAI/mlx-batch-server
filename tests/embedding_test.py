@@ -3,8 +3,7 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 from openai import OpenAI
-
-from src.mlx_omni_server.main import app
+from src.mlx_batch_server.main import app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,7 +48,7 @@ def test_embeddings_single_text(openai_client):
         assert response.data[0].index == 0, "Index for single input should be 0"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -75,14 +74,16 @@ def test_embeddings_multiple_texts(openai_client):
         for i, embedding_data in enumerate(response.data):
             assert (
                 embedding_data.embedding is not None
-            ), f"Embedding {i+1} should not be empty"
+            ), f"Embedding {i + 1} should not be empty"
             assert (
                 len(embedding_data.embedding) > 0
-            ), f"Embedding {i+1} should contain vector data"
-            assert embedding_data.index == i, f"Index for embedding {i+1} should be {i}"
+            ), f"Embedding {i + 1} should contain vector data"
+            assert (
+                embedding_data.index == i
+            ), f"Index for embedding {i + 1} should be {i}"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -105,7 +106,7 @@ def test_embeddings_with_dimensions(openai_client):
         # assert len(response.data[0].embedding) == dimensions, "Embedding vector dimensions should match specified value"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -125,7 +126,7 @@ def test_embeddings_with_user_param(openai_client):
         assert len(response.data) == 1, "Should return one embedding object"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -147,7 +148,7 @@ def test_embeddings_missing_model(client):
         ), "Missing required 'model' parameter should return validation error"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise
 
 
@@ -169,5 +170,5 @@ def test_embeddings_missing_input(client):
         ), "Missing required 'input' parameter should return validation error"
 
     except Exception as e:
-        logger.error(f"Test error: {str(e)}")
+        logger.error(f"Test error: {e!s}")
         raise

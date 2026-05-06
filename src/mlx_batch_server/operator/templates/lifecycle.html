@@ -1,0 +1,40 @@
+{% extends "_layout.html" %}
+{% block title %}MLX Batch Server Operator · Lifecycle{% endblock %}
+{% block content %}
+<div class="toolbar"><h1>Backend lifecycle</h1></div>
+{% include "_alert.html" %}
+
+<div class="grid">
+  <div class="card">
+    <h2>Status</h2>
+    <div class="row"><span class="k">pid</span><span class="v">{{ status.pid }}</span></div>
+    <div class="row"><span class="k">started</span><span class="v">{{ status.started_at }}</span></div>
+    <div class="row"><span class="k">uptime</span><span class="v">{{ status.uptime_seconds }}s</span></div>
+    <div class="row"><span class="k">version</span><span class="v">{{ status.version }}</span></div>
+    <div class="actions">
+      <button class="ghost"
+              hx-get="{{ base }}/lifecycle"
+              hx-target="body"
+              hx-swap="outerHTML">refresh</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Actions</h2>
+    <p class="muted">Restart sends SIGHUP. Stop sends SIGTERM after a 2s ack window. Both require a supervisor in production; in dev mode the server prints "use Ctrl+C and relaunch".</p>
+    <div class="actions">
+      <button class="primary"
+              hx-post="{{ base }}/lifecycle/restart"
+              hx-confirm="Restart backend now?"
+              hx-target="#lifecycle-result"
+              hx-swap="innerHTML">Restart backend</button>
+      <button class="danger"
+              hx-post="{{ base }}/lifecycle/stop"
+              hx-confirm="Stop backend now? You will lose this admin session."
+              hx-target="#lifecycle-result"
+              hx-swap="innerHTML">Stop backend</button>
+    </div>
+    <div id="lifecycle-result" style="margin-top:12px;"></div>
+  </div>
+</div>
+{% endblock %}
