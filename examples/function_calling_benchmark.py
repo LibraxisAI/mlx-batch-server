@@ -6,12 +6,12 @@ from datasets import load_dataset
 from openai import OpenAI
 from tqdm import tqdm
 
-weave.init("mlx-omni-function-calling-benchmark")
+weave.init("libraxisai/mlx-batch-server-benchmark")
 
 client = OpenAI(
     base_url="http://localhost:10240/v1",
     # base_url="http://localhost:11434/v1",
-    api_key="mlx-omni-server",  # not-needed
+    api_key="mlx-batch-server",  # not-needed
 )
 
 

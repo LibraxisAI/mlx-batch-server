@@ -10,13 +10,13 @@
 
 ---
 
-MLX Omni Server provides full OpenAI API compatibility, enabling seamless integration with existing OpenAI SDK clients while leveraging local MLX inference on Apple Silicon.
+MLX Batch Server provides full OpenAI API compatibility, enabling seamless integration with existing OpenAI SDK clients while leveraging local MLX inference on Apple Silicon.
 
 ## 🚀 Installation & Setup
 
 ```bash
-pip install mlx-omni-server
-mlx-omni-server  # Start the server
+pip install mlx-batch-server
+mlx-batch-server  # Start the server
 ```
 
 ## ⚡ Basic Usage
@@ -137,7 +137,7 @@ speech_file_path = "output.wav"
 response = client.audio.speech.create(
     model="lucasnewman/f5-tts-mlx",
     voice="alloy",
-    input="Hello from MLX Omni Server!"
+    input="Hello from MLX Batch Server!"
 )
 response.stream_to_file(speech_file_path)
 ```
@@ -174,7 +174,7 @@ print(f"Generated image: {image_url}")
 # Single text embedding
 response = client.embeddings.create(
     model="mlx-community/all-MiniLM-L6-v2-4bit",
-    input="MLX Omni Server provides local AI inference"
+    input="MLX Batch Server provides local AI inference"
 )
 print(f"Embedding dimension: {len(response.data[0].embedding)}")
 
@@ -327,7 +327,7 @@ For development without running a server:
 ```python
 from openai import OpenAI
 from fastapi.testclient import TestClient
-from mlx_omni_server.main import app
+from mlx_batch_server.main import app
 
 # Use TestClient directly
 client = OpenAI(http_client=TestClient(app))
@@ -387,14 +387,14 @@ mlx-community/gemma-2b-it-4bit-DWQ
 
 ```bash
 # Start server with debug logging
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_OMNI_LOG_LEVEL=debug mlx-batch-server
 ```
 
 ## 📚 API Reference
 
 For complete API specifications, see:
 - [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
-- [MLX Omni Server Source Code](https://github.com/madroidmaq/mlx-omni-server)
+- [MLX Batch Server Source Code](https://github.com/madroidmaq/mlx-batch-server)
 
 ## 🤝 Contributing
 

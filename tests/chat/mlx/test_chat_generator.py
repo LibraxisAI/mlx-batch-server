@@ -2,13 +2,13 @@
 
 import pytest
 
-from mlx_omni_server.chat.mlx.chat_generator import ChatGenerator
-from mlx_omni_server.chat.mlx.core_types import (
+from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
+from mlx_batch_server.chat.mlx.core_types import (
     CompletionContent,
     GenerationResult,
     StreamContent,
 )
-from mlx_omni_server.utils.logger import logger
+from mlx_batch_server.utils.logger import logger
 
 
 @pytest.fixture
@@ -246,7 +246,6 @@ class TestChatGenerator:
         for result in reasoning_wrapper.generate_stream(
             messages=messages, template_kwargs=template_kwargs
         ):
-
             # Accumulate content based on the type of delta
             if result.content.text_delta:
                 content = content + result.content.text_delta

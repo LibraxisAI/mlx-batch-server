@@ -1,0 +1,11 @@
+# Loctree ignore patterns for mlx-batch-server submodule
+# Dead parrots and twins in these locations are intentional
+
+# Examples are standalone scripts, not imported
+examples/
+
+# Playground tools have their own namespaces
+playground/
+
+# Compatibility shims for jieba/pkg_resources - intentionally unused exports
+src/mlx_batch_server/utils/compat.py

@@ -172,3 +172,16 @@ CLAUDE.md
 CLAUDE.local.md
 GEMINI.md
 .claude
+.ai-agents/
+.loctree/
+
+# Server runtime
+.mlx-batch-server.pid
+mlx-batch-server.log
+/.ai-context
+/logs
+/*.md
+!/README.md
+!/CHANGELOG.md
+/.vibecrafted
+/reports

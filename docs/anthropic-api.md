@@ -10,13 +10,13 @@
 
 ---
 
-MLX Omni Server provides full Anthropic Claude API compatibility, enabling seamless integration with existing Anthropic SDK clients while leveraging local MLX inference on Apple Silicon.
+MLX Batch Server provides full Anthropic Claude API compatibility, enabling seamless integration with existing Anthropic SDK clients while leveraging local MLX inference on Apple Silicon.
 
 ## 🚀 Installation & Setup
 
 ```bash
-pip install mlx-omni-server
-mlx-omni-server  # Start the server
+pip install mlx-batch-server
+mlx-batch-server  # Start the server
 ```
 
 ## ⚡ Basic Usage
@@ -506,7 +506,7 @@ curl "http://localhost:10240/anthropic/v1/models?limit=10&after_id=model_id" \
 ```python
 import anthropic
 from fastapi.testclient import TestClient
-from mlx_omni_server.main import app
+from mlx_batch_server.main import app
 
 # Use TestClient for development
 test_client = anthropic.Anthropic(
@@ -589,7 +589,7 @@ huggingface-cli download mlx-community/gemma-3-1b-it-4bit-DWQ
 **Streaming Issues**
 ```bash
 # Check server logs
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_OMNI_LOG_LEVEL=debug mlx-batch-server
 
 # Test with simple non-streaming request first
 ```
@@ -605,7 +605,7 @@ MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
 
 ```bash
 # Enable debug logging
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
+MLX_OMNI_LOG_LEVEL=debug mlx-batch-server
 
 # Test with curl for detailed error messages
 curl -v "http://localhost:10240/anthropic/v1/messages" \
@@ -618,7 +618,7 @@ curl -v "http://localhost:10240/anthropic/v1/messages" \
 For complete Anthropic API specifications, see:
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - [Anthropic Models API](https://docs.anthropic.com/en/api/models)
-- [MLX Omni Server Source Code](https://github.com/madroidmaq/mlx-omni-server)
+- [MLX Batch Server Source Code](https://github.com/LibraxisAI/mlx-batch-server) (fork of [madroidmaq/mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server))
 
 ## 🤝 Contributing
 

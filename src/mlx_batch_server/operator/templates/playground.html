@@ -1,0 +1,36 @@
+{% extends "_layout.html" %}
+{% block title %}MLX Batch Server Operator · Playground{% endblock %}
+{% block content %}
+<div class="toolbar"><h1>Responses playground</h1></div>
+{% include "_alert.html" %}
+
+<form class="card"
+      hx-post="{{ base }}/playground/responses"
+      hx-target="#playground-output"
+      hx-swap="innerHTML"
+      hx-disabled-elt="find button[type=submit]">
+  <div class="field">
+    <label for="model">Model</label>
+    <input id="model" name="model" placeholder="model id" required />
+  </div>
+  <div class="field">
+    <label for="session_id">Session</label>
+    <input id="session_id" name="session_id" value="default" />
+  </div>
+  <div class="field">
+    <label for="max_output_tokens">Max output tokens</label>
+    <input id="max_output_tokens" name="max_output_tokens" type="number" min="1" placeholder="optional" />
+  </div>
+  <div class="field">
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" name="prompt" rows="8" required></textarea>
+  </div>
+  <div class="actions">
+    <button type="submit" class="primary">Send</button>
+    <span class="htmx-indicator muted">streaming…</span>
+  </div>
+</form>
+
+<h2 style="margin-top:18px;">Output</h2>
+<div id="playground-output" class="console"><div class="muted">Idle.</div></div>
+{% endblock %}

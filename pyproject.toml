@@ -1,8 +1,14 @@
 [project]
-name = "mlx-omni-server"
-version = "0.5.2"
-description = "MLX Omni Server is a server that provides OpenAI-compatible APIs using Apple's MLX framework."
-authors = [{ name = "madroid", email = "madroidmaq@gmail.com" }]
+name = "mlx-batch-server"
+version = "0.6.0-dev"
+description = "High-performance local AI inference server for Apple Silicon with batch processing, Responses API, and Harmony parser."
+authors = [
+    { name = "VetCoders", email = "hello@vetcoders.io" },
+]
+maintainers = [
+    { name = "Maciej Gad", email = "void@div0.space" },
+]
+# Original project by madroid (madroidmaq@gmail.com) - https://github.com/madroidmaq/mlx-omni-server
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
@@ -26,6 +32,7 @@ dependencies = [
     # core
     "fastapi>=0.116.1,<0.117",
     "pydantic>=2.9.2,<3",
+    "pydantic-settings>=2.0",
     "uvicorn>=0.34.0,<0.35",
     "rich>=13.9.4",
     # chat
@@ -41,49 +48,222 @@ dependencies = [
     "mlx-audio>=0.2.4",
     "numba>=0.57.0",
     # images
-    "mflux>=0.13.0,<0.14",
+    "mflux>=0.17.0,<0.18",
     # embeddings
     "mlx-embeddings>=0.0.3",
+    "openai-harmony>=0.0.8",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+    "mlx-vlm",
 ]
 
 [project.urls]
-Repository = "https://github.com/madroidmaq/mlx-omni-server"
+Repository = "https://github.com/VetCoders/mlx-batch-server"
+Upstream = "https://github.com/LibraxisAI/mlx-batch-server"
 
 [project.scripts]
-mlx-omni-server = "mlx_omni_server.main:start"
+mlx-batch-server = "mlx_batch_server.main:start"
+mlx-batch-operator = "mlx_batch_server.operator.cli:main"
+
+[project.optional-dependencies]
+operator = [
+    "click>=8",
+    "jinja2>=3",
+    "python-multipart",
+    "ruamel.yaml",
+]
+auth = [
+    "redis>=5.0",
+    "pyjwt>=2.8",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3.3,<9",
     "httpx>=0.27.2,<0.28",
+    "gradio>=5.0.0", # playground API tester
     "pre-commit>=4.0.1,<5",
-    "black>=24.10.0,<25",
-    "isort>=5.13.2,<6",
     "weave>=0.51.46,<0.60",
+    "chardet>=5,<6", # keep requests compatibility when weave pulls chardet
     "openai>=1.97.0",
     "anthropic>=0.57.1",
+    # linting & formatting (LibraxisAI)
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "bandit[toml]>=1.7.0",
     # for en_core_web_sm models
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/mlx_omni_server"]
+include = ["src/mlx_batch_server"]
 
 [tool.hatch.build.targets.wheel]
-include = ["src/mlx_omni_server"]
+include = ["src/mlx_batch_server"]
 
 [tool.hatch.build.targets.wheel.sources]
-"src/mlx_omni_server" = "mlx_omni_server"
+"src/mlx_batch_server" = "mlx_batch_server"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.uv]
 prerelease = "allow"
+
+[tool.uv.sources]
+mlx-vlm = { path = "../mlx-vlm-local", editable = true }
 
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:importlib._bootstrap",
+    "ignore:builtin type Swig:DeprecationWarning",
+    "ignore:BPE.__init__:DeprecationWarning:transformers",
+]
+
+# === Ruff configuration (LibraxisAI) ===
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate (commented code)
+    "PL",     # pylint
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument (FastAPI Depends)
+    "PLR0913", # too many arguments
+    "PLR2004", # magic value comparison
+    "ARG001", # unused function argument (common in FastAPI)
+    "PLW0603", # global statement (singleton pattern)
+    "TC003",  # type-checking block (runtime needed)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "PLR2004", "S101", "PLC0415", "B017", "ERA001", "PLR0912", "PLR0915", "RUF002", "RUF003", "RUF012", "PTH100", "PTH110", "PTH118", "PTH120", "PTH123"]
+"examples/*" = ["ERA", "ARG", "PLC0415", "SIM113", "SIM115", "B007", "PLR0912", "PTH123", "W291", "W293", "E402"]
+"playground/*" = ["PLR0912", "PLR0915", "PLC0415", "SIM105"]  # Testing tool, complexity OK
+"examples/**/*.ipynb" = ["ALL"]  # Notebooks are examples, not production code
+# Lazy imports are intentional in these modules for performance
+"src/mlx_batch_server/batch/coordinator.py" = ["PLC0415"]
+"src/mlx_batch_server/batch/router.py" = ["PLC0415"]
+"src/mlx_batch_server/chat/mlx/chat_generator.py" = ["PLC0415"]
+"src/mlx_batch_server/chat/mlx/tools/llama3.py" = ["PLC0415"]
+"src/mlx_batch_server/chat/mlx/tools/chat_template.py" = ["E402", "PLC0415", "PLR0912", "RUF003"]
+"src/mlx_batch_server/chat/openai/openai_adapter.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/chat/openai/models/models.py" = ["PLC0415"]  # Lazy imports for wrapper_cache
+# Complex parsing/conversion functions - refactoring would reduce readability
+"src/mlx_batch_server/chat/mlx/tools/glm45_tools_parser.py" = ["PLR0911"]
+"src/mlx_batch_server/chat/mlx/tools/qwen3_moe_tools_parser.py" = ["PLR0911"]
+"src/mlx_batch_server/chat/anthropic/anthropic_messages_adapter.py" = ["PLR0912"]
+"src/mlx_batch_server/responses/normalizer.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/responses/context_builder.py" = ["PLR0912"]  # Chain walking logic
+"src/mlx_batch_server/embeddings/embeddings_service.py" = ["PLR0911", "UP038"]
+# Union type annotations preserved for Pydantic compatibility in schemas
+"src/mlx_batch_server/chat/anthropic/anthropic_schema.py" = ["UP007"]
+"src/mlx_batch_server/chat/openai/schema.py" = ["UP007"]
+# Legacy pathlib usage in upstream modules - preserved for compatibility
+"src/mlx_batch_server/chat/openai/models/models_service.py" = ["PLC0415", "PTH123"]
+"src/mlx_batch_server/stt/whisper_model.py" = ["PTH106", "PTH108", "PTH110", "PTH118", "PTH123", "SIM108"]
+"src/mlx_batch_server/tts/tts_service.py" = ["PTH123"]
+"src/mlx_batch_server/images/images_service.py" = ["PTH108", "PTH123"]
+"src/mlx_batch_server/images/schema.py" = ["ARG002"]
+# Entry point - lazy imports for fast --help, compat import must be first
+"src/mlx_batch_server/main.py" = ["PLC0415", "I001"]
+# Auth surface - lazy redis/session imports keep optional deps optional
+"src/mlx_batch_server/auth/api_keys.py" = ["PLC0415", "PLR0911"]
+"src/mlx_batch_server/auth/hmac.py" = ["PLC0415"]
+"src/mlx_batch_server/auth/session.py" = ["PLC0415"]
+"src/mlx_batch_server/auth/rate_limit.py" = ["PLC0415", "PLR0912", "PLR0915"]
+"src/mlx_batch_server/auth/dependency.py" = ["PLC0415", "PLR0912"]
+"src/mlx_batch_server/auth/router_access.py" = ["PLC0415", "PLR0911"]
+# Operator auth shim mirrors the multi-branch dependency surface
+"src/mlx_batch_server/operator/auth.py" = ["PLR0912"]
+"src/mlx_batch_server/health/ready.py" = ["PLC0415"]
+"src/mlx_batch_server/routers.py" = ["PLC0415"]
+# Compat module - monkeypatch jieba to avoid pkg_resources deprecation
+"src/mlx_batch_server/utils/compat.py" = ["PLC0415", "PLR0915", "PLR0402", "PTH120", "B904"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# === Bandit security configuration ===
+[tool.bandit]
+exclude_dirs = ["tests", "examples", ".venv"]
+# B110 = try/except/pass — intentional in Redis/file best-effort fallback paths
+skips = ["B101", "B104", "B110", "B311", "B605", "B607"]  # assert, 0.0.0.0, try/except/pass, random, os.system (jieba compat)
+
+# === Mypy configuration ===
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false  # Too strict for dynamic FastAPI/Pydantic code
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["tests/", "examples/", "build/"]
+# Relax checks for Pydantic models with defaults
+disable_error_code = ["call-arg", "assignment", "operator", "misc", "return"]
+
+[[tool.mypy.overrides]]
+module = "mlx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "mflux.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.responses.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.routing.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.chat.anthropic.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.chat.mlx.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.chat.openai.models.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.utils.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "mlx_batch_server.tts.*"
+ignore_errors = true
+
+# Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team

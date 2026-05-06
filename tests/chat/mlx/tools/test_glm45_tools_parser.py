@@ -1,6 +1,6 @@
 import unittest
 
-from mlx_omni_server.chat.mlx.tools.glm45_tools_parser import GLM45ToolParser
+from mlx_batch_server.chat.mlx.tools.glm45_tools_parser import GLM45ToolParser
 
 
 class TestGLM45ToolParser(unittest.TestCase):

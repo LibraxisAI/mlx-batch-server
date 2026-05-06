@@ -1,0 +1,27 @@
+# Loctree CI - Python Codebase Health
+name: Loctree
+
+on:
+  pull_request:
+    paths: ['src/**/*.py', 'tests/**/*.py']
+
+jobs:
+  health:
+    name: Codebase Health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/loct
+          key: loctree-0.8.16
+
+      - name: Install loctree
+        run: command -v loct || cargo install loctree --version 0.8.16
+
+      - name: Health check
+        run: |
+          echo "## 🌳 Loctree" >> $GITHUB_STEP_SUMMARY
+          loct --summary >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,24 @@
+{
+  "platform": "darwin-arm64",
+  "notarization": {
+    "status": "not-notarized",
+    "reason": "Bundled local binaries are ad-hoc signed; Apple notarization requires project signing credentials."
+  },
+  "tools": [
+    {
+      "name": "loct",
+      "path": "tools/bin/darwin-arm64/loct",
+      "sha256": "ee72ef06303f630f1f8ac04b0123d495b3dcdfb9af76c3ed1cd09db7fc511c1b"
+    },
+    {
+      "name": "aicx",
+      "path": "tools/bin/darwin-arm64/aicx",
+      "sha256": "778279e53d30c0674d7389f997491373989e9ec2196b36141f95c29f278f7a6a"
+    },
+    {
+      "name": "prview",
+      "path": "tools/bin/darwin-arm64/prview",
+      "sha256": "bd8346b26a5def62a8a925100301aca537100fcc31be3fa3800805324a62e33c"
+    }
+  ]
+}

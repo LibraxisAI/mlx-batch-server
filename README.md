@@ -1,218 +1,383 @@
 <div align="center">
 
-# MLX Omni Server
+# MLX Batch Server
 
-*Local AI inference server optimized for Apple Silicon*
+*High-performance local AI inference server for Apple Silicon with batch processing*
 
-[![PyPI version](https://img.shields.io/pypi/v/mlx-omni-server.svg)](https://pypi.python.org/pypi/mlx-omni-server)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madroidmaq/mlx-omni-server)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1--M4_Ultra-000000?logo=apple&logoColor=white)](https://developer.apple.com/metal/)
+[![MLX](https://img.shields.io/badge/MLX-%E2%89%A50.30-FF6F00)](https://github.com/ml-explore/mlx)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Responses API](https://img.shields.io/badge/Responses_API-native-6366f1)]()
+[![OpenAI Compatible](https://img.shields.io/badge/OpenAI_API-compatible-412991?logo=openai&logoColor=white)]()
+[![Anthropic Compatible](https://img.shields.io/badge/Anthropic_API-compatible-D97757?logo=anthropic&logoColor=white)]()
 
-![MLX Omni Server Banner](docs/banner.png)
+**MLX Batch Server** is a production-grade inference server optimized for Apple Silicon, featuring concurrent batch
+processing, OpenAI Responses API, and Harmony parser for GPT-OSS models.
 
-**MLX Omni Server** provides dual API compatibility with both **OpenAI** and **Anthropic APIs**, enabling seamless local inference on Apple Silicon using the MLX framework.
-
-[Installation](#-installation) • [Quick Start](#-quick-start) • [Documentation](#-documentation) • [Contributing](#-contributing)
+[Features](#-features) • [Quick Start](#-quick-start) • [API Reference](#-api-reference) • [Configuration](#-configuration)
 
 </div>
 
-## ✨ Features
+---
 
-- 🚀 **Apple Silicon Optimized** - Built on MLX framework for M1/M2/M3/M4 chips
-- 🔌 **Dual API Support** - Compatible with both OpenAI and Anthropic APIs
-- 🎯 **Complete AI Suite** - Chat, audio processing, image generation, embeddings
-- ⚡ **High Performance** - Local inference with hardware acceleration
-- 🔐 **Privacy-First** - All processing happens locally on your machine
-- 🛠 **Drop-in Replacement** - Works with existing OpenAI and Anthropic SDKs
+## Origin & Acknowledgments
 
-## 🚀 Installation
+This project is a **standalone fork** of [mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server) by **[@madroidmaq](https://github.com/madroidmaq)**, whose excellent work laid the foundation for local MLX inference with OpenAI/Anthropic API compatibility.
 
-```bash
-pip install mlx-omni-server
-```
+**LibraxisAI** extended the original project with:
 
-## ⚡ Quick Start
+- Batch inference coordinator (10+ concurrent requests)
+- Full OpenAI Responses API (`/v1/responses`)
+- Streaming Harmony parser for GPT-OSS models
+- Production hardening for 24/7 operation
 
-1. **Start the server:**
-   ```bash
-   mlx-omni-server
-   ```
-
-2. **Choose your preferred API:**
-
-   <details>
-   <summary><b>OpenAI API</b> (Click to expand)</summary>
-
-   ```python
-   from openai import OpenAI
-
-   client = OpenAI(
-       base_url="http://localhost:10240/v1",
-       api_key="not-needed"
-   )
-
-   response = client.chat.completions.create(
-       model="mlx-community/gemma-3-1b-it-4bit-DWQ",
-       messages=[{"role": "user", "content": "Hello!"}]
-   )
-   print(response.choices[0].message.content)
-   ```
-   </details>
-
-   <details>
-   <summary><b>Anthropic API</b> (Click to expand)</summary>
-
-   ```python
-   import anthropic
-
-   client = anthropic.Anthropic(
-       base_url="http://localhost:10240/anthropic",
-       api_key="not-needed"
-   )
-
-   message = client.messages.create(
-       model="mlx-community/gemma-3-1b-it-4bit-DWQ",
-       max_tokens=1000,
-       messages=[{"role": "user", "content": "Hello!"}]
-   )
-   print(message.content[0].text)
-   ```
-   </details>
-
-🎉 **That's it!** You're now running AI locally on your Mac.
-
-## 📋 API Support
-
-### OpenAI Compatible Endpoints (`/v1/*`)
-
-| Endpoint | Feature | Status |
-|----------|---------|--------|
-| `/v1/chat/completions` | Chat with tools, streaming, structured output | ✅ |
-| `/v1/audio/speech` | Text-to-Speech | ✅ |
-| `/v1/audio/transcriptions` | Speech-to-Text | ✅ |
-| `/v1/images/generations` | Image Generation | ✅ |
-| `/v1/embeddings` | Text Embeddings | ✅ |
-| `/v1/models` | Model Management | ✅ |
-
-### Anthropic Compatible Endpoints (`/anthropic/v1/*`)
-
-| Endpoint | Feature | Status |
-|----------|---------|--------|
-| `/anthropic/v1/messages` | Messages with tools, streaming, thinking mode | ✅ |
-| `/anthropic/v1/models` | Model listing with pagination | ✅ |
-
-
-## ⚙️ Configuration
-
-```bash
-# Default (port 10240)
-mlx-omni-server
-
-# Custom options
-mlx-omni-server --port 8000
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
-
-# View all options
-mlx-omni-server --help
-```
-
-## 🛠 Development
-
-<details>
-<summary><b>Development Setup</b></summary>
-
-```bash
-git clone https://github.com/madroidmaq/mlx-omni-server.git
-cd mlx-omni-server
-uv sync
-
-# Start with hot-reload
-uv run uvicorn mlx_omni_server.main:app --reload --host 0.0.0.0 --port 10240
-```
-
-**Testing:**
-```bash
-uv run pytest                    # All tests
-uv run pytest tests/chat/openai/ # OpenAI tests
-uv run pytest tests/chat/anthropic/ # Anthropic tests
-```
-
-**Code Quality:**
-```bash
-uv run black . && uv run isort . # Format code
-uv run pre-commit run --all-files # Run hooks
-```
-</details>
-
-## 🎯 Key Features
-
-**Model Management**
-- Auto-discovery of MLX models in HuggingFace cache
-- On-demand loading and intelligent caching
-- Automatic model downloading when needed
-
-**Advanced Capabilities**
-- Function calling with model-specific parsers
-- Real-time streaming for both APIs
-- JSON schema validation and structured output
-- Extended reasoning (thinking mode) for supported models
-
-## 📚 Documentation
-
-| Resource | Description |
-|----------|-------------|
-| [OpenAI API Guide](docs/openai-api.md) | Complete OpenAI API reference |
-| [Anthropic API Guide](docs/anthropic-api.md) | Complete Anthropic API reference |
-| [Examples](examples/) | Practical usage examples |
-
-## 🔍 Troubleshooting
-
-<details>
-<summary><b>Common Issues</b></summary>
-
-**Requirements:**
-- Python 3.11+
-- Apple Silicon Mac (M1/M2/M3/M4)
-- MLX framework installed
-
-**Quick fixes:**
-```bash
-# Check requirements
-python --version  # Should be 3.11+
-python -c "import mlx; print(mlx.__version__)"
-
-# Pre-download models (if needed)
-huggingface-cli download mlx-community/gemma-3-1b-it-4bit-DWQ
-
-# Enable debug logging
-MLX_OMNI_LOG_LEVEL=debug mlx-omni-server
-```
-</details>
-
-## 🤝 Contributing
-
-**Quick contributor setup:**
-```bash
-git clone https://github.com/madroidmaq/mlx-omni-server.git
-cd mlx-omni-server
-uv sync && uv run pytest
-```
-
-<div align="center">
+We maintain this as a separate project due to significant architectural divergence, while continuing to contribute
+improvements back to the upstream project where applicable.
 
 ---
 
-## 🙏 Acknowledgments
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Batch Processing** | Handle 10+ concurrent requests via mlx-lm BatchGenerator |
+| **Responses API** | Full OpenAI `/v1/responses` with SSE streaming |
+| **Harmony Parser** | Native GPT-OSS model support with channel parsing |
+| **Dual API** | Compatible with OpenAI and Anthropic SDKs |
+| **Model Management** | Dynamic load/unload endpoints |
+| **Privacy-First** | All processing happens locally on your Mac |
+
+### What's Different From Upstream
+
+```text
+├── Batch Coordinator      → Concurrent request batching (NEW)
+├── /v1/responses          → OpenAI Responses API (NEW)
+├── Harmony Streaming      → GPT-OSS channel parser (NEW)
+├── /v1/models/load        → Dynamic model loading (NEW)
+├── /v1/models/unload      → Model unloading (NEW)
+└── Production Config      → Environment-based settings (NEW)
+```
+
+---
+
+## Quick Start
+
+### Installation
+
+```bash
+# Clone
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
+cd mlx-batch-server
+
+# Core install (inference only)
+uv sync
+# Or
+pip install -e .
+
+# Full surface (auth + operator UI)
+uv sync --extra auth --extra operator
+# Or
+pip install -e ".[auth,operator]"
+```
+
+| Extra      | Pulls                          | Enables |
+|------------|--------------------------------|---------|
+| `auth`     | `redis`, `pyjwt`               | Session auth + Redis-backed API keys/HMAC + rate limiting |
+| `operator` | `click`, `jinja2`, `python-multipart`, `ruamel.yaml` | `mlx-batch-operator` CLI + htmx admin UI |
+
+Local development uses the editable sibling dependency `../mlx-vlm-local`, so upstream-facing `mlx-vlm` fixes land in the server immediately after `uv sync`.
+
+### Run the Server
+
+```bash
+# Default (port 10240)
+mlx-batch-server
+
+# Custom port
+mlx-batch-server --port 10240
+
+# With debug logging
+MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
+```
+
+### Test It
+
+```bash
+# Chat completion
+curl http://localhost:10240/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Responses API (streaming)
+curl http://localhost:10240/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello!"}]}],
+    "stream": true
+  }'
+```
+
+### Preparing Qwen3.6-VL-30B
+
+The local `mlx-vlm` dependency already understands `qwen3.6-vl` and `qwen3.6-vl-moe` aliases during conversion. To expose a converted `qwen3.6-vl-30b` cleanly through the server, point `MODEL_ALIASES` or an in-process runtime alias at the converted model path or repo id.
+
+---
+
+## API Reference
+
+### OpenAI Compatible (`/v1/*`)
+
+| Endpoint | Description | Status |
+|----------|-------------|--------|
+| `POST /v1/responses` | Responses API with SSE streaming | Stable |
+| `POST /v1/chat/completions` | Chat with tools, streaming, structured output | Stable |
+| `GET /v1/batch/stats` | Batch coordinator statistics | Stable |
+| `POST /v1/models/load` | Dynamic model loading | Stable |
+| `POST /v1/models/unload` | Model unloading | Stable |
+| `POST /v1/audio/speech` | Text-to-Speech | Stable |
+| `POST /v1/audio/transcriptions` | Speech-to-Text (Whisper) | Stable |
+| `POST /v1/images/generations` | Image Generation | Stable |
+| `POST /v1/embeddings` | Text Embeddings | Stable |
+| `GET /v1/models` | List available models | Stable |
+
+### Anthropic Compatible (`/anthropic/v1/*`)
+
+| Endpoint | Description | Status |
+|----------|-------------|--------|
+| `POST /anthropic/v1/messages` | Messages with tools, streaming, thinking | Stable |
+| `GET /anthropic/v1/models` | Model listing with pagination | Stable |
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MLX_BATCH_LOG_LEVEL` | Logging level (`debug`, `info`, `warning`) | `info` |
+| `MLX_BATCH_CORS` | CORS origins (comma-separated) | `*` |
+| `MLX_BATCH_ENABLE_BATCH` | Enable batch inference | `true` |
+| `MLX_BATCH_BATCH_WINDOW_MS` | Batch collection window (ms) | `50` |
+| `MLX_BATCH_MAX_BATCH_SIZE` | Maximum concurrent requests | `10` |
+| `MLX_BATCH_DEFAULT_MODEL` | Model to load on startup | - |
+
+### Batch Processing
+
+Batch processing collects incoming requests within a time window and processes them together, significantly improving
+throughput on Apple Silicon:
+
+```bash
+# Tune for your workload
+MLX_BATCH_BATCH_WINDOW_MS=100 \
+MLX_BATCH_MAX_BATCH_SIZE=16 \
+mlx-batch-server
+```
+
+**Performance (M3 Ultra, 512GB):**
+
+- Single request: ~50 tok/s
+- Batched (10 requests): ~35 tok/s per request = **350 tok/s total**
+
+---
+
+## Security
+
+The server ships **open by default** (`SECURITY_LEVEL=0`) so existing deployments keep working. Set a level to lock the surface down:
+
+| Level | Behavior |
+|-------|----------|
+| `0` | Open. No auth, every request maps to a stable pseudo-owner. Default. |
+| `1` | *Deprecated.* Treated internally as `2` with a warning. |
+| `2` | HMAC **or** session token **or** API key (any one of them). |
+| `3` | Session token only (HMAC + API key fallback disabled). |
+
+When the level is `>0`, every protected route — including `/api/admin/models/{load,unload,alias}` — requires a credential. `/health` and `/v1/ready` stay open at all levels for load balancers.
+
+```bash
+# Static API key (simplest, single-secret deploys)
+SECURITY_LEVEL=2 API_KEY=sk-mlx-… mlx-batch-server
+
+# HMAC clients (machine-to-machine, /hmac/register issues secrets)
+SECURITY_LEVEL=2 API_KEY=sk-… mlx-batch-server
+curl -H "x-api-key: sk-…" -X POST http://127.0.0.1:10240/hmac/register \
+     -d '{"client_id":"node-1","description":"build agent"}' \
+     -H "Content-Type: application/json"
+
+# Session-only (browser sessions via /auth/login)
+SECURITY_LEVEL=3 SESSION_AUTH_ENABLED=true mlx-batch-server
+```
+
+Auxiliary auth env vars: `API_KEY_HEADER` (default `x-api-key`), `REDIS_URL` (Redis-backed sessions/API keys/rate-limit), `SESSION_AUTH_ENABLED`, `SESSION_PROVIDER`, `SESSION_TTL_HOURS`, `RATE_LIMIT_ENABLED`, `ACCESS_REGISTRATION_SECRET` (enables `/access` HTML registration page), `MLX_BATCH_HMAC_SECRETS_FILE` (XDG path by default), `HMAC_TIMESTAMP_TOLERANCE`.
+
+The auth router family (`/auth/*`, `/hmac/*`, `/access`) is **opt-in** — it only mounts when at least one auth-related env var is configured.
+
+---
+
+## Operator UI
+
+A standalone htmx admin lives in `mlx_batch_server.operator` and runs as a sibling app on port **10241**:
+
+```bash
+# Inference (port 10240)
+mlx-batch-server &
+
+# Operator UI (port 10241) — connects back to inference at 10240
+mlx-batch-operator serve
+
+# Custom inference URL / port
+MLX_BATCH_OPERATOR_INFERENCE_BASE_URL=http://localhost:10240 \
+    mlx-batch-operator serve --port 10241
+```
+
+Tabs: Fleet (live runtime + model summary), Sessions (recent playground sessions with delete-guard), Logs (tail + SSE follow), Lifecycle (status + restart/stop), Playground (in-browser SSE prompt with response chaining).
+
+Auth posture inherits inference: if you start inference with `SECURITY_LEVEL=2`, the operator UI also requires that key. Override per side with:
+
+| Variable | Effect |
+|----------|--------|
+| `MLX_BATCH_OPERATOR_SECURITY_LEVEL` | Force a different operator level than inference. |
+| `MLX_BATCH_OPERATOR_REQUIRE_AUTH=true` | Force operator auth even when inference is open (useful behind a public proxy). |
+| `MLX_BATCH_INTERNAL_API_KEY` | Key the operator forwards on the loopback playground proxy. |
+
+The operator's `/health` and `/api/health` stay open at all levels so monitoring keeps working.
+
+There is also a thin landing page at `http://127.0.0.1:10240/admin` on the inference port — it links to the richer operator UI on port 10241 and is gated by the same `SECURITY_LEVEL`.
+
+---
+
+## Readiness
+
+Two health surfaces, used for different purposes:
+
+| Endpoint | Purpose | Auth | Body |
+|----------|---------|------|------|
+| `GET /health` | Lightweight liveness for load balancers | open | `{"status":"ok", …}` |
+| `GET /v1/ready` | Rich readiness — process, models loaded, batch coordinators, config, auth backends | open | `{"ready":bool, "checks":{…}}` |
+
+`/v1/ready` returns `200` only when every check passes; otherwise `503` with the failing check called out. When `SECURITY_LEVEL>0` the readiness payload also includes an `auth_backends` block reporting Redis connectivity for sessions/API keys.
+
+---
+
+## HF Model Cards
+
+Tooling for keeping the LibraxisAI Hugging Face model cards consistent. Sources of truth:
+
+- `templates/HF_MODEL_CARD.md` — canonical card template with placeholders, fixed `## Inference tested on` section pointing here, and the canonical Vibecrafted footer.
+- `scripts/rewrite_hf_model_cards.py` — full rewrite of every LibraxisAI card from the template, preserving metrics and base lineage when present.
+- `scripts/backfill_hf_inference_section.py` — conservative patch that only adds `## Inference tested on` to cards that don't have it yet.
+- `scripts/backfill_hf_canonical_footer.py` — conservative patch that only appends the canonical Vibecrafted footer to cards that don't have any form of it yet.
+
+All scripts default to **dry-run** (list which cards would change without pushing). Add `--apply` to actually push, or use the `*-apply` Make targets:
+
+```bash
+# One-time auth
+hf auth login
+
+# Dry-run a full rewrite
+make hf-rewrite
+
+# Push a full rewrite (idempotent commit message: "card: full rewrite from canonical template")
+make hf-rewrite-apply
+
+# Backfill only the inference section across cards that lack it
+make hf-backfill-inference         # dry-run
+make hf-backfill-inference-apply   # push
+
+# Backfill only the canonical footer across cards that lack any form of it
+make hf-backfill-footer            # dry-run
+make hf-backfill-footer-apply      # push
+
+# Filters (work with all the above)
+make hf-rewrite HF_LIMIT=5
+make hf-backfill-inference HF_ONLY="Bielik Qwen"
+```
+
+The backfill scripts are intentionally conservative: they never delete content, never replace existing variants, and skip any card that already has the target section. Use `hf-rewrite` when you want a full normalisation pass.
+
+---
+
+## Development
+
+```bash
+# Setup
+make setup           # Install deps + pre-commit hooks
+
+# Run
+make dev             # Start with hot-reload
+make dev PORT=10240  # Custom port
+
+# Test
+make test            # All tests
+make test-responses  # Responses API tests
+make test-fast       # Skip slow tests
+
+# Quality
+make lint            # Run linters
+make format          # Format code
+make check           # Full CI check
+
+# Model management
+make load MODEL=mlx-community/Qwen3-0.6B-4bit
+make unload
+make ps              # List loaded models
+make batch-stats     # Coordinator stats
+```
+
+---
+
+## Documentation
+
+| Resource | Description |
+|----------|-------------|
+| [Responses API Guide](docs/responses/) | Full Responses API reference |
+| [Batch Processing Guide](docs/batch/) | Batch inference configuration |
+| [Harmony Parser](docs/responses/harmony.md) | GPT-OSS channel parsing |
+| [OpenAI API Guide](docs/openai-api.md) | OpenAI compatibility reference |
+| [Anthropic API Guide](docs/anthropic-api.md) | Anthropic compatibility reference |
+| [Examples](examples/) | Practical usage examples |
+
+---
+
+## Requirements
+
+- **macOS** with Apple Silicon (M1/M2/M3/M4)
+- **Python 3.11+**
+- **MLX framework** (auto-installed)
+
+---
+
+## Contributing
+
+```bash
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
+cd mlx-batch-server
+make setup && make test
+```
+
+Pull requests welcome! For major changes, please open an issue first.
+
+---
+
+<div align="center">
+
+## License
+
+[MIT License](LICENSE)
+
+---
+
+**Original project:** [mlx-omni-server](https://github.com/madroidmaq/mlx-omni-server) by [@madroidmaq](https://github.com/madroidmaq)
+
+**Maintained by:** [LibraxisAI](https://github.com/LibraxisAI)
 
 Built with [MLX](https://github.com/ml-explore/mlx) by Apple • [FastAPI](https://fastapi.tiangolo.com/) • [MLX-LM](https://github.com/ml-explore/mlx-lm)
 
-## 📄 License
-
-[MIT License](LICENSE) • Not affiliated with OpenAI, Anthropic, or Apple
-
-## 🌟 Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=madroidmaq/mlx-omni-server&type=Date)](https://star-history.com/#madroidmaq/mlx-omni-server&Date)
+*Not affiliated with OpenAI, Anthropic, or Apple*
 
 </div>

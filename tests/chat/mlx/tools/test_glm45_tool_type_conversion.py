@@ -1,14 +1,14 @@
 import unittest
-from typing import Any, Dict, List
+from typing import Any
 
-from mlx_omni_server.chat.mlx.tools.glm45_tools_parser import GLM45ToolParser
+from mlx_batch_server.chat.mlx.tools.glm45_tools_parser import GLM45ToolParser
 
 
 class TestGLM45ToolCallTypeConversion(unittest.TestCase):
     """Test that GLM-4.5 tool call arguments have proper JSON types based on schema."""
 
     def _parse_tool_call_with_schema(
-        self, model_output: str, tools: List[Dict[str, Any]]
+        self, model_output: str, tools: list[dict[str, Any]]
     ):
         """Helper to parse GLM-4.5 model output with tools schema.
 

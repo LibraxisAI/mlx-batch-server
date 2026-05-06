@@ -1,4 +1,5 @@
 # .pre-commit-config.yaml
+# Extended by LibraxisAI with ruff, semgrep, mypy, and loctree
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
@@ -7,30 +8,84 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
+        args: ['--maxkb=1000']
       - id: check-ast
       - id: check-merge-conflict
       - id: detect-private-key
+      - id: check-json
+      - id: check-toml
 
-  - repo: https://github.com/psf/black
-    rev: 24.2.0
+  # Ruff - ultra-fast Python linter & formatter (replaces black, isort, flake8)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
     hooks:
-      - id: black
-        language_version: python3
-        args: [ --line-length=88 ]
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
 
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+  # Mypy - static type checker
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
     hooks:
-      - id: isort
-        args: [ --profile=black ]
+      - id: mypy
+        additional_dependencies:
+          - pydantic>=2.0
+          - fastapi>=0.100
+          - httpx>=0.25
+          - types-redis
+        args: [--ignore-missing-imports, --no-strict-optional]
+        exclude: ^(tests/|examples/)
 
-  - repo: https://github.com/pycqa/autoflake
-    rev: v2.2.1
+  # Bandit - Python security linter
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
     hooks:
-      - id: autoflake
-        args:
-          - --remove-all-unused-imports
-#          - --remove-unused-variables
-          - --remove-duplicate-keys
-          - --ignore-pass-after-docstring
-          - --in-place
+      - id: bandit
+        args: ['-c', 'pyproject.toml', '-r', 'src/']
+        additional_dependencies: ['bandit[toml]']
+        exclude: ^tests/
+
+  # Loctree code quality checks - contributed by LibraxisAI (optional, warnings only)
+  - repo: local
+    hooks:
+      - id: loctree-deadexports
+        name: Check for dead exports
+        entry: bash -c 'if command -v loct &>/dev/null; then loct deadexports || true; else echo "loct not installed, skipping"; fi'
+        language: system
+        pass_filenames: false
+        types: [python]
+        verbose: true
+
+      - id: loctree-twins
+        name: Check for duplicate definitions
+        entry: bash -c 'if command -v loct &>/dev/null; then loct twins || true; else echo "loct not installed, skipping"; fi'
+        language: system
+        pass_filenames: false
+        types: [python]
+        verbose: true
+
+  # Merge conflict markers — two-stage policy.
+  # pre-commit: shout, but do not block. Salvage snapshots stay possible
+  #             (e.g. bb194a8 intentionally landed a TODO before a refactor).
+  # pre-push:   hard block. Garbage must not ride to origin.
+  # Rationale: the stock check-merge-conflict only inspects STAGED files.
+  # This repo-wide scan catches markers that already live in HEAD.
+  - repo: local
+    hooks:
+      - id: merge-markers-warn
+        name: Repo-wide merge marker guard (pre-commit, warn-only)
+        entry: bash -c 'hits=$(git grep -nE "^(<<<<<<< |>>>>>>> |=======$)" -- ":(exclude).pre-commit-config.yaml" 2>/dev/null || true); if [ -n "$hits" ]; then printf "\n[warn] merge conflict markers still in tracked tree:\n%s\n[warn] commit allowed (salvage ok), but pre-push WILL block.\n" "$hits" >&2; fi; exit 0'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        verbose: true
+
+      - id: merge-markers-block
+        name: Repo-wide merge marker guard (pre-push, blocking)
+        entry: bash -c 'hits=$(git grep -nE "^(<<<<<<< |>>>>>>> |=======$)" -- ":(exclude).pre-commit-config.yaml" 2>/dev/null || true); if [ -n "$hits" ]; then printf "\nMerge conflict markers in tracked files:\n\n%s\n\nResolve them before pushing.\n" "$hits"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+        verbose: true
