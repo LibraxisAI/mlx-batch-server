@@ -40,6 +40,18 @@ def openai_client(client):
 class TestPromptCache:
     """Tests for prompt cache functionality"""
 
+    def test_openai_adapter_accepts_explicit_null_extra_body(self):
+        adapter = OpenAIAdapter(wrapper=object())  # type: ignore[arg-type]
+        request = ChatCompletionRequest(
+            model="demo-model",
+            messages=[ChatMessage(role=Role.USER, content="hello")],
+            extra_body=None,
+        )
+
+        params = adapter._prepare_generation_params(request)
+
+        assert params["sampler"]["top_k"] == 0
+
     def test_openai_adapter_honors_prompt_cache_override(self):
         adapter = OpenAIAdapter(wrapper=object())  # type: ignore[arg-type]
         request = ChatCompletionRequest(

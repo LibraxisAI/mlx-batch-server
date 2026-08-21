@@ -126,7 +126,7 @@ class OpenAIAdapter:
 
         # Extract parameters from request and extra params
         extra_params = request.get_extra_params()
-        extra_body = extra_params.get("extra_body", {})
+        extra_body = extra_params.get("extra_body") or {}
 
         # Prepare sampler configuration
         sampler_config = {
