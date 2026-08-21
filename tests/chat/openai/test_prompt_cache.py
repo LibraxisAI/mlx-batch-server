@@ -8,6 +8,7 @@ This test file verifies the prompt caching functionality in the chat completion 
 """
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -64,6 +65,39 @@ class TestPromptCache:
 
         assert params["template_kwargs"]["enable_prompt_cache"] is False
         assert params["enable_prompt_cache"] is False
+
+    def test_openai_adapter_preserves_stream_reasoning_channel(self):
+        class FakeWrapper:
+            def generate_stream(self, **params):
+                assert params["messages"][0]["content"] == "hello"
+                yield SimpleNamespace(
+                    content=SimpleNamespace(
+                        text_delta=None,
+                        reasoning_delta="thinking once",
+                    ),
+                    logprobs=None,
+                )
+                yield SimpleNamespace(
+                    content=SimpleNamespace(
+                        text_delta="FINAL",
+                        reasoning_delta=None,
+                    ),
+                    logprobs=None,
+                )
+
+        adapter = OpenAIAdapter(wrapper=FakeWrapper())  # type: ignore[arg-type]
+        request = ChatCompletionRequest(
+            model="demo-model",
+            messages=[ChatMessage(role=Role.USER, content="hello")],
+            stream=True,
+        )
+
+        chunks = list(adapter.generate_stream(request))
+
+        assert chunks[0].choices[0].delta.reasoning == "thinking once"
+        assert chunks[0].choices[0].delta.content is None
+        assert chunks[1].choices[0].delta.content == "FINAL"
+        assert chunks[1].choices[0].delta.reasoning is None
 
     def test_conversation_with_prompt_cache(self, openai_client):
         try:

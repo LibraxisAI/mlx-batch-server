@@ -99,6 +99,7 @@ else:  # pragma: no cover - exercised indirectly
 _CHATML_SPECIAL_TOKENS_RE = re.compile(
     r"<\|im_end\|>|<\|im_start\|>|<turn\|>|<\|turn\|>"
 )
+_DIRECT_REASONING_MARKER_RE = re.compile(r"</?think>")
 
 _DATA_URL_BLOB_RE = re.compile(
     r"data:(?:video|image|application)/[a-zA-Z0-9.+-]+;base64,"
@@ -1658,7 +1659,7 @@ class ResponsesAdapter:
                 _tc_accum: dict[int, dict[str, Any]] = {}
 
                 # Create unified token stream
-                async def token_stream() -> AsyncGenerator[str, None]:  # noqa: PLR0912
+                async def token_stream() -> AsyncGenerator[tuple[str, str], None]:  # noqa: PLR0912
                     """Unified token stream supporting both batch and single modes."""
                     if use_batch:
                         # Batch mode: use coordinator
@@ -1672,7 +1673,7 @@ class ResponsesAdapter:
                             adapter_path=adapter_path,
                         ):
                             if batch_chunk.text:
-                                yield batch_chunk.text
+                                yield "raw", batch_chunk.text
                     else:
                         # Single mode: use OpenAI adapter
                         adapter = self._get_openai_adapter(
@@ -1710,12 +1711,22 @@ class ResponsesAdapter:
                             fr = getattr(choice, "finish_reason", None)
                             if fr:
                                 stream_result["finish_reason"] = fr
-                            # Yield text content as before
-                            if delta and getattr(delta, "content", None):
-                                yield delta.content
+                            if not delta:
+                                continue
+                            reasoning_delta = getattr(delta, "reasoning", None)
+                            content_delta = getattr(delta, "content", None)
+                            if is_harmony:
+                                raw_delta = reasoning_delta or content_delta
+                                if raw_delta:
+                                    yield "raw", raw_delta
+                            else:
+                                if reasoning_delta:
+                                    yield "reasoning", reasoning_delta
+                                if content_delta:
+                                    yield "output", content_delta
 
                 # Stream content deltas
-                async for raw_content in token_stream():
+                async for stream_channel, raw_content in token_stream():
                     if is_harmony and harmony_parser:
                         # Use stateful parser for channel separation
                         event_type, clean_text = harmony_parser.process_delta(
@@ -1807,6 +1818,87 @@ class ResponsesAdapter:
                                     "delta": clean_text,
                                 },
                             )
+                    elif stream_channel == "reasoning":
+                        clean_content = _CHATML_SPECIAL_TOKENS_RE.sub("", raw_content)
+                        clean_content = _DIRECT_REASONING_MARKER_RE.sub(
+                            "", clean_content
+                        )
+                        if not clean_content:
+                            continue
+
+                        if not reasoning_item_emitted:
+                            for event in self._reasoning_start_events(
+                                make_event,
+                                reasoning_item_id,
+                                output_index=0,
+                            ):
+                                yield event
+                            reasoning_item_emitted = True
+
+                        reasoning_text_parts.append(clean_content)
+                        yield make_event(
+                            "response.reasoning_summary_text.delta",
+                            {
+                                "item_id": reasoning_item_id,
+                                "output_index": 0,
+                                "delta": clean_content,
+                            },
+                        )
+                    elif stream_channel == "output":
+                        clean_content = _CHATML_SPECIAL_TOKENS_RE.sub("", raw_content)
+                        clean_content = _DIRECT_REASONING_MARKER_RE.sub(
+                            "", clean_content
+                        )
+                        if not clean_content:
+                            continue
+
+                        if (
+                            reasoning_item_emitted
+                            and not reasoning_done_emitted
+                            and reasoning_text_parts
+                        ):
+                            for event in self._reasoning_done_events(
+                                make_event,
+                                reasoning_item_id,
+                                "".join(reasoning_text_parts),
+                                output_index=0,
+                            ):
+                                yield event
+                            reasoning_done_emitted = True
+
+                        if not message_item_emitted:
+                            yield make_event(
+                                "response.output_item.added",
+                                {
+                                    "output_index": 1 if reasoning_text_parts else 0,
+                                    "item": {
+                                        "id": message_item_id,
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "status": "in_progress",
+                                        "content": [],
+                                    },
+                                },
+                            )
+                            yield make_event(
+                                "response.content_part.added",
+                                {
+                                    "output_index": 1 if reasoning_text_parts else 0,
+                                    "content_index": 0,
+                                    "part": {"type": "output_text", "text": ""},
+                                },
+                            )
+                            message_item_emitted = True
+
+                        output_text_parts.append(clean_content)
+                        yield make_event(
+                            "response.output_text.delta",
+                            {
+                                "output_index": 1 if reasoning_text_parts else 0,
+                                "content_index": 0,
+                                "delta": clean_content,
+                            },
+                        )
                     else:
                         # Non-Harmony model: translate think tags to the
                         # reasoning lane used by the Responses API.
