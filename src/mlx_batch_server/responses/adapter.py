@@ -43,7 +43,7 @@ from ..utils.harmony_parser import (
     parse_reasoning_like_output,
 )
 from ..utils.logger import logger
-from ..utils.video_loader import build_video_prompt_and_inputs
+from ..utils.video_loader import resolve_vlm_media
 from ..vision.vlm_batch import (
     get_vlm_batch_coordinator,
     get_vlm_stream_coordinator,
@@ -640,15 +640,14 @@ class ResponsesAdapter:
         kwargs = self._vlm_generation_kwargs(normalised_body)
 
         if videos:
-            text_prompt = self._extract_text_content(
-                normalised_body.get("input", [{}])[-1].get("content")
+            resolved = resolve_vlm_media(
+                processor,
+                images=images,
+                videos=videos,
             )
-            video_data = build_video_prompt_and_inputs(
-                videos, text_prompt or "Describe this video.", processor, model.config
-            )
-            prompt = video_data.pop("prompt")
-            kwargs.update(video_data)
-            return model, processor, prompt, images, kwargs
+            images = resolved.images
+            if resolved.videos:
+                kwargs["video"] = resolved.videos
 
         prompt = self._build_vlm_prompt(
             apply_chat_template,
@@ -1145,7 +1144,7 @@ class ResponsesAdapter:
                 draft_model_id=draft_model_id,
             )
 
-        if self._should_use_vlm_batch(normalised_body, stream=False):
+        if not videos and self._should_use_vlm_batch(normalised_body, stream=False):
             settings = get_settings()
             coordinator = get_vlm_batch_coordinator(
                 model_id=model_id,
@@ -1200,43 +1199,26 @@ class ResponsesAdapter:
             adapter_path=adapter_path,
             draft_model_id=draft_model_id,
         ):
-            if videos:
-                # --- Video path: use mlx-vlm video pipeline ---
-                text_prompt = self._extract_text_content(
-                    normalised_body.get("input", [{}])[-1].get("content")
-                )
-                video_data = build_video_prompt_and_inputs(
-                    videos,
-                    text_prompt or "Describe this video.",
-                    processor,
-                    model.config,
-                )
-
-                result = vlm_generate(
-                    model,
-                    processor,
-                    video_data["prompt"],
-                    image=images or None,
-                    **{k: v for k, v in video_data.items() if k not in ("prompt",)},
-                    **gen_kwargs,
-                )
-            else:
-                # --- Image-only path (existing) ---
-                prompt = self._build_vlm_prompt(
-                    apply_chat_template,
-                    model,
-                    processor,
-                    normalised_body,
-                    images,
-                )
-
-                result = vlm_generate(
-                    model,
-                    processor,
-                    prompt,
-                    image=images,
-                    **gen_kwargs,
-                )
+            resolved = resolve_vlm_media(
+                processor,
+                images=images,
+                videos=videos,
+            )
+            prompt = self._build_vlm_prompt(
+                apply_chat_template,
+                model,
+                processor,
+                normalised_body,
+                resolved.images,
+            )
+            result = vlm_generate(
+                model,
+                processor,
+                prompt,
+                image=resolved.images or None,
+                video=resolved.videos or None,
+                **gen_kwargs,
+            )
 
         content_text = _CHATML_SPECIAL_TOKENS_RE.sub("", result.text or "")
         parsed = parse_reasoning_like_output(content_text)
@@ -1304,7 +1286,8 @@ class ResponsesAdapter:
         reasoning_done_emitted = False
         message_item_emitted = False
 
-        if self._should_use_vlm_batch(normalised_body, stream=True):
+        videos = self._extract_video_inputs(normalised_body)
+        if not videos and self._should_use_vlm_batch(normalised_body, stream=True):
             settings = get_settings()
             stream_results = get_vlm_stream_coordinator(
                 model_id=model_id,
