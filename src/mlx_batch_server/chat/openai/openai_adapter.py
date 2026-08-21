@@ -300,6 +300,7 @@ class OpenAIAdapter:
         chat_id: str,
         model: str,
         content: str | None = None,
+        reasoning: str | None = None,
         tool_calls: list[ToolCall] | None = None,
         finish_reason: str | None = None,
         logprobs: Any | None = None,
@@ -310,6 +311,7 @@ class OpenAIAdapter:
             chat_id: The chat completion ID
             model: The model name
             content: Text content for the delta (mutually exclusive with tool_calls)
+            reasoning: Reasoning content for the delta
             tool_calls: Tool calls for the delta (mutually exclusive with content)
             finish_reason: The finish reason (None for intermediate chunks)
             logprobs: Log probabilities if requested
@@ -319,6 +321,8 @@ class OpenAIAdapter:
         """
         if tool_calls:
             delta = ChatMessage(role=Role.ASSISTANT, tool_calls=tool_calls)
+        elif reasoning:
+            delta = ChatMessage(role=Role.ASSISTANT, reasoning=reasoning)
         elif content:
             delta = ChatMessage(role=Role.ASSISTANT, content=content)
         else:
@@ -449,14 +453,14 @@ class OpenAIAdapter:
             # Stream content chunks
             for chunk in self._generate_wrapper.generate_stream(**params):
                 # Extract content from chunk
+                content = ""
+                reasoning = ""
                 if chunk.content.text_delta:
                     content = chunk.content.text_delta
                     accumulated_text += content
                 elif chunk.content.reasoning_delta:
-                    content = chunk.content.reasoning_delta
-                    accumulated_text += content
-                else:
-                    content = ""
+                    reasoning = chunk.content.reasoning_delta
+                    accumulated_text += reasoning
 
                 # Filter tool call XML when tools are available
                 if has_tools and content:
@@ -469,7 +473,14 @@ class OpenAIAdapter:
                     stream_content = content
 
                 # Yield content chunk
-                if stream_content:
+                if reasoning:
+                    yield self._create_stream_chunk(
+                        chat_id,
+                        request.model,
+                        reasoning=reasoning,
+                        logprobs=chunk.logprobs,
+                    )
+                elif stream_content:
                     yield self._create_stream_chunk(
                         chat_id,
                         request.model,

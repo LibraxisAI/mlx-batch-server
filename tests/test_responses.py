@@ -1126,6 +1126,90 @@ class TestResponsesRuntimeGuards:
             for event in events
         )
 
+    @pytest.mark.asyncio
+    async def test_streaming_direct_lane_preserves_reasoning_and_output_channels(
+        self,
+        monkeypatch,
+    ):
+        from mlx_batch_server.responses.adapter import ResponsesAdapter
+
+        adapter = ResponsesAdapter()
+        monkeypatch.setattr(adapter, "_should_use_batch", lambda: False)
+
+        class FakeAdapter:
+            def generate_stream(self, request):
+                assert request.stream is True
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning="thinking once",
+                                tool_calls=None,
+                            ),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content="</think>",
+                                reasoning=None,
+                                tool_calls=None,
+                            ),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content="FINAL",
+                                reasoning=None,
+                                tool_calls=None,
+                            ),
+                            finish_reason="stop",
+                        )
+                    ]
+                )
+
+        monkeypatch.setattr(
+            adapter,
+            "_get_openai_adapter",
+            lambda *args, **kwargs: FakeAdapter(),
+        )
+
+        events = [
+            event
+            async for event in adapter.generate_stream(
+                ResponseRequest(
+                    model="demo-model",
+                    input="hello",
+                    stream=True,
+                )
+            )
+        ]
+
+        reasoning = "".join(
+            event["delta"]
+            for event in events
+            if event["type"] == "response.reasoning_summary_text.delta"
+        )
+        output = "".join(
+            event["delta"]
+            for event in events
+            if event["type"] == "response.output_text.delta"
+        )
+
+        assert reasoning == "thinking once"
+        assert output == "FINAL"
+        assert "FINAL" not in reasoning
+        assert "thinking once" not in output
+        assert any(event["type"] == "response.completed" for event in events)
+
 
 # =============================================================================
 # Concurrent & Chain Tests (require running server with loaded model)
