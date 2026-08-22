@@ -1105,9 +1105,11 @@ async def _dispatch_stream_tokens(
         # mlx-vlm BatchGenerator.next() returns
         #   (prompt_responses, generation_responses)  — new API
         # or a single flat list of Response objects — legacy API.
-        # Normalize to a flat list of Response objects before iteration.
+        # PromptProgress (prefill metrics) has no .token — only consume
+        # generation responses for token streaming.
         if isinstance(result, tuple) and len(result) == 2:
-            responses = list(result[0]) + list(result[1])
+            _prompt_responses, generation_responses = result
+            responses = list(generation_responses)
         else:
             responses = list(result)
         if not responses:
@@ -1125,20 +1127,22 @@ async def _dispatch_stream_tokens(
                 continue
 
             delta = ""
-            if resp.token is not None:
-                token_buffers[idx].append(resp.token)
+            token = getattr(resp, "token", None)
+            if token is not None:
+                token_buffers[idx].append(token)
                 new_text = tokenizer.decode(token_buffers[idx])
                 delta = new_text[len(last_texts[idx]) :]
                 last_texts[idx] = new_text
 
-            if delta or resp.finish_reason is not None:
+            finish_reason = getattr(resp, "finish_reason", None)
+            if delta or finish_reason is not None:
                 await batch[idx].response_queue.put(
                     VlmStreamChunk(
                         text=delta,
-                        finish_reason=resp.finish_reason,
+                        finish_reason=finish_reason,
                     )
                 )
-            if resp.finish_reason is not None:
+            if finish_reason is not None:
                 finished[idx] = True
 
     return finished

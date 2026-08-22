@@ -359,6 +359,57 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
     assert state["uids"] == ["uid-0"]
 
 
+def test_dispatch_stream_tokens_ignores_prompt_progress() -> None:
+    from mlx_batch_server.vision import vlm_batch
+
+    class FakeGenerator:
+        def __init__(self) -> None:
+            self.results = iter(
+                [
+                    (
+                        [SimpleNamespace(uid=1, prompt_tokens=12)],
+                        [SimpleNamespace(uid=1, token=7, finish_reason=None)],
+                    ),
+                    (
+                        [SimpleNamespace(uid=1, prompt_tokens=12)],
+                        [SimpleNamespace(uid=1, token=None, finish_reason="stop")],
+                    ),
+                ]
+            )
+
+        def next(self):
+            return next(self.results, None)
+
+    async def _run() -> None:
+        response_queue: asyncio.Queue = asyncio.Queue()
+        request = vlm_batch.PendingVlmStreamRequest(
+            request_id="req-1",
+            messages=[{"role": "user", "content": "Describe this image"}],
+            images=["https://example.com/cat.png"],
+            max_tokens=9,
+            temperature=None,
+            top_p=None,
+            response_queue=response_queue,
+            created_at=0.0,
+        )
+
+        finished = await vlm_batch._dispatch_stream_tokens(
+            batch=[request],
+            gen=FakeGenerator(),
+            tokenizer=SimpleNamespace(decode=lambda tokens: "token" * len(tokens)),
+            uids=[1],
+        )
+
+        chunks = [response_queue.get_nowait(), response_queue.get_nowait()]
+        assert finished == [True]
+        assert [(chunk.text, chunk.finish_reason) for chunk in chunks] == [
+            ("token", None),
+            ("", "stop"),
+        ]
+
+    asyncio.run(_run())
+
+
 def test_vlm_stream_coordinator_groups_requests_by_image_shape() -> None:
     from mlx_batch_server.vision import vlm_batch
 
