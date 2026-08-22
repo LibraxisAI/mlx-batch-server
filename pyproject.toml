@@ -3,7 +3,7 @@ name = "mlx-batch-server"
 version = "0.6.0-dev"
 description = "High-performance local AI inference server for Apple Silicon with batch processing, Responses API, and Harmony parser."
 authors = [
-    { name = "VetCoders", email = "hello@vetcoders.io" },
+    { name = "Vetcoders", email = "hello@vetcoders.io" },
 ]
 maintainers = [
     { name = "Maciej Gad", email = "void@div0.space" },
@@ -60,8 +60,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/VetCoders/mlx-batch-server"
-Upstream = "https://github.com/LibraxisAI/mlx-batch-server"
+Repository = "https://github.com/LibraxisAI/mlx-batch-server"
 
 [project.scripts]
 mlx-batch-server = "mlx_batch_server.main:start"
