@@ -1,26 +1,47 @@
 import base64
-import os
+import binascii
+import gc
 import random
+import re
 import tempfile
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import mlx.core as mx
 from mflux.callbacks.callback_registry import CallbackRegistry
 from mflux.callbacks.instances.memory_saver import MemorySaver
 from mflux.models.common.config.model_config import ModelConfig
 from mflux.models.flux.variants.txt2img.flux import Flux1
+from mflux.models.flux2.variants import Flux2Klein, Flux2KleinEdit
+from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
+from mflux.models.z_image import ZImageTurbo
 from mflux.utils.exceptions import StopImageGenerationException
 from PIL import Image
 
 from ..utils.logger import logger
-from .schema import ImageGenerationRequest, ImageObject, ResponseFormat
+from .presets import ImageLoraPreset, ImageModelProfile, image_preset_catalog
+from .schema import (
+    ImageEditRequest,
+    ImageGenerationRequest,
+    ImageObject,
+    ResponseFormat,
+)
+
+_DATA_IMAGE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
 
 
 class MFluxImageGenerator:
     """Image generator using mflux library"""
 
-    def __init__(self, model_version: str = "dhairyashil/FLUX.1-schnell-mflux-4bit"):
+    def __init__(
+        self,
+        model_version: str = "dhairyashil/FLUX.1-schnell-mflux-4bit",
+        preset: ImageLoraPreset | None = None,
+    ):
         self.model_version = model_version
+        self.profile = image_preset_catalog().model(model_version)
+        self.preset = preset
 
         # Initialize model instance (lazy loading)
         self._flux = None
@@ -47,9 +68,13 @@ class MFluxImageGenerator:
 
         return base_model
 
-    def _get_flux(self, params: dict | None = None) -> Flux1:
-        """Get or initialize Flux1 instance"""
+    def _get_flux(self, params: dict | None = None):
+        """Get or initialize the configured mflux family instance."""
         if self._flux is None:
+            if self.profile:
+                self._flux = self._build_profile_model(self.profile)
+                return self._flux
+
             # Extract model name from full path
             model_name = self.model_version
 
@@ -72,6 +97,25 @@ class MFluxImageGenerator:
             )
 
         return self._flux
+
+    def _build_profile_model(self, profile: ImageModelProfile):
+        model_config = getattr(ModelConfig, profile.config)()
+        common = {
+            "model_config": model_config,
+            "model_path": profile.model_path,
+            "quantize": profile.quantize,
+        }
+        if profile.family == "qwen-image-edit":
+            return QwenImageEdit(
+                **common,
+                lora_paths=list(self.preset.lora_paths) if self.preset else None,
+                lora_scales=list(self.preset.lora_scales) if self.preset else None,
+            )
+        if profile.family == "flux2-klein":
+            return Flux2Klein(**common)
+        if profile.family == "z-image-turbo":
+            return ZImageTurbo(**common)
+        raise ValueError(f"Unsupported mflux image family '{profile.family}'")
 
     def _parse_size(self, size_str: str) -> tuple[int, int]:
         """Parse size string to width and height"""
@@ -101,8 +145,24 @@ class MFluxImageGenerator:
         # Generate random seed if not specified
         seed = all_extra_params.pop("seed", random.randint(0, 2**32 - 1))
 
-        # Get or initialize Flux1 instance
+        # Get or initialize model instance
         flux = self._get_flux(all_extra_params)
+
+        if self.profile:
+            steps = all_extra_params.pop("steps", self.profile.steps)
+            guidance = all_extra_params.pop("guidance", self.profile.guidance)
+            kwargs = {
+                "seed": seed,
+                "prompt": request.prompt,
+                "num_inference_steps": steps,
+                "height": height,
+                "width": width,
+            }
+            if guidance is not None:
+                kwargs["guidance"] = guidance
+            image = flux.generate_image(**kwargs)
+            self._save_image(image, output_path)
+            return image
 
         # Generate image
         low_memory_mode = all_extra_params.get("low_arm", True)
@@ -123,7 +183,7 @@ class MFluxImageGenerator:
             )
 
             # Save image
-            image.save(path=output_path, export_json_metadata=False)
+            self._save_image(image, output_path)
             return image
         except StopImageGenerationException as e:
             raise Exception(f"Image generation interrupted: {e!s}") from e
@@ -132,6 +192,81 @@ class MFluxImageGenerator:
         finally:
             if memory_saver:
                 print(memory_saver.memory_stats())
+
+    def edit(
+        self,
+        request: ImageEditRequest,
+        image_paths: list[str],
+        output_path: str,
+    ) -> Image.Image:
+        if not self.profile or self.profile.family not in {
+            "qwen-image-edit",
+            "flux2-klein",
+        }:
+            raise ValueError(
+                f"Model '{self.model_version}' does not support image edits"
+            )
+
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
+        width, height = self._edit_size(request, image_paths[0])
+        prompt = request.prompt
+        if self.preset and self.profile.family == "qwen-image-edit":
+            prompt = f"{prompt}\n\n{self.preset.prompt_guard}"
+        steps = (
+            request.steps
+            or (self.preset.steps if self.preset else None)
+            or self.profile.steps
+        )
+        guidance = (
+            request.guidance if request.guidance is not None else self.profile.guidance
+        )
+
+        if self.profile.family == "flux2-klein":
+            if not isinstance(self._flux, Flux2KleinEdit):
+                self._flux = Flux2KleinEdit(
+                    model_config=getattr(ModelConfig, self.profile.config)(),
+                    model_path=self.profile.model_path,
+                    quantize=self.profile.quantize,
+                )
+            model = self._flux
+        else:
+            model = self._get_flux({})
+        if model is None:
+            raise RuntimeError(f"Model '{self.model_version}' did not initialize")
+
+        kwargs = {
+            "seed": seed,
+            "prompt": prompt,
+            "image_paths": image_paths,
+            "num_inference_steps": steps,
+            "height": height,
+            "width": width,
+        }
+        if guidance is not None:
+            kwargs["guidance"] = guidance
+        try:
+            image = model.generate_image(**kwargs)
+            self._save_image(image, output_path)
+            return image
+        except StopImageGenerationException as error:
+            raise Exception(f"Image edit interrupted: {error!s}") from error
+        except Exception as error:
+            raise Exception(f"Error editing image: {error!s}") from error
+
+    @staticmethod
+    def _save_image(image, output_path: str) -> None:
+        if isinstance(image, Image.Image):
+            image.save(output_path)
+        else:
+            image.save(path=output_path, export_json_metadata=False)
+
+    def _edit_size(self, request: ImageEditRequest, first_path: str) -> tuple[int, int]:
+        if request.size:
+            return self._parse_size(request.size.value)
+        with Image.open(first_path) as source:
+            return source.size
 
 
 class ImagesService:
@@ -153,27 +288,58 @@ class ImagesService:
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a specific image model. Returns True if it was loaded."""
-        generator = self._generator_cache.pop(model_name, None)
-        if generator is None:
-            return False
-        generator._flux = None
-        return True
+        keys = [
+            key for key in self._generator_cache if key.split(":", 1)[0] == model_name
+        ]
+        for key in keys:
+            self._generator_cache.pop(key)._flux = None
+        return bool(keys)
 
     def clear_models(self) -> list[str]:
         """Unload all image models and return the unloaded model IDs."""
-        unloaded = list(self._generator_cache.keys())
+        unloaded = list(
+            dict.fromkeys(key.split(":", 1)[0] for key in self._generator_cache)
+        )
         for generator in self._generator_cache.values():
             generator._flux = None
         self._generator_cache.clear()
         return unloaded
 
-    def _get_generator(self, model_name: str) -> MFluxImageGenerator:
+    def _get_generator(
+        self,
+        model_name: str,
+        preset_id: str | None = None,
+    ) -> MFluxImageGenerator:
         """Get or create image generator instance"""
-        if model_name not in self._generator_cache:
-            self._generator_cache[model_name] = MFluxImageGenerator(
-                model_version=model_name
+        profile = image_preset_catalog().model(model_name)
+        preset = (
+            image_preset_catalog().preset(preset_id)
+            if profile and profile.family == "qwen-image-edit"
+            else None
+        )
+        cache_key = f"{model_name}:{preset.id if preset else '-'}"
+        if cache_key not in self._generator_cache:
+            # Image models are large, and Qwen's load peak is especially high.
+            # Keep exactly one resident image family/preset in this process.
+            # This also prevents a draft -> high request from retaining the
+            # FLUX.2 transformer while Qwen is being materialized.
+            self._evict_generators_except(cache_key)
+            self._generator_cache[cache_key] = MFluxImageGenerator(
+                model_version=model_name,
+                preset=preset,
             )
-        return self._generator_cache[model_name]
+        return self._generator_cache[cache_key]
+
+    def _evict_generators_except(self, keep_key: str) -> None:
+        evicted = False
+        for key in list(self._generator_cache):
+            if key == keep_key:
+                continue
+            self._generator_cache.pop(key)._flux = None
+            evicted = True
+        if evicted:
+            gc.collect()
+            mx.clear_cache()
 
     def _get_output_path(self, uid: str) -> str:
         """Generate unique output path for image"""
@@ -187,9 +353,9 @@ class ImagesService:
     def _cleanup_image(self, image_path: str):
         """Clean up temporary image file"""
         try:
-            os.unlink(image_path)
-        except Exception as e:
-            print(f"Error cleaning up image {image_path}: {e!s}")
+            Path(image_path).unlink(missing_ok=True)
+        except OSError as error:
+            logger.warning(f"Error cleaning up image {image_path}: {error!s}")
 
     def generate_images(
         self,
@@ -217,6 +383,8 @@ class ImagesService:
                 if request.response_format == ResponseFormat.B64_JSON:
                     image_object.b64_json = self._image_to_base64(output_path)
                 else:  # URL format
+                    # This is a runner-owned local artifact URI, never a user host.
+                    # nosemgrep: python.django.security.injection.tainted-url-host.tainted-url-host  # noqa: ERA001
                     image_object.url = f"file://{output_path}"
 
                 generated_images.append(image_object)
@@ -230,6 +398,59 @@ class ImagesService:
 
         return generated_images
 
+    def edit_images(self, request: ImageEditRequest) -> list[ImageObject]:
+        generator = self._get_generator(request.model, request.preset)
+        generated_images: list[ImageObject] = []
+
+        with TemporaryDirectory(prefix="mlx-image-edit-") as input_dir:
+            image_paths = [
+                self._materialize_data_url(url, Path(input_dir), index)
+                for index, url in enumerate(request.input_urls())
+            ]
+            for index in range(request.n):
+                uid = f"{time.time_ns()}_{index}"
+                output_path = self._get_output_path(uid)
+                try:
+                    generator.edit(request, image_paths, output_path)
+                    image_object = ImageObject(revised_prompt=request.prompt)
+                    if request.response_format == ResponseFormat.URL:
+                        # This is a runner-owned local artifact URI, never a user host.
+                        # nosemgrep: python.django.security.injection.tainted-url-host.tainted-url-host  # noqa: ERA001
+                        image_object.url = f"file://{output_path}"
+                    else:
+                        image_object.b64_json = self._image_to_base64(output_path)
+                    generated_images.append(image_object)
+                finally:
+                    if request.response_format == ResponseFormat.B64_JSON:
+                        self._cleanup_image(output_path)
+        return generated_images
+
+    @staticmethod
+    def _materialize_data_url(url: str, directory: Path, index: int) -> str:
+        match = _DATA_IMAGE.match(url)
+        if not match:
+            raise ValueError("MLX image edit accepts data:image base64 inputs only")
+        mime, encoded = match.groups()
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("Invalid base64 image input") from error
+        if len(payload) > 20 * 1024 * 1024:
+            raise ValueError("Image input exceeds 20 MiB")
+        suffix = ".png" if mime == "image/png" else ".jpg"
+        path = directory / f"source-{index}{suffix}"
+        path.write_bytes(payload)
+        try:
+            with Image.open(path) as source:
+                source.verify()
+        except Exception as error:
+            path.unlink(missing_ok=True)
+            raise ValueError("Image input is not a valid bitmap") from error
+        return str(path)
+
+    def list_presets(self) -> list[dict[str, str]]:
+        return image_preset_catalog().public_presets()
+
 
 _images_service: ImagesService | None = None
 
@@ -240,3 +461,20 @@ def get_images_service() -> ImagesService:
     if _images_service is None:
         _images_service = ImagesService()
     return _images_service
+
+
+def run_image_operation(
+    operation: str,
+    payload: dict[str, object],
+) -> list[dict[str, object]]:
+    """Process-worker entrypoint keeping MLX on that process's main thread."""
+    service = get_images_service()
+    if operation == "generate":
+        generation_request = ImageGenerationRequest.model_validate(payload)
+        images = service.generate_images(generation_request)
+    elif operation == "edit":
+        edit_request = ImageEditRequest.model_validate(payload)
+        images = service.edit_images(edit_request)
+    else:
+        raise ValueError(f"Unknown image operation '{operation}'")
+    return [image.model_dump() for image in images]

@@ -1,10 +1,17 @@
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
-class ImageSize(str, Enum):
+class ImageSize(StrEnum):
     S256x256 = "256x256"
     S512x512 = "512x512"
     S1024x1024 = "1024x1024"
@@ -12,17 +19,17 @@ class ImageSize(str, Enum):
     S1024x1792 = "1024x1792"
 
 
-class ImageQuality(str, Enum):
+class ImageQuality(StrEnum):
     STANDARD = "standard"
     HD = "hd"
 
 
-class ImageStyle(str, Enum):
+class ImageStyle(StrEnum):
     VIVID = "vivid"
     NATURAL = "natural"
 
 
-class ResponseFormat(str, Enum):
+class ResponseFormat(StrEnum):
     URL = "url"
     B64_JSON = "b64_json"
 
@@ -67,6 +74,45 @@ class ImageGenerationRequest(BaseModel):
         return v
 
 
+class ImageUrlInput(BaseModel):
+    url: str
+    type: str = "image_url"
+
+
+class ImageEditRequest(BaseModel):
+    prompt: str = Field(..., max_length=4000)
+    model: str = "mflux-qwen-image-edit"
+    image: ImageUrlInput | str | None = None
+    images: list[ImageUrlInput | str] | None = None
+    n: int = Field(default=1, ge=1, le=4)
+    response_format: ResponseFormat = ResponseFormat.B64_JSON
+    size: ImageSize | None = None
+    preset: str = Field(
+        default="clean",
+        validation_alias=AliasChoices("preset", "lora_preset"),
+    )
+    seed: int | None = None
+    steps: int | None = Field(default=None, ge=1, le=100)
+    guidance: float | None = Field(default=None, ge=0, le=20)
+
+    @model_validator(mode="after")
+    def validate_images(self):
+        inputs = self.input_urls()
+        if not inputs:
+            raise ValueError("Image edit requires at least one source image")
+        if len(inputs) > 3:
+            raise ValueError("Image edit accepts at most three source images")
+        return self
+
+    def input_urls(self) -> list[str]:
+        raw = self.images if self.images is not None else [self.image]
+        return [
+            item.url if isinstance(item, ImageUrlInput) else item
+            for item in raw
+            if item
+        ]
+
+
 class ImageObject(BaseModel):
     url: str | None = None
     b64_json: str | None = None
@@ -76,3 +122,13 @@ class ImageObject(BaseModel):
 class ImageGenerationResponse(BaseModel):
     created: int
     data: list[ImageObject]
+
+
+class ImagePresetSummary(BaseModel):
+    id: str
+    label: str
+    description: str
+
+
+class ImagePresetsResponse(BaseModel):
+    data: list[ImagePresetSummary]
