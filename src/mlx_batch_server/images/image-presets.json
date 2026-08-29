@@ -1,0 +1,96 @@
+{
+  "models": {
+    "mflux-z-image-turbo": {
+      "label": "Z-Image Turbo",
+      "family": "z-image-turbo",
+      "model_path": "filipstrand/Z-Image-Turbo-mflux-4bit",
+      "config": "z_image_turbo",
+      "steps": 9,
+      "guidance": null
+    },
+    "mflux-flux2-klein-draft": {
+      "label": "FLUX.2 Klein 4B · Draft",
+      "family": "flux2-klein",
+      "model_path": "Runpod/FLUX.2-klein-4B-mflux-4bit",
+      "config": "flux2_klein_4b",
+      "steps": 4,
+      "guidance": 1.0
+    },
+    "mflux-qwen-image-edit": {
+      "label": "Qwen Image Edit 2511 · High",
+      "family": "qwen-image-edit",
+      "model_path": "Qwen/Qwen-Image-Edit-2511",
+      "config": "qwen_image_edit",
+      "quantize": 8,
+      "steps": 30,
+      "guidance": 2.5
+    }
+  },
+  "presets": [
+    {
+      "id": "clean",
+      "label": "CLEAN · InSubject",
+      "description": "Zachowaj osobę, twarz, ciało, pozę i liczbę postaci.",
+      "prompt_guard": "Preserve the exact person, identity, face, body, pose, subject count, framing and camera. Change only what was explicitly requested. Do not add people, hands, arms or limbs unless explicitly requested.",
+      "lora_paths": ["peteromallet/Qwen-Image-Edit-InSubject:InSubject-0.5.safetensors"],
+      "lora_scales": [0.7]
+    },
+    {
+      "id": "inscene",
+      "label": "SCENE · InScene",
+      "description": "Dobuduj otoczenie wokół tej samej osoby.",
+      "prompt_guard": "Preserve the exact person, identity, face, body, pose and subject count. Extend or rebuild only the requested environment.",
+      "lora_paths": ["flymy-ai/qwen-image-edit-inscene-lora:flymy_qwen_image_edit_inscene_lora.safetensors"],
+      "lora_scales": [0.8]
+    },
+    {
+      "id": "fixbody",
+      "label": "FIX BODY · Anatomy",
+      "description": "Napraw anatomię bez podmiany osoby, pozy i kadru.",
+      "prompt_guard": "Preserve the exact person, identity, face, pose, subject count, framing and camera. Correct only malformed anatomy and do not redesign the body or add limbs.",
+      "lora_paths": ["nbeerbower/FIXBODYr128-QwenImageEdit2509:pytorch_lora_weights.safetensors"],
+      "lora_scales": [0.65]
+    },
+    {
+      "id": "angle",
+      "label": "ANGLE · Multiple Angles",
+      "description": "Zmień kamerę bez zmiany osoby i anatomii.",
+      "prompt_guard": "Preserve the exact person, identity, face, anatomy and subject count while changing only the requested camera angle.",
+      "lora_paths": ["dx8152/Qwen-Edit-2509-Multiple-angles:镜头转换.safetensors"],
+      "lora_scales": [0.8]
+    },
+    {
+      "id": "lightning",
+      "label": "LIGHTNING · 8 kroków",
+      "description": "Szybszy Qwen edit do iteracji przed pełnym High.",
+      "prompt_guard": "Preserve identity, pose, anatomy, framing and subject count. Change only what was explicitly requested.",
+      "lora_paths": ["lightx2v/Qwen-Image-Lightning:Qwen-Image-Edit-Lightning-8steps-V1.0.safetensors"],
+      "lora_scales": [0.5],
+      "steps": 8
+    },
+    {
+      "id": "hot",
+      "label": "HOT · Action",
+      "description": "Mocniejszy lokalny edit z kontrolą anatomii.",
+      "prompt_guard": "Preserve the exact person, identity, face, anatomy, pose, subject count, framing and camera. Change only the explicitly requested attribute or action.",
+      "lora_paths": ["ScottzillaSystems/qwen-image-edit-plus-nsfw-lora:qwen-image-edit-plus-nsfw-lora.safetensors"],
+      "lora_scales": [0.72]
+    },
+    {
+      "id": "very-hot",
+      "label": "VERY HOT · Unchained",
+      "description": "Mocny edit nadal zakotwiczony w fotografii źródłowej.",
+      "prompt_guard": "Preserve the exact person, identity, face, anatomy, pose, subject count, framing and camera. Change only what was explicitly requested.",
+      "lora_paths": ["urogin/QWEN-Edit-2509-Unchained-XXX:Unchained-XXX.safetensors"],
+      "lora_scales": [0.8]
+    },
+    {
+      "id": "infl8",
+      "label": "INFL8 · Volume",
+      "description": "Kontrolowana objętość wskazanego obszaru.",
+      "prompt_guard": "Preserve the exact person, identity, face, anatomy, pose, subject count, framing and camera. Apply volume only to the body area explicitly named by the user.",
+      "lora_paths": ["systms/SYSTMS-INFL8-LoRA-Qwen-Image-Edit-2511:SYSTMS_INFL8_LoRA_Qwen_Image_Edit_2511.safetensors"],
+      "lora_scales": [0.7]
+    }
+  ]
+}
