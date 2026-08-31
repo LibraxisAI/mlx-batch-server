@@ -43,6 +43,7 @@ class ImageRuntimePool:
         self._idle.set()
         self._idle_retirement: asyncio.Task[None] | None = None
         self._worker_pid: int | None = None
+        self._resident_models: set[str] = set()
 
     @staticmethod
     def _new_process_pool() -> ProcessPoolExecutor:
@@ -84,8 +85,19 @@ class ImageRuntimePool:
                 payload,
             )
             worker_pid = result.get("worker_pid")
-            if isinstance(worker_pid, int):
-                self._worker_pid = worker_pid
+            async with self._lock:
+                if self._executor is executor:
+                    if isinstance(worker_pid, int):
+                        self._worker_pid = worker_pid
+                    model_id = payload.get("model")
+                    if operation in {"load", "generate", "edit"} and isinstance(
+                        model_id, str
+                    ):
+                        self._resident_models.add(model_id)
+                    elif operation == "unload" and isinstance(model_id, str):
+                        self._resident_models.discard(model_id)
+                    elif operation == "clear":
+                        self._resident_models.clear()
             return result
         finally:
             async with self._lock:
@@ -115,6 +127,7 @@ class ImageRuntimePool:
                     return
                 self._executor = None
                 self._worker_pid = None
+                self._resident_models.clear()
                 self._idle_retirement = None
             await asyncio.to_thread(
                 executor.shutdown,
@@ -171,6 +184,7 @@ class ImageRuntimePool:
             "active_operations": self._active_operations,
             "idle_ttl_seconds": self._idle_ttl_seconds,
             "worker_pid": self._worker_pid,
+            "resident_models": sorted(self._resident_models),
         }
 
     @asynccontextmanager
@@ -189,6 +203,7 @@ class ImageRuntimePool:
                 executor = self._executor
                 self._executor = None
                 self._worker_pid = None
+                self._resident_models.clear()
                 break
         if executor is not None:
             await asyncio.to_thread(
@@ -233,3 +248,17 @@ def image_runtime_recycle_ready() -> bool:
         return True
     state = runtime.snapshot()
     return not state["running"] and state["active_operations"] == 0
+
+
+def get_image_runtime_snapshot() -> dict[str, object]:
+    """Return image residency without creating a cold process-pool owner."""
+    runtime = _image_runtime_pool
+    if runtime is None:
+        return {
+            "running": False,
+            "active_operations": 0,
+            "idle_ttl_seconds": get_settings().image_model_idle_ttl_seconds,
+            "worker_pid": None,
+            "resident_models": [],
+        }
+    return runtime.snapshot()

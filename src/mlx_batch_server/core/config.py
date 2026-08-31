@@ -216,6 +216,11 @@ class Settings(BaseSettings):
         ge=0,
         description="Idle seconds before the heavyweight image worker is retired",
     )
+    aux_model_idle_ttl_seconds: float = Field(
+        default=600,
+        ge=0,
+        description="Idle seconds before native embeddings/audio weights retire",
+    )
     pinned_models: str = Field(
         default="",
         description="Comma-separated model IDs to keep always loaded (never evict)",

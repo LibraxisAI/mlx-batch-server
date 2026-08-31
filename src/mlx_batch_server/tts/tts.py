@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ..auth.dependency import verify_auth
+from ..aux_runtime import auxiliary_runtime_operation
 from .schema import AudioFormat, TTSRequest
 from .tts_service import TTSService
 
@@ -22,12 +23,12 @@ async def create_speech(
     Returns:
         StreamingResponse: Audio file content in the requested format
     """
-    tts_service = TTSService(request.model)
-
     try:
-        audio_content = await tts_service.generate_speech(
-            request=request,
-        )
+        with auxiliary_runtime_operation("tts", request.model):
+            tts_service = TTSService(request.model)
+            audio_content = await tts_service.generate_speech(
+                request=request,
+            )
 
         # Create content type mapping
         content_type_mapping = {

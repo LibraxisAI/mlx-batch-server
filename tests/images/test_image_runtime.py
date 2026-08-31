@@ -107,9 +107,11 @@ async def test_specific_unload_and_clear_retire_the_worker_that_handled_them():
     )
 
     await runtime.prewarm("image-model")
+    assert runtime.snapshot()["resident_models"] == ["image-model"]
     assert await runtime.unload("image-model") is True
     assert executors[0].shutdown_calls == 1
     assert runtime.snapshot()["running"] is False
+    assert runtime.snapshot()["resident_models"] == []
 
     await runtime.prewarm("image-model")
     assert await runtime.clear() == ["image-model"]

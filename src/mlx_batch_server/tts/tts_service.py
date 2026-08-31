@@ -7,6 +7,11 @@ from mlx_audio.tts.generate import generate_audio
 from pydantic import BaseModel, Field  # , PrivateAttr
 from typing_extensions import override
 
+from ..aux_runtime import (
+    forget_aux_runtime,
+    forget_aux_runtime_lane,
+    register_aux_runtime,
+)
 from .schema import TTSRequest
 
 
@@ -58,11 +63,12 @@ class F5Model(TTSModelAdapter):
         model = F5TTS.from_pretrained(model_id)
         with cls._cache_lock:
             cls._model_cache[model_id] = model
+        register_aux_runtime("tts", model_id, lambda: cls._retire_model(model_id))
         return False
 
     @classmethod
-    def unload_model(cls, model_id: str | None = None) -> list[str]:
-        """Unload F5 models from cache and return unloaded model IDs."""
+    def _retire_model(cls, model_id: str | None = None) -> list[str]:
+        """Unload F5 weights without mutating shared lifecycle metadata."""
         with cls._cache_lock:
             if model_id:
                 if model_id in cls._model_cache:
@@ -131,11 +137,12 @@ class MlxAudioModel(TTSModelAdapter):
         model = load_model(model_path=model_id)
         with cls._cache_lock:
             cls._model_cache[model_id] = model
+        register_aux_runtime("tts", model_id, lambda: cls._retire_model(model_id))
         return False
 
     @classmethod
-    def unload_model(cls, model_id: str | None = None) -> list[str]:
-        """Unload mlx-audio models from cache and return unloaded model IDs."""
+    def _retire_model(cls, model_id: str | None = None) -> list[str]:
+        """Unload mlx-audio weights without mutating shared lifecycle metadata."""
         with cls._cache_lock:
             if model_id:
                 if model_id in cls._model_cache:
@@ -187,10 +194,22 @@ class TTSService:
     @classmethod
     def unload_model(cls, model_id: str | None = None) -> list[str]:
         """Unload cached TTS model(s) and return unloaded model IDs."""
+        if model_id is None:
+            forget_aux_runtime_lane("tts")
+        else:
+            forget_aux_runtime("tts", model_id)
         unloaded = []
-        unloaded.extend(F5Model.unload_model(model_id))
-        unloaded.extend(MlxAudioModel.unload_model(model_id))
+        unloaded.extend(F5Model._retire_model(model_id))
+        unloaded.extend(MlxAudioModel._retire_model(model_id))
         return list(dict.fromkeys(unloaded))
+
+    @classmethod
+    def get_loaded_models(cls) -> list[str]:
+        with F5Model._cache_lock:
+            f5_models = list(F5Model._model_cache)
+        with MlxAudioModel._cache_lock:
+            mlx_audio_models = list(MlxAudioModel._model_cache)
+        return sorted(set(f5_models).union(mlx_audio_models))
 
     def __init__(self, path_or_hf_repo: str | Path | None = None):
         self.model = TTSModelAdapter.from_path_or_hf_repo(path_or_hf_repo)
@@ -201,6 +220,7 @@ class TTSService:
         request: TTSRequest,
     ) -> bytes:
         try:
+            self.preload_model(request.model)
             self.model.generate_audio(
                 request=request, output_path=self.sample_audio_path
             )

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mlx_batch_server import aux_runtime as aux_runtime_module
 from mlx_batch_server.batch import coordinator as batch_coordinator_module
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
@@ -19,6 +20,9 @@ from mlx_batch_server.chat.openai.models.schema import (
 )
 from mlx_batch_server.embeddings import embeddings_service as embeddings_service_module
 from mlx_batch_server.embeddings import visual_router as visual_router_module
+from mlx_batch_server.images import image_runtime as image_runtime_module
+from mlx_batch_server.stt import whisper_model as whisper_model_module
+from mlx_batch_server.tts import tts_service as tts_service_module
 from mlx_batch_server.vision import vlm_batch as vlm_batch_module
 from mlx_batch_server.vision import vlm_cache as vlm_cache_module
 
@@ -33,6 +37,78 @@ def clear_runtime_aliases():
 
 
 class TestLoadedModelsRuntime:
+    def test_process_residency_includes_every_heavy_backend(self, monkeypatch):
+        class FakeEmbeddingsService:
+            @staticmethod
+            def get_loaded_native_models():
+                return ["embed-model"]
+
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            FakeEmbeddingsService,
+        )
+        monkeypatch.setattr(
+            image_runtime_module,
+            "get_image_runtime_snapshot",
+            lambda: {
+                "running": True,
+                "active_operations": 0,
+                "idle_ttl_seconds": 600,
+                "worker_pid": 42,
+                "resident_models": ["image-model"],
+            },
+        )
+        monkeypatch.setattr(
+            whisper_model_module,
+            "get_loaded_whisper_models",
+            lambda: ["stt-model"],
+        )
+        monkeypatch.setattr(
+            tts_service_module.TTSService,
+            "get_loaded_models",
+            lambda: ["tts-model"],
+        )
+        monkeypatch.setattr(
+            aux_runtime_module,
+            "get_aux_runtime_snapshot",
+            lambda: {
+                "resident_by_lane": {
+                    "embeddings": ["embed-model"],
+                    "tts": ["tts-model"],
+                    "stt": ["stt-model"],
+                },
+                "active_by_lane": {},
+                "resident_count": 3,
+                "active_operations": 0,
+                "idle_ttl_seconds": 600,
+            },
+        )
+        llm_runtime = {
+            "caches": {"wrapper": ["llm-model"]},
+            "coordinators": {"llm_batch": ["llm-model"], "vlm_batch": []},
+        }
+
+        residency = models_module._snapshot_process_residency(llm_runtime)
+
+        assert residency["loaded_models"] == [
+            "embed-model",
+            "image-model",
+            "llm-model",
+            "stt-model",
+            "tts-model",
+        ]
+        assert residency["loaded_models_count"] == 5
+        assert residency["loaded_models_by_backend"] == {
+            "wrapper": ["llm-model"],
+            "batch": ["llm-model"],
+            "vlm_batch": [],
+            "image": ["image-model"],
+            "embeddings": ["embed-model"],
+            "tts": ["tts-model"],
+            "stt": ["stt-model"],
+        }
+
     @pytest.mark.asyncio
     async def test_list_loaded_models_reports_batch_coordinators(self, monkeypatch):
         """Loaded-models endpoint should surface batch coordinator residency."""
@@ -93,6 +169,12 @@ class TestLoadedModelsRuntime:
             "vlm_batch": ["model-b"],
         }
         assert payload["caches"] == {"wrapper": ["model-a", "model-b"]}
+        assert payload["loaded_models"] == ["model-a", "model-b"]
+        assert payload["loaded_models_count"] == 2
+        assert payload["loaded_models_by_backend"]["wrapper"] == [
+            "model-a",
+            "model-b",
+        ]
         assert payload["cache_info"] == {"cache_size": 1, "runtime_keys": []}
         assert payload["runtime_contract"]["text"]["tool_capable"] is True
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
@@ -325,6 +407,10 @@ class TestLoadedModelsRuntime:
             "wrapper": ["model-a"],
             "batch": ["model-a"],
             "vlm_batch": [],
+            "image": [],
+            "embeddings": [],
+            "tts": [],
+            "stt": [],
         }
         assert payload["runtime_contract"]["multimodal"]["execution"] == "single_flight"
         assert payload["runtime_contract"]["multimodal"]["batch_capable"] is True
@@ -1031,6 +1117,77 @@ class TestUnloadRuntime:
 
 
 class TestLoadRuntime:
+    @pytest.mark.asyncio
+    async def test_native_control_loads_use_auxiliary_admission(self, monkeypatch):
+        admissions: list[tuple[str, str]] = []
+
+        @asynccontextmanager
+        async def unused_runtime_session(*args, **kwargs):
+            yield {"switched": False, "evicted_models": []}
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def admission(lane: str, model_id: str):
+            admissions.append((lane, model_id))
+            yield
+
+        class FakeEmbeddingsService:
+            @staticmethod
+            def uses_shared_vlm_runtime(model_id: str) -> bool:
+                return False
+
+            @staticmethod
+            def canonicalize_model_id(model_id: str) -> str:
+                return model_id
+
+            @staticmethod
+            def load_model(model_id: str) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            aux_runtime_module,
+            "auxiliary_runtime_operation",
+            admission,
+        )
+        monkeypatch.setattr(
+            embeddings_service_module,
+            "get_embeddings_service",
+            FakeEmbeddingsService,
+        )
+        monkeypatch.setattr(
+            whisper_model_module,
+            "preload_whisper_model",
+            lambda model_id: False,
+        )
+        monkeypatch.setattr(
+            tts_service_module.TTSService,
+            "preload_model",
+            lambda model_id: False,
+        )
+        monkeypatch.setattr(
+            models_module,
+            "endpoint_runtime_session",
+            unused_runtime_session,
+        )
+
+        for task, model_id in (
+            ("embeddings", "embed-model"),
+            ("stt", "stt-model"),
+            ("tts", "tts-model"),
+        ):
+            response = await models_module.load_model(
+                ModelLoadRequest(model=model_id, task=task),
+                _auth={},
+            )
+            assert response.status == "loaded"
+
+        assert admissions == [
+            ("embeddings", "embed-model"),
+            ("stt", "stt-model"),
+            ("tts", "tts-model"),
+        ]
+
     @pytest.mark.asyncio
     async def test_load_llm_hard_switches_before_loading(self, monkeypatch):
         state = {"switch_called": False}

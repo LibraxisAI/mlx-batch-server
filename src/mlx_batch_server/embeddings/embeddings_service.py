@@ -5,6 +5,11 @@ import numpy as np
 import tiktoken
 from mlx_embeddings import generate, load
 
+from ..aux_runtime import (
+    forget_aux_runtime,
+    forget_aux_runtime_lane,
+    register_aux_runtime,
+)
 from ..chat.mlx.model_types import resolves_to_multimodal_runtime
 from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..chat.mlx.runtime_attachments import (
@@ -68,6 +73,11 @@ class EmbeddingsService:
             try:
                 model, processor = load(canonical_model_id)
                 self._models[canonical_model_id] = (model, processor)
+                register_aux_runtime(
+                    "embeddings",
+                    canonical_model_id,
+                    lambda: self._retire_native_model(canonical_model_id),
+                )
             except Exception as e:
                 logger.error(
                     f"Error loading embedding model {canonical_model_id}: {e!s}"
@@ -118,6 +128,7 @@ class EmbeddingsService:
 
     def clear_native_models(self) -> list[str]:
         """Clear only the private embeddings cache, leaving shared VLM runtime alone."""
+        forget_aux_runtime_lane("embeddings")
         unloaded = list(self._models.keys())
         if unloaded:
             self._models.clear()
@@ -214,11 +225,16 @@ class EmbeddingsService:
             return was_loaded or attachment_found or unloaded_any
 
         canonical_model_id = self.canonicalize_model_id(model_id)
-        if canonical_model_id in self._models:
-            self._models.pop(canonical_model_id, None)
-            mx.clear_cache()
-            return True
-        return False
+        forget_aux_runtime("embeddings", canonical_model_id)
+        return self._retire_native_model(canonical_model_id)
+
+    def _retire_native_model(self, canonical_model_id: str) -> bool:
+        """Drop one privately-owned model without mutating lifecycle metadata."""
+        if canonical_model_id not in self._models:
+            return False
+        self._models.pop(canonical_model_id, None)
+        mx.clear_cache()
+        return True
 
     def clear_models(self, *, release_runtime: bool = True) -> list[str]:
         """Unload all embeddings models and return the unloaded model IDs."""

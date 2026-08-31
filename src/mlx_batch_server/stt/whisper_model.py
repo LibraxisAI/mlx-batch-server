@@ -5,6 +5,11 @@ from pathlib import Path
 from mlx_whisper import transcribe
 from mlx_whisper.writers import WriteSRT, WriteVTT
 
+from ..aux_runtime import (
+    forget_aux_runtime,
+    forget_aux_runtime_lane,
+    replace_aux_runtime,
+)
 from .schema import (
     ResponseFormat,
     STTRequestForm,
@@ -123,6 +128,7 @@ class STTService:
         request: STTRequestForm,
     ) -> dict | str | TranscriptionResponse:
         try:
+            preload_whisper_model(request.model)
             audio_path = await self.model._save_upload_file(request.file)
             result = self.model.generate(audio_path=audio_path, request=request)
             response = self.model._format_response(result, request)
@@ -140,15 +146,19 @@ def preload_whisper_model(model_id: str) -> bool:
     import mlx.core as mx
     from mlx_whisper.transcribe import ModelHolder
 
-    already_loaded = (
-        ModelHolder.model is not None and ModelHolder.model_path == model_id
+    previous_model_id = (
+        ModelHolder.model_path if ModelHolder.model is not None else None
     )
+    already_loaded = previous_model_id == model_id
     ModelHolder.get_model(model_id, mx.float16)
+    if previous_model_id and previous_model_id != model_id:
+        forget_aux_runtime("stt", previous_model_id)
+    replace_aux_runtime("stt", model_id, lambda: _retire_whisper_model(model_id))
     return already_loaded
 
 
-def unload_whisper_model(model_id: str | None = None) -> list[str]:
-    """Unload Whisper model(s). Returns unloaded model IDs."""
+def _retire_whisper_model(model_id: str | None = None) -> list[str]:
+    """Drop Whisper weights without mutating shared lifecycle metadata."""
     from mlx_whisper.transcribe import ModelHolder
 
     if ModelHolder.model is None:
@@ -161,3 +171,21 @@ def unload_whisper_model(model_id: str | None = None) -> list[str]:
         return unloaded
 
     return []
+
+
+def unload_whisper_model(model_id: str | None = None) -> list[str]:
+    """Unload Whisper model(s). Returns unloaded model IDs."""
+    if model_id is None:
+        forget_aux_runtime_lane("stt")
+    else:
+        forget_aux_runtime("stt", model_id)
+    return _retire_whisper_model(model_id)
+
+
+def get_loaded_whisper_models() -> list[str]:
+    """Return the actual native Whisper holder residency."""
+    from mlx_whisper.transcribe import ModelHolder
+
+    if ModelHolder.model is None or not ModelHolder.model_path:
+        return []
+    return [ModelHolder.model_path]

@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.responses import PlainTextResponse
 
 from ..auth.dependency import verify_auth
+from ..aux_runtime import auxiliary_runtime_operation
 from .schema import ResponseFormat, STTRequestForm, TranscriptionResponse
 from .whisper_model import STTService
 
@@ -20,7 +21,8 @@ async def create_transcription(
     """
     stt_service = STTService()
     try:
-        result = await stt_service.transcribe(request)
+        with auxiliary_runtime_operation("stt", request.model):
+            result = await stt_service.transcribe(request)
 
         # Return appropriate response based on format
         if request.response_format == ResponseFormat.TEXT:

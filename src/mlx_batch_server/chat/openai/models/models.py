@@ -249,6 +249,37 @@ def _snapshot_llm_runtime() -> dict[str, Any]:
     }
 
 
+def _snapshot_process_residency(llm_runtime: dict[str, Any]) -> dict[str, Any]:
+    """Report every heavyweight owner in this process without loading weights."""
+    from ....aux_runtime import get_aux_runtime_snapshot
+    from ....embeddings.embeddings_service import get_embeddings_service
+    from ....images.image_runtime import get_image_runtime_snapshot
+    from ....stt.whisper_model import get_loaded_whisper_models
+    from ....tts.tts_service import TTSService
+
+    auxiliary = get_aux_runtime_snapshot()
+    image = get_image_runtime_snapshot()
+    by_backend = {
+        "wrapper": llm_runtime["caches"]["wrapper"],
+        "batch": llm_runtime["coordinators"]["llm_batch"],
+        "vlm_batch": llm_runtime["coordinators"]["vlm_batch"],
+        "image": list(image["resident_models"]),
+        "embeddings": sorted(get_embeddings_service().get_loaded_native_models()),
+        "tts": TTSService.get_loaded_models(),
+        "stt": get_loaded_whisper_models(),
+    }
+    loaded_models = sorted(
+        {model_id for models in by_backend.values() for model_id in models}
+    )
+    return {
+        "loaded_models": loaded_models,
+        "loaded_models_count": len(loaded_models),
+        "loaded_models_by_backend": by_backend,
+        "image_runtime": image,
+        "auxiliary_runtime": auxiliary,
+    }
+
+
 def _build_llm_cache_info() -> dict[str, Any]:
     runtime = _snapshot_llm_runtime()
     cache_info = dict(runtime["cache_info"])
@@ -483,16 +514,21 @@ async def list_loaded_models(
     this endpoint shows only models actively loaded in runtime caches.
     """
     runtime = _snapshot_llm_runtime()
+    process_residency = _snapshot_process_residency(runtime)
 
     return {
         "object": "list",
         "data": runtime["data"],
+        "loaded_models": process_residency["loaded_models"],
+        "loaded_models_count": process_residency["loaded_models_count"],
+        "loaded_models_by_backend": process_residency["loaded_models_by_backend"],
         "coordinators": runtime["coordinators"],
         "caches": runtime["caches"],
         "runtime_keys": runtime["runtime_keys"],
         "surface_attachments": runtime["surface_attachments"],
         "cache_info": runtime["cache_info"],
         "runtime_contract": runtime["runtime_contract"],
+        "process_residency": process_residency,
         "runtime": _get_runtime_memory_snapshot(),
     }
 
@@ -589,7 +625,7 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
     inference requests. If the model is already loaded, returns success
     with 'already_loaded' status (idempotent).
 
-    The model will be automatically unloaded after the TTL expires (default: 5 min)
+    The model will be automatically unloaded after the TTL expires (default: 10 min)
     or when cache capacity is reached (LRU eviction).
     """
     try:
@@ -661,7 +697,11 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
                     cache_info=_build_llm_cache_info(),
                 )
 
-            already_loaded = service.load_model(request.model)
+            from ....aux_runtime import auxiliary_runtime_operation
+
+            canonical_model_id = service.canonicalize_model_id(request.model)
+            with auxiliary_runtime_operation("embeddings", canonical_model_id):
+                already_loaded = service.load_model(request.model)
             return ModelLoadResponse(
                 id=request.model,
                 task="embeddings",
@@ -750,9 +790,11 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
             )
 
         if task == "stt":
+            from ....aux_runtime import auxiliary_runtime_operation
             from ....stt.whisper_model import preload_whisper_model
 
-            already_loaded = preload_whisper_model(request.model)
+            with auxiliary_runtime_operation("stt", request.model):
+                already_loaded = preload_whisper_model(request.model)
             return ModelLoadResponse(
                 id=request.model,
                 task="stt",
@@ -766,9 +808,11 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
             )
 
         if task == "tts":
+            from ....aux_runtime import auxiliary_runtime_operation
             from ....tts.tts_service import TTSService
 
-            already_loaded = TTSService.preload_model(request.model)
+            with auxiliary_runtime_operation("tts", request.model):
+                already_loaded = TTSService.preload_model(request.model)
             return ModelLoadResponse(
                 id=request.model,
                 task="tts",
@@ -1636,18 +1680,16 @@ async def health_check() -> dict:
     Returns server status and basic info about loaded models.
     """
     runtime = _snapshot_llm_runtime()
+    process_residency = _snapshot_process_residency(runtime)
     cache_info = runtime["cache_info"]
 
     return {
         "status": "healthy",
         **get_runtime_provenance().health_fields(),
-        "loaded_models_count": len(runtime["loaded_models"]),
-        "loaded_models": runtime["loaded_models"],
-        "loaded_models_by_backend": {
-            "wrapper": runtime["caches"]["wrapper"],
-            "batch": runtime["coordinators"]["llm_batch"],
-            "vlm_batch": runtime["coordinators"]["vlm_batch"],
-        },
+        "loaded_models_count": process_residency["loaded_models_count"],
+        "loaded_models": process_residency["loaded_models"],
+        "loaded_models_by_backend": process_residency["loaded_models_by_backend"],
+        "process_residency": process_residency,
         "loaded_models_runtime": runtime["data"],
         "surface_attachments": runtime["surface_attachments"],
         "runtime_contract": runtime["runtime_contract"],
