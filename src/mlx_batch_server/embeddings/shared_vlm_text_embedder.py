@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import numpy as np
@@ -85,7 +85,9 @@ class SharedVLMTextEmbedder:
 
     @staticmethod
     def _build_position_ids(batch_size: int, seq_len: int) -> mx.array:
-        position_ids = mx.array(np.arange(seq_len, dtype=np.int32)).reshape(1, -1)
+        position_ids = mx.array(
+            cast("Any", np.arange(seq_len, dtype=np.int32))
+        ).reshape(1, -1)
         position_ids = mx.broadcast_to(position_ids, (batch_size, seq_len))
         return mx.broadcast_to(position_ids[None, ...], (3, batch_size, seq_len))
 
@@ -165,7 +167,7 @@ class SharedVLMTextEmbedder:
             input_ids_np = self._to_numpy(inputs["input_ids"]).astype(
                 np.int64, copy=False
             )
-            input_ids = mx.array(input_ids_np, dtype=mx.int64)
+            input_ids = mx.array(cast("Any", input_ids_np), dtype=mx.int64)
 
             attention_mask = inputs.get("attention_mask")
             attention_mask_mx: mx.array | None = None
@@ -174,7 +176,9 @@ class SharedVLMTextEmbedder:
                     np.int32,
                     copy=False,
                 )
-                attention_mask_mx = mx.array(attention_mask_np, dtype=mx.int32)
+                attention_mask_mx = mx.array(
+                    cast("Any", attention_mask_np), dtype=mx.int32
+                )
 
             inner_model = self._get_language_model(model)
             embed_tokens = self._get_child(inner_model, "embed_tokens")
@@ -198,7 +202,7 @@ class SharedVLMTextEmbedder:
             mx.eval(embeddings)
 
             num_tokens = (
-                int(mx.sum(attention_mask_mx).item())
+                int(mx.sum(attention_mask_mx).item())  # type: ignore[arg-type]
                 if attention_mask_mx is not None
                 else int(input_ids.shape[1])
             )

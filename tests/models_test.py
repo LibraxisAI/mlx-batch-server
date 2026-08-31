@@ -8,6 +8,8 @@ from src.mlx_batch_server.main import app
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+pytestmark = pytest.mark.model
+
 
 @pytest.fixture
 def client():

@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import time
 import uuid
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ResponseStatus(str, Enum):
+class ResponseStatus(StrEnum):
     """Response status values."""
 
     IN_PROGRESS = "in_progress"
@@ -25,7 +25,7 @@ class ResponseStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class ContentPartType(str, Enum):
+class ContentPartType(StrEnum):
     """Content part types."""
 
     INPUT_TEXT = "input_text"

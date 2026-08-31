@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_health_and_ready_always_open(inference_client_with_auth):
     """`/health` and `/v1/ready` must never require auth (load balancers)."""
@@ -21,6 +23,7 @@ def test_admin_load_requires_auth(inference_client_with_auth):
         assert unauthorized.status_code == 401
 
 
+@pytest.mark.model
 def test_admin_load_accepts_static_api_key(inference_client_with_auth):
     """Same endpoint with the static API key gets through to the handler.
 

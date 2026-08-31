@@ -1,10 +1,10 @@
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class AudioFormat(str, Enum):
+class AudioFormat(StrEnum):
     MP3 = "mp3"
     OPUS = "opus"
     AAC = "aac"

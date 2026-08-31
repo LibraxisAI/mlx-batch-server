@@ -1,12 +1,12 @@
 import json
 import re
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class ToolType(str, Enum):
+class ToolType(StrEnum):
     FUNCTION = "function"
 
 
@@ -27,7 +27,7 @@ class Tool(BaseModel):
     function: Function
 
 
-class ToolChoice(str, Enum):
+class ToolChoice(StrEnum):
     NONE = "none"
     AUTO = "auto"
     REQUIRED = "required"
@@ -72,7 +72,7 @@ class ToolCall(BaseModel):
 ToolChoiceType = Union[ToolChoice, SpecificToolChoice]
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"

@@ -267,14 +267,16 @@ def test_unload_visual_embedder_exact_runtime_preserves_sibling_variant(monkeypa
     monkeypatch.setattr(
         visual_router_module,
         "unload_vlm_model",
-        lambda model_id=None, **kwargs: unloaded_calls.append(
-            (
-                model_id,
-                kwargs.get("adapter_path"),
-                kwargs.get("draft_model_id"),
+        lambda model_id=None, **kwargs: (
+            unloaded_calls.append(
+                (
+                    model_id,
+                    kwargs.get("adapter_path"),
+                    kwargs.get("draft_model_id"),
+                )
             )
-        )
-        or [model_id],
+            or [model_id]
+        ),
     )
 
     unloaded = visual_router_module.unload_visual_embedder(
@@ -319,26 +321,35 @@ def test_qwen3_vl_embedder_loads_from_shared_runtime(monkeypatch, tmp_path):
     fake_model = SimpleNamespace(config=SimpleNamespace(image_token_id=777))
     fake_processor = SimpleNamespace(tokenizer=SimpleNamespace(image_token_id=888))
     backend_calls: list[tuple[str, str | None]] = []
+    processor_calls: list[tuple[Path, bool, bool]] = []
 
     monkeypatch.setattr(embedder_module, "get_model_path", lambda model_id: tmp_path)
     monkeypatch.setattr(
         embedder_module,
         "get_vlm_backend",
-        lambda model_id, **kwargs: backend_calls.append(
-            (model_id, kwargs.get("surface"))
-        )
-        or (fake_model, fake_processor),
+        lambda model_id, **kwargs: (
+            backend_calls.append((model_id, kwargs.get("surface")))
+            or (fake_model, fake_processor)
+        ),
     )
     monkeypatch.setattr(
         embedder_module.AutoProcessor,
         "from_pretrained",
-        staticmethod(lambda model_id, trust_remote_code=True: SimpleNamespace()),
+        staticmethod(
+            lambda model_path, trust_remote_code=True, local_files_only=False: (
+                processor_calls.append(
+                    (model_path, trust_remote_code, local_files_only)
+                )
+                or SimpleNamespace()
+            )
+        ),
     )
 
     embedder = embedder_module.Qwen3VLEmbedder("LibraxisAI/Qwen3-VL-30B")
     embedder.load()
 
     assert backend_calls == [("libraxisai/qwen3-vl-30b", "visual")]
+    assert processor_calls == [(tmp_path, True, True)]
     assert embedder.model is None
     assert embedder.processor is None
     assert embedder._image_token_id == 777
@@ -599,22 +610,26 @@ def test_embeddings_service_tracks_shared_vlm_load_and_unload(monkeypatch):
     monkeypatch.setattr(
         service,
         "_get_shared_vlm_embedder",
-        lambda model_id, **kwargs: loaded.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or state.__setitem__("runtime_loaded", True)
-        or object(),
+        lambda model_id, **kwargs: (
+            loaded.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or state.__setitem__("runtime_loaded", True)
+            or object()
+        ),
     )
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id, **kwargs: unloaded.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or (
-            state.__setitem__("runtime_loaded", False) or [model_id]
-            if state["runtime_loaded"]
-            else []
+        lambda model_id, **kwargs: (
+            unloaded.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or (
+                state.__setitem__("runtime_loaded", False) or [model_id]
+                if state["runtime_loaded"]
+                else []
+            )
         ),
     )
 
@@ -643,10 +658,12 @@ def test_embeddings_service_distinguishes_shared_vlm_runtime_variants(monkeypatc
     monkeypatch.setattr(
         service,
         "_get_shared_vlm_embedder",
-        lambda model_id, **kwargs: loaded.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or object(),
+        lambda model_id, **kwargs: (
+            loaded.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or object()
+        ),
     )
 
     assert (
@@ -694,10 +711,12 @@ def test_embeddings_service_unload_preserves_runtime_when_llm_surface_remains(
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id, **kwargs: unloaded.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or [model_id],
+        lambda model_id, **kwargs: (
+            unloaded.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or [model_id]
+        ),
     )
 
     assert service.load_model("LibraxisAI/Qwen3-VL-30B") is False
@@ -738,10 +757,12 @@ def test_embeddings_service_clear_models_releases_shared_vlm_alias(monkeypatch):
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id, **kwargs: unloaded.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or [model_id],
+        lambda model_id, **kwargs: (
+            unloaded.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or [model_id]
+        ),
     )
 
     assert service.load_model("frontier-vlm") is False

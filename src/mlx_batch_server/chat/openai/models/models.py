@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ....auth.dependency import verify_auth
+from ...mlx.model_types import get_model_path
 from ...mlx.runtime_aliases import (
     get_runtime_aliases,
     register_runtime_alias,
@@ -331,9 +332,7 @@ def _load_model_config(model_id: str) -> dict | None:
                 return None
 
     try:
-        from huggingface_hub import hf_hub_download
-
-        config_path = Path(hf_hub_download(repo_id=model_id, filename="config.json"))
+        config_path = get_model_path(model_id) / "config.json"
         with config_path.open(encoding="utf-8") as handle:
             return json.load(handle)
     except Exception:

@@ -10,6 +10,8 @@ from mlx_batch_server.chat.mlx.core_types import (
 )
 from mlx_batch_server.utils.logger import logger
 
+pytestmark = pytest.mark.model
+
 
 @pytest.fixture
 def mlx_wrapper():

@@ -12,7 +12,7 @@
 
 .PHONY: install dev run stop restart logs test lint format check clean help benchmark \
 	benchmark-cli benchmark-quick benchmark-build setup install-dev install-hooks lint-fix format-check \
-	security pre-commit pre-push test-fast test-cov test-responses loctree twins build \
+	security pre-commit pre-push test-fast test-model-integration test-cov test-responses loctree twins build \
 	docker-build docker-run operator-tools load unload list ps status batch-stats embeddings reranker \
 	vision stt tts hf-rewrite hf-rewrite-apply hf-backfill-inference hf-backfill-inference-apply \
 	hf-backfill-footer hf-backfill-footer-apply
@@ -115,7 +115,10 @@ test: ## Run all tests
 	uv run pytest tests/ -v
 
 test-fast: ## Run fast tests only (skip slow)
-	uv run pytest tests/ -v -m "not slow"
+	uv run pytest tests/ -v -m "not slow and not model"
+
+test-model-integration: ## Run explicit local-model/optional-dependency tests
+	RUN_HEAVY_TESTS=1 uv run pytest tests/ -v -m "model or slow"
 
 test-cov: ## Run tests with coverage
 	uv run pytest tests/ -v --cov=src/mlx_batch_server --cov-report=term-missing

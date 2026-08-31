@@ -1,10 +1,10 @@
-from enum import Enum
+from enum import StrEnum
 
 from fastapi import File, Form, UploadFile
 from pydantic import BaseModel
 
 
-class ResponseFormat(str, Enum):
+class ResponseFormat(StrEnum):
     JSON = "json"
     TEXT = "text"
     SRT = "srt"
@@ -12,7 +12,7 @@ class ResponseFormat(str, Enum):
     VTT = "vtt"
 
 
-class TimestampGranularity(str, Enum):
+class TimestampGranularity(StrEnum):
     WORD = "word"
     SEGMENT = "segment"
 

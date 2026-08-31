@@ -315,7 +315,8 @@ make dev PORT=10240  # Custom port
 # Test
 make test            # All tests
 make test-responses  # Responses API tests
-make test-fast       # Skip slow tests
+make test-fast              # Unit/contract tests; no local model loading
+make test-model-integration # Explicit model/download/optional-dependency gate
 
 # Quality
 make lint            # Run linters

@@ -276,19 +276,23 @@ def test_resolves_to_multimodal_runtime_honors_alias(monkeypatch):
     monkeypatch.setattr(
         model_types_module,
         "get_model_path",
-        lambda model_id: Path("/tmp/fake-vlm")
-        if model_id == "mlx-community/pixtral-12b-4bit"
-        else Path("/tmp/other"),
+        lambda model_id: (
+            Path("/tmp/fake-vlm")
+            if model_id == "mlx-community/pixtral-12b-4bit"
+            else Path("/tmp/other")
+        ),
     )
     monkeypatch.setattr(
         model_types_module,
         "load_text_config",
-        lambda path: {
-            "model_type": "pixtral",
-            "vision_config": {"hidden_size": 1},
-        }
-        if path == Path("/tmp/fake-vlm")
-        else {"model_type": "llama"},
+        lambda path: (
+            {
+                "model_type": "pixtral",
+                "vision_config": {"hidden_size": 1},
+            }
+            if path == Path("/tmp/fake-vlm")
+            else {"model_type": "llama"}
+        ),
     )
 
     assert model_types_module.resolves_to_multimodal_runtime("frontier-vlm") is True

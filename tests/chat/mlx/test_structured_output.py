@@ -2,12 +2,15 @@ import json
 import logging
 from textwrap import dedent
 
+import pytest
 from pydantic import BaseModel
 
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+pytestmark = pytest.mark.model
 
 
 # Pydantic models for testing
