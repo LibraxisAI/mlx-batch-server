@@ -4,6 +4,7 @@ Tests for /v1/responses endpoint.
 Contributed by LibraxisAI - https://libraxis.ai
 """
 
+import importlib
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -612,21 +613,43 @@ def client():
 class TestResponsesEndpoint:
     """Integration tests for /v1/responses endpoint."""
 
-    def test_responses_endpoint_exists(self, client):
+    def test_responses_endpoint_exists(self, client, monkeypatch):
         """Endpoint should exist and accept requests."""
-        # This will fail without a model, but should return proper error
+        responses_router = importlib.import_module("mlx_batch_server.responses.router")
+
+        class FakeAdapter:
+            async def generate(self, request):
+                return ResponseResponse(
+                    model=request.model,
+                    output=build_text_output("stubbed response"),
+                )
+
+        monkeypatch.setattr(responses_router, "get_adapter", FakeAdapter)
         response = client.post(
             "/v1/responses",
             json={
-                "model": "nonexistent-model",
+                "model": "test-model",
                 "input": "Hello!",
             },
         )
-        # Should get a response (either success or proper error)
-        assert response.status_code in [200, 400, 500]
+        assert response.status_code == 200
+        assert response.json()["model"] == "test-model"
 
-    def test_responses_streaming_endpoint(self, client):
+    def test_responses_streaming_endpoint(self, client, monkeypatch):
         """Streaming endpoint should return SSE."""
+        responses_router = importlib.import_module("mlx_batch_server.responses.router")
+
+        class FakeAdapter:
+            async def generate_stream(self, request):
+                response = ResponseResponse(
+                    id="resp_fast_stream",
+                    model=request.model,
+                    output=build_text_output("stubbed stream"),
+                ).model_dump(mode="json")
+                yield {"type": "response.created", "response": response}
+                yield {"type": "response.completed", "response": response}
+
+        monkeypatch.setattr(responses_router, "get_adapter", FakeAdapter)
         response = client.post(
             "/v1/responses",
             json={
@@ -635,8 +658,10 @@ class TestResponsesEndpoint:
                 "stream": True,
             },
         )
-        # Should get SSE content type or error
-        assert response.status_code in [200, 400, 500]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert "event: response.completed" in response.text
+        assert "data: [DONE]" in response.text
 
     def test_responses_get_not_found(self, client):
         """GET for nonexistent response should return 404."""
