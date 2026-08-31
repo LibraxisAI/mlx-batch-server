@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth.dependency import verify_auth
+from ..aux_runtime import auxiliary_runtime_operation
 from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..chat.mlx.runtime_policy import endpoint_runtime_session
+from ..chat.mlx.wrapper_cache import normalize_model_id
 from .embeddings_service import get_embeddings_service
 from .schema import EmbeddingRequest, EmbeddingResponse
 
@@ -36,6 +38,10 @@ async def create_embeddings(
                 draft_model_id=target.draft_model_id,
             ):
                 return embeddings_service.generate_embeddings(request)
-        return embeddings_service.generate_embeddings(request)
+        canonical_model_id = normalize_model_id(
+            resolve_runtime_target(request.model).model_id
+        )
+        with auxiliary_runtime_operation("embeddings", canonical_model_id):
+            return embeddings_service.generate_embeddings(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

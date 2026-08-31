@@ -9,6 +9,7 @@ Provides OpenAI-compatible APIs using Apple's MLX framework.
 from mlx_batch_server.utils import compat as _compat  # noqa: F401
 
 import argparse
+import asyncio
 import os
 import re
 
@@ -154,6 +155,9 @@ def create_app():  # noqa: PLR0915
                 pass  # Batch module may not be available
             finally:
                 await shutdown_image_runtime_pool()
+                from .aux_runtime import shutdown_aux_runtime_manager
+
+                await asyncio.to_thread(shutdown_aux_runtime_manager)
 
     application = FastAPI(title="MLX Batch Server", lifespan=lifespan)
 

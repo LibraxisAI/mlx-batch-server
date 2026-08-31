@@ -14,7 +14,9 @@ Response shape::
         "version": "0.6.0-dev"
     }
 
-Returns 200 when all checks pass, 503 otherwise.
+Cold model residency is healthy: models load on demand. The residency check is
+reported for operators but does not gate readiness. Returns 200 when the
+process/config/coordinator/auth checks pass, 503 otherwise.
 """
 
 from __future__ import annotations
@@ -39,14 +41,17 @@ def _package_version() -> str:
 
 def _check_models_loaded() -> bool:
     try:
-        from ..chat.mlx.wrapper_cache import wrapper_cache
+        from ..chat.openai.models.models import (
+            _snapshot_llm_runtime,
+            _snapshot_process_residency,
+        )
     except Exception:
         return False
     try:
-        loaded = wrapper_cache.get_loaded_models()
+        residency = _snapshot_process_residency(_snapshot_llm_runtime())
     except Exception:
         return False
-    return bool(loaded)
+    return bool(residency["loaded_models_count"])
 
 
 def _check_batch_coordinators() -> bool:
@@ -97,7 +102,10 @@ async def ready() -> JSONResponse:
     if (settings.security_level or 0) > 0:
         checks["auth_backends"] = await _check_auth_backends()
 
-    all_ready = all(checks.values())
+    required_checks = {
+        key: value for key, value in checks.items() if key != "models_loaded"
+    }
+    all_ready = all(required_checks.values())
     return JSONResponse(
         status_code=200 if all_ready else 503,
         content={
