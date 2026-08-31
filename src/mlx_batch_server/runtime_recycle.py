@@ -148,12 +148,15 @@ class IdleProcessRecycler:
             return False
 
         try:
-            with all_runtime_retirement_guard() as llm_idle:
-                if not llm_idle:
-                    _cancel_heavy_runtime_drain()
-                    return False
+            # Canonical cross-runtime lock order: wrapper -> leases -> images.
+            # TTL/LRU cleanup already holds the wrapper lock before consulting
+            # leases, so the recycler must never acquire these in reverse.
+            with (
+                wrapper_cache.process_recycle_guard() as wrappers_idle,
+                all_runtime_retirement_guard() as llm_idle,
+            ):
                 async with image_runtime_recycle_guard() as images_idle:
-                    if not images_idle or wrapper_cache.get_runtime_keys():
+                    if not (wrappers_idle and llm_idle and images_idle):
                         _cancel_heavy_runtime_drain()
                         return False
                     with self._state_lock:

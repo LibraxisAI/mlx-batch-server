@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 
@@ -414,6 +415,17 @@ class MLXWrapperCache:
                 logger.info(f"Manual cleanup evicted {evicted_count} expired items")
 
             return evicted_count
+
+    @contextmanager
+    def process_recycle_guard(self) -> Iterator[bool]:
+        """Freeze wrapper residency before the cross-runtime idle decision.
+
+        Wrapper cache operations already acquire this lock before consulting
+        runtime leases. The process recycler must use the same order to avoid
+        a wrapper-lock/lease-lock inversion with TTL cleanup.
+        """
+        with self._lock:
+            yield not self._cache
 
     def clear_cache(self) -> None:
         """Clear all cached model instances and release MLX memory.
