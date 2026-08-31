@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>ai.couple-studio.mlx-batch.10240</string>
+	<key>WorkingDirectory</key>
+	<string>/Volumes/vc-workspace/.priv/mlx-batch-runner</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Volumes/vc-workspace/.priv/mlx-batch-runner/.venv/bin/python</string>
+		<string>-m</string>
+		<string>mlx_batch_server.main</string>
+		<string>--port</string>
+		<string>10240</string>
+		<string>--host</string>
+		<string>100.82.232.70</string>
+		<string>--log-level</string>
+		<string>info</string>
+		<string>--cors-allow-origins</string>
+		<string>http://localhost:*,http://100.*:*,https://100.*:*</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HF_HUB_OFFLINE</key>
+		<string>1</string>
+		<key>ENABLE_BATCH_INFERENCE</key>
+		<string>0</string>
+		<key>VLM_BATCH_ENABLED</key>
+		<string>0</string>
+		<key>PATH</key>
+		<string>/Volumes/vc-workspace/.priv/mlx-batch-runner/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Volumes/vc-workspace/.priv/mlx-batch-runner/mlx-batch-server.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Volumes/vc-workspace/.priv/mlx-batch-runner/mlx-batch-server.log</string>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
