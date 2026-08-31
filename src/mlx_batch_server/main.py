@@ -12,6 +12,8 @@ import argparse
 import os
 import re
 
+from .provenance import get_runtime_provenance, stamp_runtime_environment
+
 DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:*,http://127.0.0.1:*,http://100.*:*,https://100.*:*"
 )
@@ -93,6 +95,10 @@ def create_app():  # noqa: PLR0915
 
     This is called lazily to avoid slow imports when just showing --help.
     """
+    # Direct ``uvicorn module:app`` launches bypass ``start()``. Freeze source
+    # identity during app construction so no launch path shells out per request.
+    get_runtime_provenance()
+
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI
@@ -216,6 +222,9 @@ def start():
     # Set environment variables for app configuration
     os.environ["MLX_BATCH_LOG_LEVEL"] = args.log_level
     os.environ["MLX_BATCH_CORS"] = args.cors_allow_origins
+    # Capture the source checkout before Uvicorn imports the app or forks
+    # workers. The inherited environment is the provenance contract.
+    stamp_runtime_environment()
 
     # NOW import uvicorn and start (lazy import)
     import uvicorn
