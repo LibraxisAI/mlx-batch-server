@@ -176,15 +176,17 @@ def test_vlm_batch_coordinator_attaches_llm_surface(monkeypatch) -> None:
     monkeypatch.setattr(
         vlm_batch,
         "get_vlm_backend",
-        lambda model_id, **kwargs: backend_calls.append(
-            (
-                model_id,
-                kwargs.get("adapter_path"),
-                kwargs.get("draft_model_id"),
-                kwargs.get("surface"),
+        lambda model_id, **kwargs: (
+            backend_calls.append(
+                (
+                    model_id,
+                    kwargs.get("adapter_path"),
+                    kwargs.get("draft_model_id"),
+                    kwargs.get("surface"),
+                )
             )
-        )
-        or (fake_model, fake_processor),
+            or (fake_model, fake_processor)
+        ),
     )
     monkeypatch.setattr(
         vlm_batch,
@@ -194,17 +196,13 @@ def test_vlm_batch_coordinator_attaches_llm_surface(monkeypatch) -> None:
     monkeypatch.setattr(
         vlm_batch,
         "_vlm_batch_generate",
-        lambda model,
-        processor,
-        *,
-        images=None,
-        prompts=None,
-        max_tokens=128,
-        **kwargs: SimpleNamespace(
-            texts=["batched vision"],
-            prompt_tokens=3,
-            generation_tokens=2,
-            total_tokens=5,
+        lambda model, processor, *, images=None, prompts=None, max_tokens=128, **kwargs: (
+            SimpleNamespace(
+                texts=["batched vision"],
+                prompt_tokens=3,
+                generation_tokens=2,
+                total_tokens=5,
+            )
         ),
     )
 
@@ -290,15 +288,17 @@ def test_vlm_stream_state_attaches_llm_surface(monkeypatch) -> None:
     monkeypatch.setattr(
         vlm_batch,
         "get_vlm_backend",
-        lambda model_id, **kwargs: backend_calls.append(
-            (
-                model_id,
-                kwargs.get("adapter_path"),
-                kwargs.get("draft_model_id"),
-                kwargs.get("surface"),
+        lambda model_id, **kwargs: (
+            backend_calls.append(
+                (
+                    model_id,
+                    kwargs.get("adapter_path"),
+                    kwargs.get("draft_model_id"),
+                    kwargs.get("surface"),
+                )
             )
-        )
-        or (fake_model, fake_processor),
+            or (fake_model, fake_processor)
+        ),
     )
     monkeypatch.setattr(
         vlm_batch,

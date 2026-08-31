@@ -765,7 +765,7 @@ class TestUnloadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
 
         response = await models_module.unload_model(ModelUnloadRequest(task="llm"))
@@ -836,7 +836,7 @@ class TestUnloadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
 
         response = await models_module.unload_model(ModelUnloadRequest(task="llm"))
@@ -923,7 +923,7 @@ class TestUnloadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
 
         response = await models_module.unload_model(ModelUnloadRequest(task="llm"))
@@ -996,7 +996,7 @@ class TestUnloadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1069,7 +1069,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1129,7 +1129,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1197,7 +1197,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             models_module,
             "get_models_service",
-            lambda: FakeModelsService(),
+            FakeModelsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1353,7 +1353,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             embeddings_service_module,
             "get_embeddings_service",
-            lambda: FakeEmbeddingsService(),
+            FakeEmbeddingsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1377,10 +1377,9 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             visual_router_module,
             "unload_visual_embedder",
-            lambda model_id=None,
-            adapter_path=None,
-            draft_model_id=None,
-            release_runtime=True: (["model-vlm"] if model_id == "model-vlm" else []),
+            lambda model_id=None, adapter_path=None, draft_model_id=None, release_runtime=True: (
+                ["model-vlm"] if model_id == "model-vlm" else []
+            ),
         )
         monkeypatch.setattr(
             vlm_batch_module,
@@ -1414,10 +1413,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             visual_router_module,
             "unload_visual_embedder",
-            lambda model_id=None,
-            adapter_path=None,
-            draft_model_id=None,
-            release_runtime=True: (
+            lambda model_id=None, adapter_path=None, draft_model_id=None, release_runtime=True: (
                 release_runtime_flags.append(release_runtime) or ["model-vlm"]
             ),
         )
@@ -1470,7 +1466,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             embeddings_service_module,
             "get_embeddings_service",
-            lambda: FakeEmbeddingsService(),
+            FakeEmbeddingsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1522,7 +1518,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             embeddings_service_module,
             "get_embeddings_service",
-            lambda: FakeEmbeddingsService(),
+            FakeEmbeddingsService,
         )
         monkeypatch.setattr(
             models_module,
@@ -1586,7 +1582,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             embeddings_service_module,
             "get_embeddings_service",
-            lambda: FakeEmbeddingsService(),
+            FakeEmbeddingsService,
         )
         monkeypatch.setattr(
             vlm_batch_module,
@@ -1657,7 +1653,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             embeddings_service_module,
             "get_embeddings_service",
-            lambda: FakeEmbeddingsService(),
+            FakeEmbeddingsService,
         )
         monkeypatch.setattr(
             vlm_batch_module,
@@ -1821,7 +1817,7 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             embeddings_service_module,
             "get_embeddings_service",
-            lambda: FakeEmbeddingsService(),
+            FakeEmbeddingsService,
         )
         monkeypatch.setattr(
             vlm_batch_module,

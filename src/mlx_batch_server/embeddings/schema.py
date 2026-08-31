@@ -1,10 +1,10 @@
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ModelType(str, Enum):
+class ModelType(StrEnum):
     BERT = "bert"
 
 

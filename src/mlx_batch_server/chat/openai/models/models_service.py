@@ -175,7 +175,7 @@ class ModelsService:
     @staticmethod
     def _get_model_owner(model_id: str) -> str:
         """Extract owner from model ID (part before the /)"""
-        return model_id.split("/")[0] if "/" in model_id else model_id
+        return model_id.split("/", maxsplit=1)[0] if "/" in model_id else model_id
 
     def list_models(self, include_details: bool = False) -> ModelList:
         """List all available models"""

@@ -13,7 +13,7 @@ def _get_json(path: str):
 
 def test_admin_panel_is_registered():
     app = create_app()
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
     assert "/admin" in paths
     assert "/api/admin/summary" in paths
 

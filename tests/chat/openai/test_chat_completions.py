@@ -10,6 +10,8 @@ from mlx_batch_server.main import app
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+pytestmark = pytest.mark.model
+
 
 @pytest.fixture
 def client():
@@ -122,9 +124,9 @@ class TestChatCompletions:
 
                 # Validate basic structure of each chunk
                 assert chunk.model == model, "Incorrect model name"
-                assert (
-                    chunk.object == "chat.completion.chunk"
-                ), "Incorrect response object type"
+                assert chunk.object == "chat.completion.chunk", (
+                    "Incorrect response object type"
+                )
                 assert len(chunk.choices) == 1, "Incorrect number of choices"
 
                 # Collect content
@@ -170,9 +172,9 @@ class TestChatCompletions:
 
                 # Validate basic structure of each chunk
                 assert chunk.model == model, "Incorrect model name"
-                assert (
-                    chunk.object == "chat.completion.chunk"
-                ), "Incorrect response object type"
+                assert chunk.object == "chat.completion.chunk", (
+                    "Incorrect response object type"
+                )
 
                 choice = chunk.choices[0]
                 # Collect content

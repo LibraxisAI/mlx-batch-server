@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import numpy as np
@@ -115,8 +115,12 @@ class Qwen3VLEmbedder:
             raise RuntimeError("mlx-vlm returned an empty model/processor")
 
         processor_id = self.processor_id or self.model_id
-        self.tomoro_processor = AutoProcessor.from_pretrained(
-            processor_id, trust_remote_code=True
+        processor_path = get_model_path(processor_id)
+        # The path is already a local snapshot and remote resolution is disabled.
+        self.tomoro_processor = AutoProcessor.from_pretrained(  # nosec B615
+            processor_path,
+            trust_remote_code=True,
+            local_files_only=True,
         )
 
         image_token_id = getattr(model.config, "image_token_id", None)
@@ -184,7 +188,9 @@ class Qwen3VLEmbedder:
         return embeddings / norm
 
     def _build_position_ids(self, batch_size: int, seq_len: int) -> mx.array:
-        position_ids = mx.array(np.arange(seq_len, dtype=np.int32)).reshape(1, -1)
+        position_ids = mx.array(
+            cast("Any", np.arange(seq_len, dtype=np.int32))
+        ).reshape(1, -1)
         position_ids = mx.broadcast_to(position_ids, (batch_size, seq_len))
         return mx.broadcast_to(position_ids[None, ...], (3, batch_size, seq_len))
 
@@ -242,7 +248,7 @@ class Qwen3VLEmbedder:
     ) -> int:
         if attention_mask is None:
             return int(input_ids.shape[1])
-        return int(mx.sum(attention_mask).item())
+        return int(mx.sum(attention_mask).item())  # type: ignore[arg-type]
 
     def _last_token_pool(
         self,
@@ -343,7 +349,8 @@ class Qwen3VLEmbedder:
     ) -> np.ndarray:
         vision_tower = self._get_vision_tower(model)
         vision_out = vision_tower(
-            mx.array(pixel_values), mx.array(image_grid_thw, dtype=mx.int64)
+            mx.array(cast("Any", pixel_values)),
+            mx.array(cast("Any", image_grid_thw), dtype=mx.int64),
         )
         hidden_states = self._extract_vision_hidden(vision_out)
         return self._to_numpy(hidden_states)
@@ -360,7 +367,7 @@ class Qwen3VLEmbedder:
         if embed_tokens is None:
             raise RuntimeError("embed_tokens missing in qwen3_vl language model")
 
-        input_ids_mx = mx.array(input_ids, dtype=mx.int64)
+        input_ids_mx = mx.array(cast("Any", input_ids), dtype=mx.int64)
         text_emb = embed_tokens(input_ids_mx)
         text_emb_np = self._to_numpy(text_emb)[0]
 

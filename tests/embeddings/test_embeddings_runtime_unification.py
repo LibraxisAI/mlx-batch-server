@@ -64,10 +64,12 @@ def test_embeddings_service_uses_pooled_shared_vlm_sentence_embeddings(monkeypat
     )
 
     fake_embedder = SimpleNamespace(
-        embed_text_pooled=lambda text: embed_calls.append(text)
-        or SimpleNamespace(
-            embeddings=mx.array([1.0, 2.0, 3.0], dtype=mx.float32),
-            num_tokens=3,
+        embed_text_pooled=lambda text: (
+            embed_calls.append(text)
+            or SimpleNamespace(
+                embeddings=mx.array([1.0, 2.0, 3.0], dtype=mx.float32),
+                num_tokens=3,
+            )
         )
     )
     monkeypatch.setattr(
@@ -103,10 +105,12 @@ def test_embeddings_service_unload_clears_shared_vlm_runtime(monkeypatch):
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id, **kwargs: unloaded_calls.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or [model_id],
+        lambda model_id, **kwargs: (
+            unloaded_calls.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or [model_id]
+        ),
     )
 
     runtime_aliases_module.register_runtime_alias(
@@ -134,10 +138,12 @@ def test_embeddings_service_unload_reports_runtime_only_shared_vlm(monkeypatch):
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id, **kwargs: unloaded_calls.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or [model_id],
+        lambda model_id, **kwargs: (
+            unloaded_calls.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or [model_id]
+        ),
     )
 
     assert service.unload_model("LibraxisAI/Qwen3-VL-30B") is True
@@ -176,10 +182,12 @@ def test_embeddings_service_unload_exact_runtime_preserves_sibling_variant(
     monkeypatch.setattr(
         service,
         "_unload_shared_vlm_embedder",
-        lambda model_id, **kwargs: unloaded_calls.append(
-            (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
-        )
-        or [model_id],
+        lambda model_id, **kwargs: (
+            unloaded_calls.append(
+                (model_id, kwargs.get("adapter_path"), kwargs.get("draft_model_id"))
+            )
+            or [model_id]
+        ),
     )
 
     assert (
@@ -222,8 +230,10 @@ def test_embeddings_service_routes_non_qwen_vlm_alias_to_shared_runtime(monkeypa
     monkeypatch.setattr(
         embeddings_service_module,
         "resolves_to_multimodal_runtime",
-        lambda model_id: "pixtral"
-        in runtime_aliases_module.resolve_runtime_model_id(model_id).lower(),
+        lambda model_id: (
+            "pixtral"
+            in runtime_aliases_module.resolve_runtime_model_id(model_id).lower()
+        ),
     )
     monkeypatch.setattr(
         service,

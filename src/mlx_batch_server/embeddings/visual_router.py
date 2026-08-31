@@ -182,6 +182,8 @@ def unload_visual_embedder(
             )
             _embedder_cache.clear()
         else:
+            assert specific_model_id is not None
+            assert specific_target is not None
             if adapter_path is None and draft_model_id is None:
                 keys_to_remove = [
                     key for key in _embedder_cache if key[0] == specific_model_id

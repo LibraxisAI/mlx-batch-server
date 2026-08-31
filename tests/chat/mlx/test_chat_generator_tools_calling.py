@@ -11,6 +11,8 @@ from mlx_batch_server.chat.mlx.core_types import CompletionContent, GenerationRe
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+pytestmark = pytest.mark.model
+
 
 @pytest.fixture
 def model_cache():

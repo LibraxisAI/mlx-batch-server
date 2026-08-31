@@ -109,6 +109,7 @@ def _fake_model(context_length: int, *, multimodal: bool = False) -> SimpleNames
         tokenizer=_FakeTokenizer(),
         chat_template=_FakeChatTemplate(),
         model=runtime_model,
+        language_model=text_model,
         text_model=text_model,
         supports_multimodal=multimodal,
     )

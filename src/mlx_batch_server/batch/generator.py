@@ -25,6 +25,7 @@ import asyncio
 import threading
 import time
 from collections.abc import AsyncGenerator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -330,7 +331,7 @@ class BatchChatGenerator:
 
             if self._generator is None:
                 self._generator = BatchGenerator(
-                    model=self.model.language_model,
+                    model=self.model.text_model,
                     max_tokens=max_tokens,
                     stop_tokens=stop_tokens,
                     completion_batch_size=self._completion_batch_size,
@@ -518,39 +519,59 @@ class BatchChatGenerator:
 
         # Stream tokens
         try:
-            if hasattr(self.model, "reset_runtime_state"):
-                self.model.reset_runtime_state()
+            from ..chat.mlx.wrapper_cache import wrapper_cache
 
-            # Prepare and insert requests
-            prompts, max_tokens_list, samplers = self._prepare_batch_requests(requests)
-
-            # The generator-level max_tokens is only the default. Per-request limits
-            # and samplers are applied at insert time.
-            gen = self._get_or_create_generator(max_tokens=max(max_tokens_list))
-            uids = gen.insert(prompts, max_tokens=max_tokens_list, samplers=samplers)
-
-            # Map UIDs to request IDs
-            for uid, req in zip(uids, requests, strict=True):
-                self._uid_to_request[uid] = req.id
-                self._request_to_uid[req.id] = uid
-                self._active_requests.add(req.id)
-
-            self._stats.active_requests = len(self._active_requests)
-            logger.info(
-                f"Inserted {len(requests)} requests, active={self._stats.active_requests}"
+            execution_context = (
+                wrapper_cache.vlm_execution(
+                    self.model.model_id,
+                    adapter_path=getattr(self.model, "adapter_path", None),
+                    draft_model_id=getattr(self.model, "draft_model_id", None),
+                )
+                if getattr(self.model, "supports_multimodal", False)
+                else nullcontext()
             )
 
-            while self._active_requests:
-                responses = gen.next()
-                if not responses:
-                    break
+            with execution_context:
+                if hasattr(self.model, "reset_runtime_state"):
+                    self.model.reset_runtime_state()
 
-                for response in responses:
-                    chunk = self._process_response(response)
-                    if chunk is not None:
-                        yield chunk
+                # Prepare and insert requests
+                prompts, max_tokens_list, samplers = self._prepare_batch_requests(
+                    requests
+                )
 
-                await asyncio.sleep(0)
+                # The generator-level max_tokens is only the default. Per-request limits
+                # and samplers are applied at insert time.
+                gen = self._get_or_create_generator(max_tokens=max(max_tokens_list))
+                uids = gen.insert(
+                    prompts,
+                    max_tokens=max_tokens_list,
+                    samplers=samplers,
+                )
+
+                # Map UIDs to request IDs
+                for uid, req in zip(uids, requests, strict=True):
+                    self._uid_to_request[uid] = req.id
+                    self._request_to_uid[req.id] = uid
+                    self._active_requests.add(req.id)
+
+                self._stats.active_requests = len(self._active_requests)
+                logger.info(
+                    f"Inserted {len(requests)} requests, "
+                    f"active={self._stats.active_requests}"
+                )
+
+                while self._active_requests:
+                    responses = gen.next()
+                    if not responses:
+                        break
+
+                    for response in responses:
+                        chunk = self._process_response(response)
+                        if chunk is not None:
+                            yield chunk
+
+                    await asyncio.sleep(0)
 
         except AttributeError as e:
             # MambaCache doesn't have extract() method required by batch generation

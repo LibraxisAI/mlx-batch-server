@@ -4,19 +4,19 @@ This module defines Pydantic models for the Anthropic Messages API,
 following the official API specification.
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # Basic Enums and Types
-class MessageRole(str, Enum):
+class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
 
 
-class StopReason(str, Enum):
+class StopReason(StrEnum):
     END_TURN = "end_turn"
     MAX_TOKENS = "max_tokens"
     STOP_SEQUENCE = "stop_sequence"
@@ -25,12 +25,12 @@ class StopReason(str, Enum):
     REFUSAL = "refusal"
 
 
-class ServiceTier(str, Enum):
+class ServiceTier(StrEnum):
     AUTO = "auto"
     STANDARD_ONLY = "standard_only"
 
 
-class ToolChoiceType(str, Enum):
+class ToolChoiceType(StrEnum):
     AUTO = "auto"
     ANY = "any"
     NONE = "none"
@@ -275,7 +275,7 @@ class MessagesResponse(BaseModel):
 
 
 # Streaming Models
-class StreamEventType(str, Enum):
+class StreamEventType(StrEnum):
     MESSAGE_START = "message_start"
     MESSAGE_DELTA = "message_delta"
     MESSAGE_STOP = "message_stop"

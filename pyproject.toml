@@ -128,6 +128,7 @@ log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(linen
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "model: requires local model weights or optional inference dependencies",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:importlib._bootstrap",
@@ -193,8 +194,9 @@ ignore = [
 "src/mlx_batch_server/chat/openai/schema.py" = ["UP007"]
 # Legacy pathlib usage in upstream modules - preserved for compatibility
 "src/mlx_batch_server/chat/openai/models/models_service.py" = ["PLC0415", "PTH123"]
-"src/mlx_batch_server/stt/whisper_model.py" = ["PTH106", "PTH108", "PTH110", "PTH118", "PTH123", "SIM108"]
-"src/mlx_batch_server/tts/tts_service.py" = ["PTH123"]
+"src/mlx_batch_server/batch/generator.py" = ["PLC0415"]
+"src/mlx_batch_server/stt/whisper_model.py" = ["PTH106", "PTH108", "PTH110", "PTH118", "PTH123", "SIM108", "PLC0415"]
+"src/mlx_batch_server/tts/tts_service.py" = ["PTH123", "PLC0415"]
 "src/mlx_batch_server/images/images_service.py" = ["PTH108", "PTH123"]
 "src/mlx_batch_server/images/schema.py" = ["ARG002"]
 # Entry point - lazy imports for fast --help, compat import must be first
