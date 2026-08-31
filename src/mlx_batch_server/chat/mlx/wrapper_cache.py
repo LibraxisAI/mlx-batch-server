@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from ...batch.coordinator import retire_idle_batch_runtime
 from ...core.config import get_settings
+from ...runtime_recycle import request_idle_process_recycle
 from ...utils.logger import logger
 from ...utils.memory import force_mlx_cleanup
 from .chat_generator import ChatGenerator
@@ -208,6 +209,7 @@ class MLXWrapperCache:
             if current_time - access_time > self._ttl_seconds:
                 expired_keys.append(key)
 
+        evicted_any = False
         for key in expired_keys:
             with runtime_retirement_guard(
                 key.model_id,
@@ -222,6 +224,9 @@ class MLXWrapperCache:
                     f"Evicted expired model from cache (TTL={self._ttl_seconds}s): {key}"
                 )
                 self._release_memory(wrapper, key)
+                evicted_any = True
+        if evicted_any:
+            request_idle_process_recycle("llm-vlm-idle-ttl")
 
     def _evict_lru_if_needed(self) -> None:
         """Evict least recently used NON-PINNED item if cache is at capacity.

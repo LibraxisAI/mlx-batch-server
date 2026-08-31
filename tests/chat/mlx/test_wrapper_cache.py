@@ -406,10 +406,14 @@ class TestMLXWrapperCacheTTL:
         self.cache.get_wrapper("model-vlm")
         runtime_attachments_module.attach_runtime_surface("model-vlm", "embeddings")
 
-        time.sleep(1.2)
-        info = self.cache.get_cache_info()
+        with patch(
+            "mlx_batch_server.chat.mlx.wrapper_cache.request_idle_process_recycle"
+        ) as request_recycle:
+            time.sleep(1.2)
+            info = self.cache.get_cache_info()
 
         assert info["cache_size"] == 0
+        request_recycle.assert_called_once_with("llm-vlm-idle-ttl")
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "model-vlm"
         ) == ["embeddings"]

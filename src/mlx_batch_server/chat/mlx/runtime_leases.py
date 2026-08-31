@@ -37,10 +37,18 @@ def acquire_runtime_lease(
         adapter_path=adapter_path,
         draft_model_id=draft_model_id,
     )
-    with _runtime_leases_lock:
-        count = _runtime_leases.get(target, 0) + 1
-        _runtime_leases[target] = count
-        return count
+    from ...runtime_recycle import admit_heavy_runtime_work  # noqa: PLC0415
+
+    count = 0
+
+    def admit() -> None:
+        nonlocal count
+        with _runtime_leases_lock:
+            count = _runtime_leases.get(target, 0) + 1
+            _runtime_leases[target] = count
+
+    admit_heavy_runtime_work(admit)
+    return count
 
 
 def release_runtime_lease(
@@ -123,3 +131,10 @@ def runtime_retirement_guard(
     )
     with _runtime_leases_lock:
         yield _runtime_leases.get(target, 0) == 0
+
+
+@contextmanager
+def all_runtime_retirement_guard() -> Iterator[bool]:
+    """Hold lease admission state stable while checking whole-process idleness."""
+    with _runtime_leases_lock:
+        yield not _runtime_leases
