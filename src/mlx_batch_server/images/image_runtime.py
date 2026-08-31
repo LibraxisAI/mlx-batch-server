@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Executor, ProcessPoolExecutor
+from contextlib import asynccontextmanager
 from multiprocessing import get_context
 from typing import Any
 
 from ..core.config import get_settings
+from ..runtime_recycle import admit_heavy_runtime_work, notify_idle_process_recycler
 from .images_service import run_image_worker_operation
 from .schema import ImageEditRequest, ImageGenerationRequest, ImageObject
 
@@ -57,14 +59,22 @@ class ImageRuntimePool:
         start_if_missing: bool = True,
     ) -> dict[str, Any] | None:
         async with self._lock:
-            self._cancel_idle_retirement_locked()
-            if self._executor is None:
-                if not start_if_missing:
-                    return None
-                self._executor = self._executor_factory()
-            executor = self._executor
-            self._active_operations += 1
-            self._idle.clear()
+            executor: Executor | None = None
+
+            def admit() -> None:
+                nonlocal executor
+                self._cancel_idle_retirement_locked()
+                if self._executor is None:
+                    if not start_if_missing:
+                        return
+                    self._executor = self._executor_factory()
+                executor = self._executor
+                self._active_operations += 1
+                self._idle.clear()
+
+            admit_heavy_runtime_work(admit)
+            if executor is None:
+                return None
 
         try:
             result = await asyncio.get_running_loop().run_in_executor(
@@ -111,6 +121,7 @@ class ImageRuntimePool:
                 wait=True,
                 cancel_futures=False,
             )
+            notify_idle_process_recycler()
         except asyncio.CancelledError:
             return
 
@@ -162,6 +173,12 @@ class ImageRuntimePool:
             "worker_pid": self._worker_pid,
         }
 
+    @asynccontextmanager
+    async def process_recycle_guard(self) -> AsyncIterator[bool]:
+        """Freeze image admission during the final parent recycle decision."""
+        async with self._lock:
+            yield self._active_operations == 0 and self._executor is None
+
     async def shutdown(self) -> None:
         while True:
             await self._idle.wait()
@@ -179,6 +196,7 @@ class ImageRuntimePool:
                 wait=True,
                 cancel_futures=False,
             )
+        notify_idle_process_recycler()
 
 
 _image_runtime_pool: ImageRuntimePool | None = None
@@ -195,3 +213,23 @@ def get_image_runtime_pool() -> ImageRuntimePool:
 async def shutdown_image_runtime_pool() -> None:
     if _image_runtime_pool is not None:
         await _image_runtime_pool.shutdown()
+
+
+@asynccontextmanager
+async def image_runtime_recycle_guard() -> AsyncIterator[bool]:
+    """Return image-lane idleness without creating a cold runtime owner."""
+    runtime = _image_runtime_pool
+    if runtime is None:
+        yield True
+        return
+    async with runtime.process_recycle_guard() as idle:
+        yield idle
+
+
+def image_runtime_recycle_ready() -> bool:
+    """Cheap preliminary check; the async guard remains final authority."""
+    runtime = _image_runtime_pool
+    if runtime is None:
+        return True
+    state = runtime.snapshot()
+    return not state["running"] and state["active_operations"] == 0

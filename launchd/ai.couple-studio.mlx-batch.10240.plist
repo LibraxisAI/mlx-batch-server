@@ -28,6 +28,10 @@
 		<string>0</string>
 		<key>VLM_BATCH_ENABLED</key>
 		<string>0</string>
+		<key>MLX_BATCH_UNDER_SUPERVISOR</key>
+		<string>1</string>
+		<key>MLX_BATCH_IDLE_PROCESS_RECYCLE</key>
+		<string>1</string>
 		<key>PATH</key>
 		<string>/Volumes/vc-workspace/.priv/mlx-batch-runner/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
 	</dict>

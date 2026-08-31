@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def create_app():
+def create_app():  # noqa: PLR0915
     """Create and configure the FastAPI application.
 
     This is called lazily to avoid slow imports when just showing --help.
@@ -108,6 +108,12 @@ def create_app():
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Application lifespan manager for startup/shutdown hooks."""
+        from .runtime_recycle import (
+            start_idle_process_recycler,
+            stop_idle_process_recycler,
+        )
+
+        await start_idle_process_recycler()
         # Startup: opt-in session auth manager
         if settings.session_auth_enabled:
             os.environ.setdefault("SESSION_PROVIDER", settings.session_provider)
@@ -121,6 +127,7 @@ def create_app():
         try:
             yield
         finally:
+            await stop_idle_process_recycler()
             # Shutdown - cleanup batch coordinators
             if settings.session_auth_enabled:
                 try:
