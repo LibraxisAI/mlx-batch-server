@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from mlx_batch_server.chat.mlx.runtime_leases import (
+    active_runtime_lease_count,
+    clear_runtime_leases,
+)
 from mlx_batch_server.chat.mlx.runtime_policy import (
     endpoint_runtime_session,
     ensure_single_endpoint_llm_runtime,
@@ -13,6 +17,9 @@ from mlx_batch_server.chat.mlx.wrapper_cache import WrapperCacheKey
 
 
 class TestSingleEndpointRuntimePolicy:
+    def setup_method(self):
+        clear_runtime_leases()
+
     @pytest.mark.asyncio
     async def test_no_switch_when_target_runtime_is_already_only_resident(
         self,
@@ -265,6 +272,8 @@ class TestSingleEndpointRuntimePolicy:
         await gate.wait()
         await asyncio.sleep(0)
         assert events == ["ensure:model-a", "enter:model-a"]
+        assert active_runtime_lease_count("model-a") == 1
+        assert active_runtime_lease_count("model-b") == 1
 
         release.set()
         await asyncio.gather(task_a, task_b)
@@ -276,3 +285,5 @@ class TestSingleEndpointRuntimePolicy:
             "ensure:model-b",
             "enter:model-b",
         ]
+        assert active_runtime_lease_count("model-a") == 0
+        assert active_runtime_lease_count("model-b") == 0

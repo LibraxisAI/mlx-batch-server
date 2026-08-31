@@ -14,6 +14,7 @@ from collections import OrderedDict
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 
+from ...batch.coordinator import retire_idle_batch_runtime
 from ...core.config import get_settings
 from ...utils.logger import logger
 from ...utils.memory import force_mlx_cleanup
@@ -28,6 +29,13 @@ from .runtime_attachments import (
     get_runtime_surface_attachments,
     list_runtime_surface_attachments_by_runtime,
     release_runtime_surface,
+)
+from .runtime_leases import (
+    acquire_runtime_lease,
+    active_runtime_lease_count,
+    list_runtime_leases,
+    release_runtime_lease,
+    runtime_retirement_guard,
 )
 
 
@@ -133,16 +141,14 @@ class MLXWrapperCache:
     def _is_eviction_protected(self, key: WrapperCacheKey) -> bool:
         """Return True when runtime residency is protected from TTL/LRU eviction.
 
-        Static pinned models always stay resident. Surface-attached models must also
-        stay hot until the product layer explicitly detaches them; otherwise the
-        cache contract lies about residency and forces surprise reloads.
+        Static pinned models always stay resident. Passive product-surface
+        attachments describe ownership but do not defeat idle TTL. Only queued or
+        active inference jobs hold a runtime lease that blocks automatic eviction.
         """
-        return self._is_pinned(key) or bool(
-            get_runtime_surface_attachments(
-                key.model_id,
-                adapter_path=key.adapter_path,
-                draft_model_id=key.draft_model_id,
-            )
+        return self._is_pinned(key) or active_runtime_lease_count(
+            key.model_id,
+            adapter_path=key.adapter_path,
+            draft_model_id=key.draft_model_id,
         )
 
     def _should_cache_runtime(self, key: WrapperCacheKey) -> bool:
@@ -163,6 +169,12 @@ class MLXWrapperCache:
         self, wrapper: ChatGenerator | None, key: WrapperCacheKey
     ) -> None:
         """Release MLX memory after text cache eviction or unload."""
+        if key.draft_model_id is None:
+            with suppress(Exception):
+                retire_idle_batch_runtime(
+                    key.model_id,
+                    adapter_path=key.adapter_path,
+                )
         if wrapper is None:
             return
 
@@ -197,17 +209,19 @@ class MLXWrapperCache:
                 expired_keys.append(key)
 
         for key in expired_keys:
-            wrapper = self._cache.pop(key, None)
-            self._access_times.pop(key, None)
-            clear_runtime_surface_attachments(
+            with runtime_retirement_guard(
                 key.model_id,
                 adapter_path=key.adapter_path,
                 draft_model_id=key.draft_model_id,
-            )
-            logger.info(
-                f"Evicted expired model from cache (TTL={self._ttl_seconds}s): {key}"
-            )
-            self._release_memory(wrapper, key)
+            ) as idle:
+                if not idle:
+                    continue
+                wrapper = self._cache.pop(key, None)
+                self._access_times.pop(key, None)
+                logger.info(
+                    f"Evicted expired model from cache (TTL={self._ttl_seconds}s): {key}"
+                )
+                self._release_memory(wrapper, key)
 
     def _evict_lru_if_needed(self) -> None:
         """Evict least recently used NON-PINNED item if cache is at capacity.
@@ -218,10 +232,10 @@ class MLXWrapperCache:
         if self._max_size <= 0:
             return
 
-        # Count only evictable models against max_size. Surface-retained runtimes
-        # are intentionally resident, just like statically pinned runtimes.
+        # Count only evictable models against max_size. Queued/active runtimes
+        # are temporarily protected, just like statically pinned runtimes.
         evictable_count = sum(
-            1 for k in self._cache if not self._is_eviction_protected(k)
+            1 for key in self._cache if not self._is_eviction_protected(key)
         )
 
         if evictable_count >= self._max_size:
@@ -230,21 +244,22 @@ class MLXWrapperCache:
                 k for k in self._access_times if not self._is_eviction_protected(k)
             ]
             if not evictable_keys:
-                return  # Only retained runtimes are resident, nothing to evict
+                return  # Only pinned/active runtimes are resident, nothing to evict
 
             lru_key = min(evictable_keys, key=lambda k: self._access_times[k])
 
-            # Remove from cache and access times
-            wrapper = self._cache.pop(lru_key, None)
-            self._access_times.pop(lru_key, None)
-            clear_runtime_surface_attachments(
+            with runtime_retirement_guard(
                 lru_key.model_id,
                 adapter_path=lru_key.adapter_path,
                 draft_model_id=lru_key.draft_model_id,
-            )
-
-            logger.info(f"Evicted LRU model from cache: {lru_key}")
-            self._release_memory(wrapper, lru_key)
+            ) as idle:
+                if not idle:
+                    return
+                # Remove from cache and access times
+                wrapper = self._cache.pop(lru_key, None)
+                self._access_times.pop(lru_key, None)
+                logger.info(f"Evicted LRU model from cache: {lru_key}")
+                self._release_memory(wrapper, lru_key)
 
     def _update_access_time(self, key: WrapperCacheKey) -> None:
         """Update access time for LRU tracking.
@@ -348,8 +363,9 @@ class MLXWrapperCache:
                 )
 
                 # Pinned models must remain tracked even in max_size=0
-                # deployments. Surface-retained runtimes must also stay cached,
-                # otherwise ownership/observability lies when max_size=0.
+                # deployments. Surface-retained runtimes must also enter the
+                # cache so ownership/observability remains truthful; unlike
+                # pinned or leased runtimes, idle TTL may retire their weights.
                 if self._should_cache_runtime(key):
                     self._cache[key] = wrapper
                     self._update_access_time(key)
@@ -524,6 +540,21 @@ class MLXWrapperCache:
         with self._lock:
             return list(self._cache.keys())
 
+    def renew_runtime_ttl(
+        self,
+        model_id: str,
+        *,
+        adapter_path: str | None = None,
+        draft_model_id: str | None = None,
+    ) -> bool:
+        """Restart idle TTL for an exact runtime after active work finishes."""
+        key = normalize_runtime_key(model_id, adapter_path, draft_model_id)
+        with self._lock:
+            if key not in self._cache:
+                return False
+            self._update_access_time(key)
+            return True
+
     # ------------------------------------------------------------------
     # Multimodal helpers on top of the shared runtime cache
     # ------------------------------------------------------------------
@@ -646,10 +677,25 @@ class MLXWrapperCache:
         )
         with self._lock:
             lock = self._vlm_execution_locks.setdefault(runtime_key, threading.Lock())
+        acquire_runtime_lease(
+            runtime_key.model_id,
+            adapter_path=runtime_key.adapter_path,
+            draft_model_id=runtime_key.draft_model_id,
+        )
         lock.acquire()
         try:
             yield
         finally:
+            self.renew_runtime_ttl(
+                runtime_key.model_id,
+                adapter_path=runtime_key.adapter_path,
+                draft_model_id=runtime_key.draft_model_id,
+            )
+            release_runtime_lease(
+                runtime_key.model_id,
+                adapter_path=runtime_key.adapter_path,
+                draft_model_id=runtime_key.draft_model_id,
+            )
             lock.release()
 
     def get_cache_info(self) -> dict[str, any]:
@@ -688,6 +734,7 @@ class MLXWrapperCache:
                 "runtime_keys": [serialize_runtime_key(key) for key in self._cache],
                 "vlm_cached_keys": self._loaded_multimodal_model_ids(),
                 "surface_runtime_attachments": list_runtime_surface_attachments_by_runtime(),
+                "active_runtime_leases": list_runtime_leases(),
                 "lru_order": [str(key) for key, _ in sorted_keys],  # Most recent first
                 "ttl_info": ttl_info,
             }

@@ -25,6 +25,7 @@ except ImportError:
         return None
 
 
+from .runtime_leases import acquire_runtime_lease, release_runtime_lease
 from .wrapper_cache import (
     WrapperCacheKey,
     normalize_model_id,
@@ -117,7 +118,7 @@ async def ensure_single_endpoint_llm_runtime(
 
 
 @asynccontextmanager
-async def endpoint_runtime_session(
+async def _endpoint_runtime_session_unleased(
     model_id: str,
     adapter_path: str | None = None,
     draft_model_id: str | None = None,
@@ -185,3 +186,40 @@ async def endpoint_runtime_session(
                 if _active_runtime_count == 0:
                     _active_runtime_key = None
                     _endpoint_runtime_condition.notify_all()
+
+
+@asynccontextmanager
+async def endpoint_runtime_session(
+    model_id: str,
+    adapter_path: str | None = None,
+    draft_model_id: str | None = None,
+):
+    """Lease one exact runtime while queued and throughout active inference."""
+    target_key = normalize_runtime_key(
+        model_id=model_id,
+        adapter_path=adapter_path,
+        draft_model_id=draft_model_id,
+    )
+    acquire_runtime_lease(
+        target_key.model_id,
+        adapter_path=target_key.adapter_path,
+        draft_model_id=target_key.draft_model_id,
+    )
+    try:
+        async with _endpoint_runtime_session_unleased(
+            target_key.model_id,
+            adapter_path=target_key.adapter_path,
+            draft_model_id=target_key.draft_model_id,
+        ) as switch_result:
+            yield switch_result
+    finally:
+        wrapper_cache.renew_runtime_ttl(
+            target_key.model_id,
+            adapter_path=target_key.adapter_path,
+            draft_model_id=target_key.draft_model_id,
+        )
+        release_runtime_lease(
+            target_key.model_id,
+            adapter_path=target_key.adapter_path,
+            draft_model_id=target_key.draft_model_id,
+        )

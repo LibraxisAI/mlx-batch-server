@@ -30,6 +30,11 @@ from ..chat.mlx.runtime_aliases import (
     normalize_runtime_path,
     resolve_runtime_target,
 )
+from ..chat.mlx.runtime_leases import (
+    acquire_runtime_lease,
+    release_runtime_lease,
+    runtime_retirement_guard,
+)
 from ..utils.logger import logger
 
 if TYPE_CHECKING:
@@ -39,6 +44,7 @@ __all__ = [
     "BatchRequestCoordinator",
     "get_batch_coordinator",
     "get_loaded_batch_models",
+    "retire_idle_batch_runtime",
     "shutdown_all_coordinators",
     "shutdown_batch_coordinator",
 ]
@@ -320,6 +326,10 @@ class BatchRequestCoordinator:
                     print(f"\\nDone: {chunk.finish_reason}")
             ```
         """
+        acquire_runtime_lease(
+            self.model_id,
+            adapter_path=self.adapter_path,
+        )
         request_id = f"batch_{uuid.uuid4().hex[:12]}"
         response_queue: asyncio.Queue = asyncio.Queue()
 
@@ -335,19 +345,16 @@ class BatchRequestCoordinator:
             created_at=time.time(),
         )
 
-        # Add to pending queue
-        async with self._request_lock:
-            self._pending_requests[request_id] = pending
-            self._total_requests += 1
-
-        # Ensure worker is running
-        await self._ensure_worker_running()
-
-        # Signal new request
-        self._new_request_event.set()
-
-        # Stream results
         try:
+            # The lease is already held before publishing this request to the
+            # queue, so both queue wait and active generation block retirement.
+            async with self._request_lock:
+                self._pending_requests[request_id] = pending
+                self._total_requests += 1
+
+            await self._ensure_worker_running()
+            self._new_request_event.set()
+
             while True:
                 try:
                     item = await asyncio.wait_for(response_queue.get(), timeout=300.0)
@@ -376,6 +383,16 @@ class BatchRequestCoordinator:
             async with self._request_lock:
                 self._pending_requests.pop(request_id, None)
                 self._active_requests.pop(request_id, None)
+            from ..chat.mlx.wrapper_cache import wrapper_cache
+
+            wrapper_cache.renew_runtime_ttl(
+                self.model_id,
+                adapter_path=self.adapter_path,
+            )
+            release_runtime_lease(
+                self.model_id,
+                adapter_path=self.adapter_path,
+            )
 
     async def cancel_request(self, request_id: str) -> bool:
         """Cancel a specific request.
@@ -596,3 +613,46 @@ def get_loaded_batch_models() -> list[str]:
         ]
 
     return list(dict.fromkeys(loaded))
+
+
+def retire_idle_batch_runtime(
+    model_id: str,
+    *,
+    adapter_path: str | None = None,
+) -> bool:
+    """Drop an idle batch generator that still references expired model weights."""
+    normalized_model_id, normalized_adapter_path = _resolve_batch_runtime(
+        model_id,
+        adapter_path,
+    )
+    with runtime_retirement_guard(
+        normalized_model_id,
+        adapter_path=normalized_adapter_path,
+    ) as idle:
+        if not idle:
+            return False
+
+        with _coordinator_lock:
+            coordinators = [
+                coord
+                for coord in _coordinators.values()
+                if coord.model_id == normalized_model_id
+                and coord.adapter_path == normalized_adapter_path
+            ]
+
+        retired = False
+        for coordinator in coordinators:
+            with coordinator._generator_lock:
+                if coordinator._generator is None:
+                    continue
+                coordinator._generator.close()
+                coordinator._generator = None
+                retired = True
+
+    if retired:
+        logger.info(
+            "Retired idle batch runtime for model=%s adapter=%s",
+            normalized_model_id,
+            normalized_adapter_path,
+        )
+    return retired
