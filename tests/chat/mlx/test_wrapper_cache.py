@@ -13,6 +13,7 @@ import pytest
 
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
 from mlx_batch_server.chat.mlx import runtime_attachments as runtime_attachments_module
+from mlx_batch_server.chat.mlx import runtime_leases as runtime_leases_module
 from mlx_batch_server.chat.mlx.wrapper_cache import MLXWrapperCache, WrapperCacheKey
 
 
@@ -61,6 +62,7 @@ class TestMLXWrapperCache:
     def setup_method(self):
         """Set up test fixtures."""
         runtime_attachments_module.clear_runtime_surface_attachments()
+        runtime_leases_module.clear_runtime_leases()
         self.cache = MLXWrapperCache(max_size=3)
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
@@ -145,17 +147,19 @@ class TestMLXWrapperCache:
         assert self.cache.get_cache_info()["cache_size"] == 0
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
-    def test_surface_attached_runtime_survives_lru_pressure(self, mock_create):
-        """Surface-retained VLM runtimes should not be silently evicted by LRU."""
+    def test_active_runtime_lease_survives_lru_pressure(self, mock_create):
+        """Queued/active work, rather than a passive surface, blocks LRU."""
         cache = MLXWrapperCache(max_size=1)
         mock_create.side_effect = [
             MockChatGenerator("model-vlm", multimodal=True),
             MockChatGenerator("model-b"),
             MockChatGenerator("model-c"),
+            MockChatGenerator("model-d"),
         ]
 
         cache.get_wrapper("model-vlm")
         runtime_attachments_module.attach_runtime_surface("model-vlm", "visual")
+        runtime_leases_module.acquire_runtime_lease("model-vlm")
 
         cache.get_wrapper("model-b")
         info = cache.get_cache_info()
@@ -169,6 +173,13 @@ class TestMLXWrapperCache:
         assert any("model-vlm" in key for key in info["cached_keys"])
         assert any("model-c" in key for key in info["cached_keys"])
         assert all("model-b" not in key for key in info["cached_keys"])
+
+        runtime_leases_module.release_runtime_lease("model-vlm")
+        cache.get_wrapper("model-d")
+        info = cache.get_cache_info()
+        assert info["cache_size"] == 2
+        assert any("model-d" in key for key in info["cached_keys"])
+        assert all("model-vlm" not in key for key in info["cached_keys"])
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
     def test_surface_runtime_is_cached_even_when_max_size_zero(self, mock_create):
@@ -244,6 +255,7 @@ class TestMLXWrapperCacheThreadSafety:
     def setup_method(self):
         """Set up test fixtures."""
         runtime_attachments_module.clear_runtime_surface_attachments()
+        runtime_leases_module.clear_runtime_leases()
         self.cache = MLXWrapperCache(max_size=10)
         self.results = []
         self.creation_count = 0
@@ -387,8 +399,8 @@ class TestMLXWrapperCacheTTL:
             assert any("model3" in key for key in info["cached_keys"])
 
     @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
-    def test_ttl_does_not_expire_surface_attached_runtime(self, mock_create):
-        """TTL must not drop a runtime while a product surface still retains it."""
+    def test_passive_surface_attachment_does_not_defeat_idle_ttl(self, mock_create):
+        """A known product surface is not an active job and cannot pin weights."""
         mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
 
         self.cache.get_wrapper("model-vlm")
@@ -397,11 +409,26 @@ class TestMLXWrapperCacheTTL:
         time.sleep(1.2)
         info = self.cache.get_cache_info()
 
-        assert info["cache_size"] == 1
-        assert any("model-vlm" in key for key in info["cached_keys"])
+        assert info["cache_size"] == 0
         assert runtime_attachments_module.get_runtime_surface_attachments(
             "model-vlm"
         ) == ["embeddings"]
+
+    @patch("mlx_batch_server.chat.mlx.wrapper_cache.ChatGenerator.create")
+    def test_active_job_lease_blocks_ttl_then_restarts_idle_window(self, mock_create):
+        mock_create.return_value = MockChatGenerator("model-vlm", multimodal=True)
+        self.cache.get_wrapper("model-vlm", surface="llm")
+        runtime_leases_module.acquire_runtime_lease("model-vlm")
+
+        time.sleep(1.2)
+        assert self.cache.get_cache_info()["cache_size"] == 1
+
+        self.cache.renew_runtime_ttl("model-vlm")
+        runtime_leases_module.release_runtime_lease("model-vlm")
+        time.sleep(0.6)
+        assert self.cache.get_cache_info()["cache_size"] == 1
+        time.sleep(0.6)
+        assert self.cache.get_cache_info()["cache_size"] == 0
 
 
 class TestMLXWrapperCacheEdgeCases:
@@ -699,6 +726,18 @@ class TestMLXWrapperCacheModelManagement:
 
             assert entered_other.wait(timeout=1.0) is True
             assert entered_same.wait(timeout=0.1) is False
+            assert (
+                runtime_leases_module.active_runtime_lease_count(
+                    "model-vlm", adapter_path="/adapter-a"
+                )
+                == 2
+            )
+            assert (
+                runtime_leases_module.active_runtime_lease_count(
+                    "model-vlm", adapter_path="/adapter-b"
+                )
+                == 1
+            )
 
             release_other.set()
             other_variant.join(timeout=1.0)
@@ -708,6 +747,7 @@ class TestMLXWrapperCacheModelManagement:
         release_same.set()
         same_variant.join(timeout=1.0)
         assert same_variant.is_alive() is False
+        assert runtime_leases_module.list_runtime_leases() == []
         assert events == [
             ("enter", "other"),
             ("exit", "other"),

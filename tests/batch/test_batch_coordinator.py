@@ -15,10 +15,12 @@ from mlx_batch_server.batch.coordinator import (
     PendingRequest,
     get_batch_coordinator,
     get_loaded_batch_models,
+    retire_idle_batch_runtime,
     shutdown_batch_coordinator,
 )
 from mlx_batch_server.batch.generator import BatchChatGenerator
 from mlx_batch_server.chat.mlx import runtime_aliases as runtime_aliases_module
+from mlx_batch_server.chat.mlx import runtime_leases as runtime_leases_module
 from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 
 
@@ -26,9 +28,11 @@ from mlx_batch_server.chat.mlx.chat_generator import ChatGenerator
 def _reset_batch_coordinators():
     batch_coordinator_module._coordinators.clear()
     runtime_aliases_module.clear_runtime_aliases()
+    runtime_leases_module.clear_runtime_leases()
     yield
     batch_coordinator_module._coordinators.clear()
     runtime_aliases_module.clear_runtime_aliases()
+    runtime_leases_module.clear_runtime_leases()
 
 
 class TestPendingRequest:
@@ -100,19 +104,41 @@ class TestBatchRequestCoordinator:
         monkeypatch.setattr(
             BatchChatGenerator,
             "from_chat_generator",
-            lambda chat_generator,
-            completion_batch_size=32,
-            prefill_batch_size=8,
-            prefill_step_size=2048: (
-                seen.setdefault("chat_generator", chat_generator),
-                fake_batch_generator,
-            )[1],
+            lambda chat_generator, completion_batch_size=32, prefill_batch_size=8, prefill_step_size=2048: (
+                (
+                    seen.setdefault("chat_generator", chat_generator),
+                    fake_batch_generator,
+                )[1]
+            ),
         )
 
         result = coord._get_or_create_generator()
 
         assert result is fake_batch_generator
         assert seen["chat_generator"] is fake_wrapper
+
+    @pytest.mark.asyncio
+    async def test_stream_request_holds_lease_while_queued(self, monkeypatch):
+        coordinator = BatchRequestCoordinator(model_id="model-batch-queued")
+
+        async def keep_worker_idle():
+            return None
+
+        monkeypatch.setattr(coordinator, "_ensure_worker_running", keep_worker_idle)
+        stream = coordinator.stream_request([{"role": "user", "content": "hello"}])
+        pending = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0)
+
+        assert (
+            runtime_leases_module.active_runtime_lease_count("model-batch-queued") == 1
+        )
+
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert (
+            runtime_leases_module.active_runtime_lease_count("model-batch-queued") == 0
+        )
 
 
 class TestGetBatchCoordinator:
@@ -225,6 +251,20 @@ class TestGetBatchCoordinator:
         assert idle_model not in loaded_models
 
         loaded._generator = None
+
+    def test_idle_batch_generator_retires_but_active_lease_blocks_retirement(self):
+        coordinator = get_batch_coordinator("model-batch-idle")
+        closed: list[bool] = []
+        coordinator._generator = SimpleNamespace(close=lambda: closed.append(True))
+
+        runtime_leases_module.acquire_runtime_lease("model-batch-idle")
+        assert retire_idle_batch_runtime("model-batch-idle") is False
+        assert coordinator._generator is not None
+
+        runtime_leases_module.release_runtime_lease("model-batch-idle")
+        assert retire_idle_batch_runtime("model-batch-idle") is True
+        assert coordinator._generator is None
+        assert closed == [True]
 
     @pytest.mark.asyncio
     async def test_shutdown_batch_coordinator_removes_matching_model(self):
