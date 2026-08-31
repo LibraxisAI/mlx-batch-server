@@ -171,8 +171,8 @@ def test_business_endpoints_accept_static_api_key(
                 usage=EmbeddingUsage(prompt_tokens=0, total_tokens=0),
             )
 
-    class FakeImagesService:
-        def generate_images(self, _request):
+    class FakeImageRuntime:
+        async def generate(self, _request):
             return [ImageObject(b64_json="ZmFrZQ==")]
 
     class FakeSTTService:
@@ -198,8 +198,8 @@ def test_business_endpoints_accept_static_api_key(
     def get_fake_models_service():
         return FakeModelsService()
 
-    def get_fake_images_service():
-        return FakeImagesService()
+    def get_fake_image_runtime():
+        return FakeImageRuntime()
 
     def get_fake_stt_service():
         return FakeSTTService()
@@ -223,7 +223,7 @@ def test_business_endpoints_accept_static_api_key(
     monkeypatch.setattr(
         visual_router.Qwen3VLEmbedder, "maxsim_score", fake_maxsim_score
     )
-    monkeypatch.setattr(images_router, "get_images_service", get_fake_images_service)
+    monkeypatch.setattr(images_router, "get_image_runtime_pool", get_fake_image_runtime)
     monkeypatch.setattr(stt_router, "STTService", get_fake_stt_service)
     monkeypatch.setattr(tts_router, "TTSService", FakeTTSService)
     monkeypatch.setattr(batch_coordinator, "_coordinators", {})

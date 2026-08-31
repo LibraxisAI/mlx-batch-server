@@ -1,6 +1,7 @@
 import base64
 import binascii
 import gc
+import os
 import random
 import re
 import tempfile
@@ -293,6 +294,9 @@ class ImagesService:
         ]
         for key in keys:
             self._generator_cache.pop(key)._flux = None
+        if keys:
+            gc.collect()
+            mx.clear_cache()
         return bool(keys)
 
     def clear_models(self) -> list[str]:
@@ -303,6 +307,9 @@ class ImagesService:
         for generator in self._generator_cache.values():
             generator._flux = None
         self._generator_cache.clear()
+        if unloaded:
+            gc.collect()
+            mx.clear_cache()
         return unloaded
 
     def _get_generator(
@@ -463,10 +470,10 @@ def get_images_service() -> ImagesService:
     return _images_service
 
 
-def run_image_operation(
+def run_image_worker_operation(
     operation: str,
     payload: dict[str, object],
-) -> list[dict[str, object]]:
+) -> dict[str, object]:
     """Process-worker entrypoint keeping MLX on that process's main thread."""
     service = get_images_service()
     if operation == "generate":
@@ -475,6 +482,26 @@ def run_image_operation(
     elif operation == "edit":
         edit_request = ImageEditRequest.model_validate(payload)
         images = service.edit_images(edit_request)
+    elif operation == "load":
+        model_name = str(payload["model"])
+        return {
+            "already_loaded": service.load_model(model_name),
+            "worker_pid": os.getpid(),
+        }
+    elif operation == "unload":
+        model_name = str(payload["model"])
+        return {
+            "unloaded": service.unload_model(model_name),
+            "worker_pid": os.getpid(),
+        }
+    elif operation == "clear":
+        return {
+            "unloaded_models": service.clear_models(),
+            "worker_pid": os.getpid(),
+        }
     else:
         raise ValueError(f"Unknown image operation '{operation}'")
-    return [image.model_dump() for image in images]
+    return {
+        "data": [image.model_dump() for image in images],
+        "worker_pid": os.getpid(),
+    }

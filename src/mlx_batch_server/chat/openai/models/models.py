@@ -792,10 +792,9 @@ async def load_model(  # noqa: PLR0911, PLR0912, PLR0915
                     ),
                 )
 
-            from ....images.images_service import get_images_service
+            from ....images.image_runtime import get_image_runtime_pool
 
-            service = get_images_service()
-            already_loaded = service.load_model(request.model)
+            already_loaded = await get_image_runtime_pool().prewarm(request.model)
             return ModelLoadResponse(
                 id=request.model,
                 task="images",
@@ -1277,10 +1276,9 @@ async def _unload_specific(  # noqa: PLR0911, PLR0912, PLR0915
         )
 
     if task == "images":
-        from ....images.images_service import get_images_service
+        from ....images.image_runtime import get_image_runtime_pool
 
-        service = get_images_service()
-        unloaded = [model_id] if service.unload_model(model_id) else []
+        unloaded = [model_id] if await get_image_runtime_pool().unload(model_id) else []
         status = "unloaded" if unloaded else "not_found"
         message = (
             f"Image model {model_id} unloaded successfully"
@@ -1526,10 +1524,9 @@ async def _clear_task(  # noqa: PLR0911, PLR0912, PLR0915
         )
 
     if task == "images":
-        from ....images.images_service import get_images_service
+        from ....images.image_runtime import get_image_runtime_pool
 
-        service = get_images_service()
-        unloaded = service.clear_models()
+        unloaded = await get_image_runtime_pool().clear()
         return _build_unload_response(
             task="images",
             status="cleared",
@@ -1552,14 +1549,14 @@ async def _clear_all_models() -> ModelUnloadResponse:
 
     from ....embeddings.embeddings_service import get_embeddings_service
     from ....embeddings.visual_router import unload_visual_embedder
-    from ....images.images_service import get_images_service
+    from ....images.image_runtime import get_image_runtime_pool
     from ....stt.whisper_model import unload_whisper_model
     from ....tts.tts_service import TTSService
 
     unloaded_models.extend(_unload_vlm_runtime())
     unloaded_models.extend(get_embeddings_service().clear_models())
     unloaded_models.extend(unload_visual_embedder())
-    unloaded_models.extend(get_images_service().clear_models())
+    unloaded_models.extend(await get_image_runtime_pool().clear())
     unloaded_models.extend(unload_whisper_model())
     unloaded_models.extend(TTSService.unload_model())
 

@@ -211,6 +211,11 @@ class Settings(BaseSettings):
         default=600,
         description="TTL in seconds for non-pinned models (default: 10 minutes)",
     )
+    image_model_idle_ttl_seconds: float = Field(
+        default=600,
+        ge=0,
+        description="Idle seconds before the heavyweight image worker is retired",
+    )
     pinned_models: str = Field(
         default="",
         description="Comma-separated model IDs to keep always loaded (never evict)",

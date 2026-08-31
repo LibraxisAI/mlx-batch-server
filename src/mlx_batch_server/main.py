@@ -129,6 +129,8 @@ def create_app():
                     await session_auth.stop()
                 except Exception:
                     pass
+            from .images.image_runtime import shutdown_image_runtime_pool
+
             try:
                 from .batch import shutdown_all_coordinators
                 from .vision.vlm_batch import shutdown_all_vlm_coordinators
@@ -137,6 +139,8 @@ def create_app():
                 await shutdown_all_vlm_coordinators()
             except ImportError:
                 pass  # Batch module may not be available
+            finally:
+                await shutdown_image_runtime_pool()
 
     application = FastAPI(title="MLX Batch Server", lifespan=lifespan)
 
