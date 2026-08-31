@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ....auth.dependency import verify_auth
+from ....provenance import get_runtime_provenance
 from ...mlx.model_types import get_model_path
 from ...mlx.runtime_aliases import (
     get_runtime_aliases,
@@ -1639,6 +1640,7 @@ async def health_check() -> dict:
 
     return {
         "status": "healthy",
+        **get_runtime_provenance().health_fields(),
         "loaded_models_count": len(runtime["loaded_models"]),
         "loaded_models": runtime["loaded_models"],
         "loaded_models_by_backend": {
