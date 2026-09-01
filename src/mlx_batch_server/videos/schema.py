@@ -88,4 +88,5 @@ class VideoCapabilities(BaseModel):
     video_edit: bool = False
     durations: list[int] = Field(default_factory=lambda: [6, 10, 15])
     models: list[str]
+    cached_models: list[str] = Field(default_factory=list)
     reason: str | None = None
