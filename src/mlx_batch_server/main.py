@@ -155,6 +155,9 @@ def create_app():  # noqa: PLR0915
                 pass  # Batch module may not be available
             finally:
                 await shutdown_image_runtime_pool()
+                from .videos.video_runtime import shutdown_video_runtime
+
+                await shutdown_video_runtime()
                 from .aux_runtime import shutdown_aux_runtime_manager
 
                 await asyncio.to_thread(shutdown_aux_runtime_manager)

@@ -216,6 +216,23 @@ class Settings(BaseSettings):
         ge=0,
         description="Idle seconds before the heavyweight image worker is retired",
     )
+    mlx_video_root: str | None = Field(
+        default=None,
+        description="Path to the sibling mlx-video checkout",
+    )
+    mlx_video_python: str | None = Field(
+        default=None,
+        description="Python executable with mlx-video installed",
+    )
+    mlx_video_artifact_dir: str | None = Field(
+        default=None,
+        description="Durable directory for generated MP4 artifacts",
+    )
+    mlx_video_timeout_seconds: float = Field(
+        default=7200,
+        ge=1,
+        description="Hard timeout for one local video generation",
+    )
     aux_model_idle_ttl_seconds: float = Field(
         default=600,
         ge=0,

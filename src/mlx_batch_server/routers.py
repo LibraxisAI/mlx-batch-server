@@ -13,6 +13,7 @@ from .images import images
 from .responses import router as responses_router_module
 from .stt import stt as stt_router
 from .tts import tts as tts_router
+from .videos import router as videos_router
 
 
 def _auth_required(settings: Settings) -> bool:
@@ -38,6 +39,7 @@ def build_api_router(settings: Settings | None = None) -> APIRouter:
     router.include_router(tts_router.router)
     router.include_router(models.router)
     router.include_router(images.router)
+    router.include_router(videos_router)
     router.include_router(chat_router.router)
     router.include_router(embeddings_router.router)
     router.include_router(visual_embeddings_router.router)

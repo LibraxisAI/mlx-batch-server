@@ -52,6 +52,7 @@ def test_business_endpoints_require_auth(inference_client_with_auth):
                 {"json": {"query_embedding": [[1.0]], "doc_embedding": [[1.0]]}},
             ),
             ("post", "/v1/images/generations", {"json": {"prompt": "hi"}}),
+            ("post", "/v1/videos/generations", {"json": {"prompt": "hi"}}),
             (
                 "post",
                 "/v1/audio/transcriptions",
