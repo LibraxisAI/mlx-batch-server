@@ -142,6 +142,8 @@ The local `mlx-vlm` dependency already understands `qwen3.6-vl` and `qwen3.6-vl-
 | `POST /v1/audio/speech` | Text-to-Speech | Stable |
 | `POST /v1/audio/transcriptions` | Speech-to-Text (Whisper) | Stable |
 | `POST /v1/images/generations` | Image Generation | Stable |
+| `POST /v1/videos/generations` | Isolated local LTX image-to-video | Preview |
+| `GET /v1/videos/capabilities` | Video adapter availability without model wake | Preview |
 | `POST /v1/embeddings` | Text Embeddings | Stable |
 | `GET /v1/models` | List available models | Stable |
 

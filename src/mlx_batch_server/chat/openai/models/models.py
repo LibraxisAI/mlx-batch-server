@@ -256,14 +256,17 @@ def _snapshot_process_residency(llm_runtime: dict[str, Any]) -> dict[str, Any]:
     from ....images.image_runtime import get_image_runtime_snapshot
     from ....stt.whisper_model import get_loaded_whisper_models
     from ....tts.tts_service import TTSService
+    from ....videos.video_runtime import get_video_runtime_snapshot
 
     auxiliary = get_aux_runtime_snapshot()
     image = get_image_runtime_snapshot()
+    video = get_video_runtime_snapshot()
     by_backend = {
         "wrapper": llm_runtime["caches"]["wrapper"],
         "batch": llm_runtime["coordinators"]["llm_batch"],
         "vlm_batch": llm_runtime["coordinators"]["vlm_batch"],
         "image": list(image["resident_models"]),
+        "video": list(video["resident_models"]),
         "embeddings": sorted(get_embeddings_service().get_loaded_native_models()),
         "tts": TTSService.get_loaded_models(),
         "stt": get_loaded_whisper_models(),
@@ -276,6 +279,7 @@ def _snapshot_process_residency(llm_runtime: dict[str, Any]) -> dict[str, Any]:
         "loaded_models_count": len(loaded_models),
         "loaded_models_by_backend": by_backend,
         "image_runtime": image,
+        "video_runtime": video,
         "auxiliary_runtime": auxiliary,
     }
 

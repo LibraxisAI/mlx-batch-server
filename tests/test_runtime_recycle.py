@@ -18,6 +18,8 @@ from mlx_batch_server.runtime_recycle import (
     RuntimeRecycleInProgress,
     _cancel_heavy_runtime_drain,
 )
+from mlx_batch_server.videos import video_runtime as video_runtime_module
+from mlx_batch_server.videos.video_runtime import VideoRuntime
 
 
 def _image_result(operation: str) -> dict[str, Any]:
@@ -37,6 +39,7 @@ def _reset_runtime_state(monkeypatch):
     monkeypatch.setattr(wrapper_cache, "get_runtime_keys", lambda: [])
     monkeypatch.setattr(wrapper_cache, "process_recycle_guard", empty_wrapper_guard)
     monkeypatch.setattr(image_runtime_module, "_image_runtime_pool", None)
+    monkeypatch.setattr(video_runtime_module, "_video_runtime", None)
     yield
     runtime_leases.clear_runtime_leases()
     _cancel_heavy_runtime_drain()
@@ -92,6 +95,49 @@ async def test_image_active_and_queued_work_block_parent_recycle():
 
     await runtime.shutdown()
     assert await recycler.attempt_recycle() is True
+
+
+@pytest.mark.asyncio
+async def test_video_active_work_blocks_parent_recycle():
+    executor = ThreadPoolExecutor(max_workers=1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def worker(_operation: str, _payload: dict[str, object]) -> dict[str, Any]:
+        started.set()
+        release.wait(timeout=2)
+        return {
+            "artifact": {
+                "id": "video-1",
+                "url": "/v1/videos/artifacts/video-1",
+                "mime_type": "video/mp4",
+                "bytes": 4,
+                "sha256": "0" * 64,
+                "duration": 6,
+                "model": "test-model",
+                "prompt": "test",
+                "revised_prompt": "test",
+            }
+        }
+
+    runtime = VideoRuntime(executor=executor, worker_operation=worker)
+    video_runtime_module._video_runtime = runtime
+    recycler = IdleProcessRecycler(enabled=True, terminate_process=lambda: None)
+    request = video_runtime_module.VideoGenerationRequest(
+        prompt="test",
+        duration=6,
+        model="prince-canuma/LTX-2.3-distilled",
+    )
+
+    active = asyncio.create_task(runtime.generate(request))
+    await asyncio.to_thread(started.wait, 2)
+    assert runtime.snapshot()["active_operations"] == 1
+    assert await recycler.attempt_recycle() is False
+
+    release.set()
+    await active
+    assert await recycler.attempt_recycle() is True
+    executor.shutdown(wait=True)
 
 
 @pytest.mark.asyncio

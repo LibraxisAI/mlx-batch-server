@@ -139,6 +139,10 @@ class IdleProcessRecycler:
             image_runtime_recycle_guard,
             image_runtime_recycle_ready,
         )
+        from .videos.video_runtime import (  # noqa: PLC0415
+            video_runtime_recycle_guard,
+            video_runtime_recycle_ready,
+        )
 
         # Avoid repeatedly closing the admission gate while another runtime is
         # visibly busy. These are observer checks only; final authority is below.
@@ -146,6 +150,7 @@ class IdleProcessRecycler:
             list_runtime_leases()
             or wrapper_cache.get_runtime_keys()
             or not image_runtime_recycle_ready()
+            or not video_runtime_recycle_ready()
             or not aux_runtime_recycle_ready()
         ):
             return False
@@ -161,21 +166,26 @@ class IdleProcessRecycler:
                 all_runtime_retirement_guard() as llm_idle,
             ):
                 async with image_runtime_recycle_guard() as images_idle:
-                    with aux_runtime_recycle_guard() as aux_idle:
-                        if not (
-                            wrappers_idle and llm_idle and images_idle and aux_idle
-                        ):
-                            _cancel_heavy_runtime_drain()
-                            return False
-                        with self._state_lock:
-                            reason = self._pending_reason or "manual-attempt"
-                            self._pending_reason = None
-                        logger.warning(
-                            "Recycling idle supervised process to release allocator RSS: %s",
-                            reason,
-                        )
-                        self._terminate_process()
-                        return True
+                    async with video_runtime_recycle_guard() as videos_idle:
+                        with aux_runtime_recycle_guard() as aux_idle:
+                            if not (
+                                wrappers_idle
+                                and llm_idle
+                                and images_idle
+                                and videos_idle
+                                and aux_idle
+                            ):
+                                _cancel_heavy_runtime_drain()
+                                return False
+                            with self._state_lock:
+                                reason = self._pending_reason or "manual-attempt"
+                                self._pending_reason = None
+                            logger.warning(
+                                "Recycling idle supervised process to release allocator RSS: %s",
+                                reason,
+                            )
+                            self._terminate_process()
+                            return True
         except BaseException:
             _cancel_heavy_runtime_drain()
             raise

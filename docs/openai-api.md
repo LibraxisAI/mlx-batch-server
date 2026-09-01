@@ -46,6 +46,7 @@ print(response.choices[0].message.content)
 | `/v1/audio/speech` | Text-to-Speech generation | ✅ |
 | `/v1/audio/transcriptions` | Speech-to-Text transcription | ✅ |
 | `/v1/images/generations` | Image generation from text prompts | ✅ |
+| `/v1/videos/generations` | Local LTX image-to-video generation | Preview |
 | `/v1/embeddings` | Text embedding generation | ✅ |
 | `/v1/models` | Model listing and management | ✅ |
 
@@ -167,6 +168,28 @@ response = client.images.generate(
 image_url = response.data[0].url
 print(f"Generated image: {image_url}")
 ```
+
+### Local Video (`/v1/videos/generations`)
+
+The preview video surface accepts one base64 `data:image` reference and a
+duration of 6, 10, or 15 seconds. It returns metadata plus a server-owned MP4
+artifact URL. The adapter runs the sibling `mlx-video` checkout in an isolated
+process, so video imports never contaminate the FastAPI MLX runtime.
+
+```bash
+curl http://127.0.0.1:10240/v1/videos/generations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "subtle natural movement, locked camera",
+    "image": "data:image/jpeg;base64,...",
+    "duration": 6,
+    "model": "prince-canuma/LTX-2.3-distilled"
+  }'
+```
+
+`GET /v1/videos/capabilities` is observer-only and does not download or wake a
+model. Configure non-default locations with `MLX_VIDEO_ROOT`,
+`MLX_VIDEO_PYTHON`, and `MLX_VIDEO_ARTIFACT_DIR`.
 
 ### Embeddings (`/v1/embeddings`)
 
