@@ -55,3 +55,23 @@ def test_artifact_id_rejects_path_traversal(tmp_path):
     adapter = MlxVideoAdapter(root=tmp_path, python=python, artifact_dir=tmp_path)
     with pytest.raises(ValueError, match="Invalid video artifact id"):
         adapter.artifact_path("../../secret")
+
+
+def test_offline_capabilities_require_a_cached_supported_model(tmp_path, monkeypatch):
+    python = tmp_path / "python"
+    python.touch()
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+    adapter = MlxVideoAdapter(root=tmp_path, python=python, artifact_dir=tmp_path)
+
+    missing = adapter.capabilities()
+    assert missing.available is False
+    assert missing.cached_models == []
+    assert "no supported LTX model" in (missing.reason or "")
+
+    snapshot = cache / "models--prince-canuma--LTX-2.3-distilled" / "snapshots" / "sha"
+    snapshot.mkdir(parents=True)
+    ready = adapter.capabilities()
+    assert ready.available is True
+    assert ready.cached_models == ["prince-canuma/LTX-2.3-distilled"]

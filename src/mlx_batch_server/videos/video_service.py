@@ -25,6 +25,12 @@ from .schema import VideoArtifact, VideoCapabilities, VideoGenerationRequest
 
 _DATA_IMAGE_PREFIX = "data:image/"
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_SUPPORTED_MODELS = [
+    "prince-canuma/LTX-2-distilled",
+    "prince-canuma/LTX-2.3-distilled",
+    "prince-canuma/LTX-2-dev",
+    "prince-canuma/LTX-2.3-dev",
+]
 
 
 def default_mlx_video_root() -> Path:
@@ -64,18 +70,17 @@ class MlxVideoAdapter:
 
     def capabilities(self) -> VideoCapabilities:
         reason = None
+        cached_models = [model for model in _SUPPORTED_MODELS if self._model_cached(model)]
         if not self.root.is_dir():
             reason = f"mlx-video checkout not found at {self.root}"
         elif not self.python.is_file():
             reason = f"mlx-video Python not found at {self.python}"
+        elif self._offline() and not cached_models:
+            reason = "HF_HUB_OFFLINE=1 and no supported LTX model is cached"
         return VideoCapabilities(
             available=reason is None,
-            models=[
-                "prince-canuma/LTX-2-distilled",
-                "prince-canuma/LTX-2.3-distilled",
-                "prince-canuma/LTX-2-dev",
-                "prince-canuma/LTX-2.3-dev",
-            ],
+            models=_SUPPORTED_MODELS,
+            cached_models=cached_models,
             reason=reason,
         )
 
@@ -83,6 +88,10 @@ class MlxVideoAdapter:
         capabilities = self.capabilities()
         if not capabilities.available:
             raise RuntimeError(capabilities.reason)
+        if self._offline() and not self._model_cached(request.model):
+            raise RuntimeError(
+                f"HF_HUB_OFFLINE=1 and requested model {request.model} is not cached"
+            )
         self.artifact_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         artifact_id = f"video_{time.time_ns()}_{uuid.uuid4().hex[:8]}"
         output_path = self.artifact_dir / f"{artifact_id}.mp4"
@@ -211,6 +220,28 @@ class MlxVideoAdapter:
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
         return env
+
+    @staticmethod
+    def _offline() -> bool:
+        return os.environ.get("HF_HUB_OFFLINE", "").lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _hub_cache() -> Path:
+        if path := os.environ.get("HF_HUB_CACHE"):
+            return Path(path).expanduser()
+        if path := os.environ.get("HF_HOME"):
+            return Path(path).expanduser() / "hub"
+        if path := os.environ.get("XDG_CACHE_HOME"):
+            return Path(path).expanduser() / "huggingface" / "hub"
+        return Path.home() / ".cache" / "huggingface" / "hub"
+
+    @classmethod
+    def _model_cached(cls, model: str) -> bool:
+        snapshots = cls._hub_cache() / f"models--{model.replace('/', '--')}" / "snapshots"
+        try:
+            return any(entry.is_dir() for entry in snapshots.iterdir())
+        except OSError:
+            return False
 
 
 _video_adapter: MlxVideoAdapter | None = None
