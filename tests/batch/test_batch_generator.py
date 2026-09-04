@@ -161,9 +161,9 @@ class TestBatchChatGenerator:
 
             def next(self):
                 if self._next_calls > 0:
-                    return []
+                    return [], []
                 self._next_calls += 1
-                return [
+                return [], [
                     SimpleNamespace(
                         uid=11,
                         token=1,
@@ -248,9 +248,9 @@ class TestBatchChatGenerator:
 
             def next(self):
                 if self._next_calls > 0:
-                    return []
+                    return [], []
                 self._next_calls += 1
-                return [
+                return [], [
                     SimpleNamespace(
                         uid=11,
                         token=1,
@@ -322,7 +322,7 @@ class TestBatchChatGenerator:
 
             def next(self):
                 assert events == [("enter", "test-model", None, None)]
-                return [
+                return [], [
                     SimpleNamespace(
                         uid=11,
                         token=1,
@@ -399,7 +399,7 @@ class TestBatchChatGenerator:
         generator._get_or_create_generator(max_tokens=4)
 
         assert captured["model"] is language_model
-        assert captured["stop_tokens"] == {0}
+        assert captured["stop_tokens"] == [[0]]
 
     def test_vlm_text_model_is_mlx_lm_compatible_with_real_batch_step(self):
         """Batch generation should accept the wrapped VLM language tower."""
@@ -421,18 +421,18 @@ class TestBatchChatGenerator:
 
         from mlx_lm.generate import BatchGenerator
 
-        batch_gen = BatchGenerator(text_model, max_tokens=1, stop_tokens={0})
-        sampled, logprobs = batch_gen._step(
-            mx.array([[1]]),
-            prompt_cache=[],
-            samplers=[None],
-            logits_processors=[[]],
-            tokens=[mx.array([], dtype=mx.int32)],
-        )
+        batch_gen = BatchGenerator(text_model, max_tokens=1, stop_tokens=[[0]])
+        assert batch_gen.insert([[1]], max_tokens=[1], samplers=[None]) == [0]
 
-        assert sampled.tolist() == [1]
-        assert len(logprobs) == 1
-        assert logprobs[0].shape == (4,)
+        responses = []
+        for _ in range(4):
+            _, generation_responses = batch_gen.next()
+            responses.extend(generation_responses)
+            if responses:
+                break
+
+        assert [response.token for response in responses] == [1]
+        assert responses[0].logprobs.shape == (4,)
 
     def test_vlm_text_model_normalizes_batch_cache_offsets_for_real_insert(self):
         """Real batch prefill should not expose vector offsets to VLM attention."""
@@ -454,13 +454,18 @@ class TestBatchChatGenerator:
 
         from mlx_lm.generate import BatchGenerator
 
-        batch_gen = BatchGenerator(text_model, max_tokens=1, stop_tokens={0})
+        batch_gen = BatchGenerator(text_model, max_tokens=1, stop_tokens=[[0]])
         uids = batch_gen.insert(
             [[1, 2, 3], [1]],
             max_tokens=[1, 1],
             samplers=[None, None],
         )
-        responses = batch_gen.next()
+        responses = []
+        for _ in range(4):
+            _, generation_responses = batch_gen.next()
+            responses.extend(generation_responses)
+            if len(responses) == 2:
+                break
 
         assert uids == [0, 1]
         assert len(responses) == 2

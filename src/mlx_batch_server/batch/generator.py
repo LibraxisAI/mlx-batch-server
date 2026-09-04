@@ -24,10 +24,10 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from mlx_lm.generate import BatchGenerator
 from mlx_lm.sample_utils import make_sampler
@@ -323,11 +323,16 @@ class BatchChatGenerator:
         """
         with self._generator_lock:
             # Get stop tokens from tokenizer
-            stop_tokens = set()
+            raw_stop_tokens = ()
             if hasattr(self.tokenizer, "eos_token_ids"):
-                stop_tokens = self.tokenizer.eos_token_ids
+                raw_stop_tokens = self.tokenizer.eos_token_ids
             elif hasattr(self.tokenizer, "_eos_token_ids"):
-                stop_tokens = self.tokenizer._eos_token_ids
+                raw_stop_tokens = self.tokenizer._eos_token_ids
+            if isinstance(raw_stop_tokens, int):
+                stop_token_ids: Iterable[int] = (raw_stop_tokens,)
+            else:
+                stop_token_ids = cast("Iterable[int]", raw_stop_tokens)
+            stop_tokens = [[int(token)] for token in stop_token_ids]
 
             if self._generator is None:
                 self._generator = BatchGenerator(
@@ -546,7 +551,9 @@ class BatchChatGenerator:
                 uids = gen.insert(
                     prompts,
                     max_tokens=max_tokens_list,
-                    samplers=samplers,
+                    # mlx-lm accepts per-request None for its default sampler,
+                    # although its public annotation omits that supported value.
+                    samplers=samplers,  # type: ignore[arg-type]
                 )
 
                 # Map UIDs to request IDs
@@ -562,8 +569,8 @@ class BatchChatGenerator:
                 )
 
                 while self._active_requests:
-                    responses = gen.next()
-                    if not responses:
+                    prompt_progress, responses = gen.next()
+                    if not prompt_progress and not responses:
                         break
 
                     for response in responses:

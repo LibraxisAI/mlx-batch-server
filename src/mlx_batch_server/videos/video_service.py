@@ -70,7 +70,9 @@ class MlxVideoAdapter:
 
     def capabilities(self) -> VideoCapabilities:
         reason = None
-        cached_models = [model for model in _SUPPORTED_MODELS if self._model_cached(model)]
+        cached_models = [
+            model for model in _SUPPORTED_MODELS if self._model_cached(model)
+        ]
         if not self.root.is_dir():
             reason = f"mlx-video checkout not found at {self.root}"
         elif not self.python.is_file():
@@ -223,7 +225,12 @@ class MlxVideoAdapter:
 
     @staticmethod
     def _offline() -> bool:
-        return os.environ.get("HF_HUB_OFFLINE", "").lower() in {"1", "true", "yes", "on"}
+        return os.environ.get("HF_HUB_OFFLINE", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     @staticmethod
     def _hub_cache() -> Path:
@@ -237,7 +244,9 @@ class MlxVideoAdapter:
 
     @classmethod
     def _model_cached(cls, model: str) -> bool:
-        snapshots = cls._hub_cache() / f"models--{model.replace('/', '--')}" / "snapshots"
+        snapshots = (
+            cls._hub_cache() / f"models--{model.replace('/', '--')}" / "snapshots"
+        )
         try:
             return any(entry.is_dir() for entry in snapshots.iterdir())
         except OSError:

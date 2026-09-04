@@ -12,6 +12,11 @@ maintainers = [
 requires-python = ">=3.11,<3.14"
 readme = "README.md"
 license = "MIT"
+license-files = [
+    "LICENSE",
+    "NOTICE",
+    "LICENSES/Apache-2.0.txt",
+]
 keywords = [
     "mlx",
     "ai",
@@ -36,9 +41,13 @@ dependencies = [
     "uvicorn>=0.34.0,<0.35",
     "rich>=13.9.4",
     # chat
-    "mlx-lm>=0.30.0",
+    "mlx==0.32.2",
+    "mlx-lm==0.31.3",
+    "transformers==5.14.1",
+    "nanobind==2.15.0",
     "python-multipart>=0.0.20,<0.0.21",
     "sse-starlette>=2.1.3,<3",
+    "httpx>=0.27.2,<0.28",
     "outlines==1.0.4",
     # models
     "huggingface-hub>=0.30",
@@ -57,6 +66,7 @@ dependencies = [
     "torch==2.10.0",
     "torchvision==0.25.0",
     "mlx-vlm",
+    "pymupdf>=1.24,<2",
 ]
 
 [project.urls]
@@ -98,7 +108,12 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/mlx_batch_server"]
+include = [
+    "src/mlx_batch_server",
+    "LICENSE",
+    "NOTICE",
+    "LICENSES/Apache-2.0.txt",
+]
 
 [tool.hatch.build.targets.wheel]
 include = ["src/mlx_batch_server"]
@@ -118,7 +133,8 @@ prerelease = "allow"
 environments = ["sys_platform == 'darwin'"]
 
 [tool.uv.sources]
-mlx-vlm = { path = "../mlx-vlm-local", editable = true }
+mlx-lm = { git = "https://github.com/ml-explore/mlx-lm.git", rev = "ab1806e8f5d6aa035973af194a1b9198ab4754dc" }
+mlx-vlm = { git = "https://github.com/LibraxisAI/mlx-vlm.git", rev = "1068e53849364373680daaf8e71ef280b4fcc68d" }
 mflux = { git = "https://github.com/plz12345/mflux.git", rev = "a9704fa1b0b8b58def97aed3bf14c1186ba18c66" }
 
 [tool.pytest.ini_options]
@@ -212,6 +228,32 @@ ignore = [
 "src/mlx_batch_server/operator/auth.py" = ["PLR0912"]
 "src/mlx_batch_server/health/ready.py" = ["PLC0415"]
 "src/mlx_batch_server/routers.py" = ["PLC0415"]
+# Canonical runtime state machines are intentionally explicit and branch-complete.
+"src/mlx_batch_server/responses/projector.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/responses/runtime_mapper.py" = ["PLR0912"]
+"src/mlx_batch_server/responses/runtime_projection.py" = ["PLR0912"]
+"src/mlx_batch_server/responses/runtime_router.py" = ["PLR0911"]
+"src/mlx_batch_server/responses/transport.py" = ["PLR0912", "PLR0915"]
+"src/mlx_batch_server/runtime/backends/legacy_mlx.py" = ["PLR0912"]
+"src/mlx_batch_server/runtime/backends/legacy_provider.py" = ["PLC0415", "PLR0911", "PLR0912"]
+"src/mlx_batch_server/runtime/turn.py" = ["PLR0912"]
+# Fusion code mirrors checkpoint and protocol branching; lazy imports preserve ABI isolation.
+"src/mlx_batch_server/admin/router.py" = ["PLC0415"]
+"src/mlx_batch_server/runtime/fusion/cache/lifecycle.py" = ["PLR0912"]
+"src/mlx_batch_server/runtime/fusion/concrete/composition.py" = ["PLC0415"]
+"src/mlx_batch_server/runtime/fusion/concrete/owner.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/runtime/fusion/concrete/provider.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/runtime/fusion/concrete/stepper.py" = ["PLR0912"]
+"src/mlx_batch_server/runtime/fusion/mtp/policy.py" = ["PLR0911"]
+"src/mlx_batch_server/runtime/fusion/qwen4_exp/model/config.py" = ["PLR0912"]
+"src/mlx_batch_server/runtime/fusion/qwen4_exp/model/tensor.py" = ["PLC0415", "PLR0911", "PLR0912", "PLR0915"]
+"src/mlx_batch_server/runtime/fusion/qwen4_exp/request_preparation.py" = ["PLR0912", "PLR0915"]
+"src/mlx_batch_server/runtime/fusion/qwen4_exp/vision/mrope.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/runtime/fusion/qwen4_exp/vision/splice.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/runtime/fusion/qwen4_exp/vision/tensor_tower.py" = ["PLR0402"]  # Literal import is part of the frozen runtime provenance contract
+"src/mlx_batch_server/tools/dialects/_common.py" = ["PLR0912"]
+"src/mlx_batch_server/tools/dialects/qwen.py" = ["PLR0911", "PLR0912"]
+"src/mlx_batch_server/tools/executor.py" = ["PLR0911"]
 # Compat module - monkeypatch jieba to avoid pkg_resources deprecation
 "src/mlx_batch_server/utils/compat.py" = ["PLC0415", "PLR0915", "PLR0402", "PTH120", "B904"]
 
@@ -246,6 +288,19 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "mlx_batch_server.responses.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "mlx_batch_server.runtime.fusion.qwen4_exp.model.tensor",
+    "mlx_batch_server.runtime.fusion.qwen4_exp.vision.tensor_processing",
+    "mlx_batch_server.runtime.fusion.qwen4_exp.vision.tensor_splice",
+    "mlx_batch_server.runtime.fusion.qwen4_exp.vision.tensor_tower",
+]
+# These four modules are the strict MLX tensor ABI boundary. Runtime arrays,
+# dynamic module trees, and quantized checkpoint payloads are not expressible
+# through the upstream mlx/mlx-lm stubs; their contracts are covered by the
+# focused tensor and model-load suites instead.
 ignore_errors = true
 
 [[tool.mypy.overrides]]

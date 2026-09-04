@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,8 @@ from mlx_batch_server.chat.openai.models import models as models_module
 def _reset_provenance(monkeypatch):
     monkeypatch.delenv(provenance.SOURCE_SHA_ENV, raising=False)
     monkeypatch.delenv(provenance.SOURCE_DIRTY_ENV, raising=False)
+    monkeypatch.delenv(provenance.DEPENDENCY_LOCK_SHA_ENV, raising=False)
+    monkeypatch.delenv(provenance.WHEEL_SHA_ENV, raising=False)
     provenance.get_runtime_provenance.cache_clear()
     yield
     provenance.get_runtime_provenance.cache_clear()
@@ -90,6 +93,44 @@ def test_explicit_build_stamp_does_not_inspect_git(monkeypatch):
     )
 
 
+def test_source_build_receipt_binds_lock_origins_and_manifest(monkeypatch, tmp_path):
+    lock = tmp_path / "uv.lock"
+    lock.write_bytes(b"version = 1\n")
+    monkeypatch.setenv(provenance.SOURCE_SHA_ENV, "a" * 40)
+    monkeypatch.setenv(provenance.SOURCE_DIRTY_ENV, "1")
+    monkeypatch.setattr(provenance, "_target_version", lambda _root: "0.6-test")
+
+    receipt = provenance.compose_source_build_receipt(
+        role_manifest_sha256="b" * 64,
+        repo_root=tmp_path,
+    )
+
+    assert receipt.target_sha == "a" * 40
+    assert receipt.source_dirty is True
+    assert receipt.dependency_lock_sha256 == sha256(lock.read_bytes()).hexdigest()
+    assert receipt.role_manifest_sha256 == "b" * 64
+    assert receipt.omlx_sha == "e467261edc786efd33b1e9023d5c4a827f8aa1c1"
+    assert receipt.mtplx_sha == "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab"
+
+
+def test_source_build_receipt_accepts_packager_lock_and_wheel_hashes(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv(provenance.DEPENDENCY_LOCK_SHA_ENV, "c" * 64)
+    monkeypatch.setenv(provenance.WHEEL_SHA_ENV, "d" * 64)
+    monkeypatch.setenv(provenance.SOURCE_SHA_ENV, "e" * 40)
+    monkeypatch.setenv(provenance.SOURCE_DIRTY_ENV, "0")
+    monkeypatch.setattr(provenance, "_target_version", lambda _root: "0.6-test")
+
+    receipt = provenance.compose_source_build_receipt(
+        role_manifest_sha256="f" * 64,
+        repo_root=tmp_path,
+    )
+
+    assert receipt.dependency_lock_sha256 == "c" * 64
+    assert receipt.wheel_sha256 == "d" * 64
+
+
 @pytest.mark.asyncio
 async def test_health_reports_frozen_source_provenance(monkeypatch):
     sha = "e" * 40
@@ -103,3 +144,9 @@ async def test_health_reports_frozen_source_provenance(monkeypatch):
 
     assert payload["source_sha"] == sha
     assert payload["source_dirty"] is True
+    assert payload["third_party_attributions"] == [
+        {
+            "text": "Powered by MTPLX",
+            "url": "https://github.com/youssofal/mtplx",
+        }
+    ]

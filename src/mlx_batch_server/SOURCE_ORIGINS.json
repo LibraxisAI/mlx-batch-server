@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "status": "source_integrated_compile_embargo_released",
+  "target": {
+    "repository": "https://github.com/LibraxisAI/mlx-batch-server.git",
+    "commit": "32cafd28b653b8c3c1794556b7adbb768b5250c7",
+    "license": "MIT"
+  },
+  "donors": {
+    "omlx": {
+      "repository": "https://github.com/jundot/omlx.git",
+      "commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "license": "Apache-2.0",
+      "notice_present": false,
+      "upstream_attributions": [
+        {
+          "project": "vllm-mlx",
+          "repository": "https://github.com/vllm-project/vllm-mlx",
+          "declared_by": "omlx/request.py; omlx/cache/paged_cache.py"
+        },
+        {
+          "project": "vLLM v1",
+          "repository": "https://github.com/vllm-project/vllm",
+          "declared_by": "omlx/cache/paged_cache.py",
+          "source_path": "vllm/v1/core/block_pool.py; vllm/v1/core/kv_cache_utils.py"
+        }
+      ]
+    },
+    "mtplx": {
+      "repository": "https://github.com/youssofal/mtplx.git",
+      "commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "license": "Apache-2.0",
+      "notice_present": true,
+      "required_product_attribution": "Powered by MTPLX | https://github.com/youssofal/mtplx",
+      "upstream_attributions": [
+        {
+          "project": "mlx-vlm",
+          "repository": "https://github.com/Blaizzy/mlx-vlm",
+          "license": "Apache-2.0",
+          "declared_by": "mtplx/vision/processing.py; mtplx/vision/qwen3_vl_tower.py"
+        },
+        {
+          "project": "mlx-vlm",
+          "repository": "https://github.com/Blaizzy/mlx-vlm",
+          "license": "MIT",
+          "declared_by": "mtplx/vision/mrope.py"
+        }
+      ]
+    }
+  },
+  "distribution_files": {
+    "project_license": "LICENSE",
+    "third_party_license": "LICENSES/Apache-2.0.txt",
+    "notices": "NOTICE"
+  },
+  "derived_files": [
+    {
+      "target_path": "runtime/events.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/server/core/events.py",
+      "license": "Apache-2.0",
+      "modifications": "Expanded the complete Responses output-item, content-part, text, reasoning, tool, usage and terminal lifecycle with stable identities and indices; deep-froze nested payloads; added target token names and a transport-neutral sequence wrapper."
+    },
+    {
+      "target_path": "runtime/turn.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/server/core/generation_turn.py",
+      "license": "Apache-2.0",
+      "modifications": "Rebuilt sequencing as a strict item, content, tool and usage state machine; added a bounded acknowledged foreign-thread bridge, one terminal and usage authority, capped weakly reclaimed subscribers, bounded replay, and isolated slow-subscriber overflow."
+    },
+    {
+      "target_path": "runtime/fusion/scheduler/contracts.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/request.py; omlx/scheduler.py",
+      "license": "Apache-2.0",
+      "modifications": "Reduced request lifecycle and scheduler state to immutable target-owned row-planning contracts; omitted HTTP, model-pool, cache, parser and tensor ownership. omlx/request.py identifies vllm-mlx as an upstream source."
+    },
+        {
+            "target_path": "runtime/fusion/scheduler/chassis.py",
+            "source_repository": "https://github.com/jundot/omlx.git",
+            "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+            "source_path": "omlx/scheduler.py",
+            "license": "Apache-2.0",
+            "modifications": "Recast continuous admission, late join, deferred cancellation and prefill/decode fairness as a dependency-free planner; GenerationTurn remains the sole event and terminal writer."
+        },
+        {
+            "target_path": "runtime/fusion/concrete/owner.py",
+            "source_repository": "https://github.com/jundot/omlx.git",
+            "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+            "source_path": "omlx/engine_core.py; omlx/request.py; omlx/scheduler.py",
+            "license": "Apache-2.0",
+            "modifications": "Rebuilt the one-thread request and tensor ownership lifecycle behind a target driver port; added strict runtime/request/lease identity, retryable abort and cleanup, bounded tombstones, facade leases and ordered shutdown without importing the donor server or control plane."
+        },
+        {
+            "target_path": "runtime/fusion/concrete/owner.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/model_scheduler.py; mtplx/cache_state.py; mtplx/models/qwen4_exp.py",
+            "license": "Apache-2.0",
+            "modifications": "Retained explicit model-owner serialization and Qwen4Exp MTP rollback ownership as target lifecycle invariants while leaving tensor mechanics behind the unresolved ABI driver port."
+        },
+        {
+            "target_path": "runtime/fusion/concrete/stepper.py",
+            "source_repository": "https://github.com/jundot/omlx.git",
+            "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+            "source_path": "omlx/scheduler.py; omlx/patches/mlx_lm_mtp/batch_generator.py",
+            "license": "Apache-2.0",
+            "modifications": "Reduced donor batch operation concepts to target-owned homogeneous text/vision prefill and shared decode receipts, strict row/accounting validation and acknowledged cancellation cleanup."
+        },
+        {
+            "target_path": "runtime/fusion/concrete/stepper.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/batching/scheduler.py; mtplx/models/qwen4_exp.py",
+            "license": "Apache-2.0",
+            "modifications": "Made exact MTP eligibility and rollback evidence explicit per scheduled decode batch, with fail-closed runtime facts and AR fallback until live semantic proof exists."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/execution.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/models/qwen4_exp.py; mtplx/cache_state.py",
+            "license": "Apache-2.0",
+            "modifications": "Defined the sole synchronous target execution boundary for Qwen4Exp reservation, exact MTP stepping, rollback, abort and cleanup while leaving model source untransplanted until dependency compatibility is proven."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/execution.py",
+            "source_repository": "https://github.com/jundot/omlx.git",
+            "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+            "source_path": "omlx/engine_core.py; omlx/scheduler.py; omlx/patches/mlx_lm_mtp/batch_generator.py",
+            "license": "Apache-2.0",
+            "modifications": "Collapsed owner-thread batch execution and lifecycle expectations into one injected target port without importing the donor scheduler, model pool, server or control plane."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/cache_adapter.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/models/qwen4_exp.py; mtplx/cache_state.py",
+            "license": "Apache-2.0",
+            "modifications": "Reduced Qwen4Exp QSA, GDN and PLE speculative state to one opaque owner-thread transaction with snapshot, capture, validated commit, exact rollback, stale-lease protection and fail-closed poisoning after uncertain mutation."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/model/config.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/models/qwen4_exp.py",
+            "license": "Apache-2.0",
+      "modifications": "Extracted complete execution geometry for Qwen4Exp text, MTP, PLE, QSA, M-RoPE and vision plus immutable module-specific quantization recipes, effective seed/EOS and vision token identity with no MLX or MLX-LM import."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/model/qsa_replay.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/qsa_mtp_precompute.py",
+            "license": "Apache-2.0",
+            "modifications": "Retained pure power-of-two QSA replay capacity and authoritative MTP-history repair planning while removing environment gates, cache duck typing and all tensor mutation."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/vision/processing.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/vision/processing.py",
+            "license": "Apache-2.0",
+            "modifications": "Reduced mlx-vlm-derived decoding and multi-image preprocessing to immutable whole-request contracts, opaque tensor handles, an eight-image bound, exact grid and pad-row receipts, and fail-closed request identity validation."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/vision/tower.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/vision/qwen3_vl_tower.py",
+            "license": "Apache-2.0",
+            "modifications": "Reduced the mlx-vlm-derived Qwen vision tower to injected opaque-row contracts that preserve per-image ordering, merged embedding row counts and optional deepstack receipts without owning tensor execution."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/vision/splice.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/vision/splice.py",
+            "license": "Apache-2.0",
+            "modifications": "Recast mutable solo-lane vision splice state as an immutable content-keyed plan plus a request-local owner-thread cursor, exact image spans, pure lookup windows and stale-identity rejection."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/vision/mrope.py",
+            "source_repository": "https://github.com/youssofal/mtplx.git",
+            "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+            "source_path": "mtplx/vision/mrope.py",
+            "license": "Apache-2.0",
+            "upstream_project": "mlx-vlm",
+            "upstream_license": "MIT",
+            "modifications": "Reimplemented the mlx-vlm-derived M-RoPE algorithm as a pure-Python immutable per-request table and digest with ordered multi-image grids and fail-closed video or pad-layout mismatch."
+        },
+        {
+            "target_path": "runtime/fusion/qwen4_exp/prefix_store.py",
+            "source_repository": "https://github.com/jundot/omlx.git",
+            "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+            "source_path": "omlx/cache/prefix_cache.py; omlx/cache/paged_ssd_cache.py",
+            "license": "Apache-2.0",
+            "modifications": "Recast donor namespace, parent-hash, lease, refcount, hot-LRU and optional SSD concepts as a tensor-free whole-boundary store for one opaque Qwen4Exp QSA, GDN, PLE and MTP checkpoint; added sealed media-context isolation and commit-only publication."
+        },
+        {
+            "target_path": "runtime/fusion/cache/contracts.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/cache/interface.py; omlx/cache/paged_cache.py; omlx/cache/prefix_cache.py; omlx/cache/paged_ssd_cache.py",
+      "license": "Apache-2.0",
+      "modifications": "Extracted tensor-free target ports, namespace facts and cleanup receipts. omlx/paged_cache.py identifies vllm-mlx and vLLM v1 as upstream sources."
+    },
+    {
+      "target_path": "runtime/fusion/cache/identity.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/cache/paged_ssd_cache.py",
+      "license": "Apache-2.0",
+      "modifications": "Expanded persisted-cache compatibility identity with target runtime, tokenizer, adapter, draft-model, MTP and TurboQuant dimensions."
+    },
+    {
+      "target_path": "runtime/fusion/cache/lifecycle.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/scheduler.py; omlx/cache/paged_cache.py; omlx/cache/prefix_cache.py; omlx/cache/paged_ssd_cache.py",
+      "license": "Apache-2.0",
+      "modifications": "Extracted namespace activation, request leasing and ordered idempotent cleanup into a coordinator that owns no tensors."
+    },
+    {
+      "target_path": "runtime/fusion/mtp/contracts.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/mtp_patch.py; mtplx/models/qwen4_exp.py",
+      "license": "Apache-2.0",
+      "modifications": "Reduced the exact probability-ratio verification and model MTP surfaces to protocol-neutral target contracts."
+    },
+    {
+      "target_path": "runtime/fusion/mtp/contracts.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted batch ownership, fallback reason and acceptance-stat concepts without copying the donor BatchGenerator."
+    },
+    {
+      "target_path": "runtime/fusion/mtp/policy.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/batching/scheduler.py",
+      "license": "Apache-2.0",
+      "modifications": "Made MTPLX's multi-row AR fallback an explicit target decision and retained singleton exactness as the initial guarantee."
+    },
+    {
+      "target_path": "runtime/fusion/mtp/policy.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
+      "license": "Apache-2.0",
+      "modifications": "Conservatively gated the donor's opt-in row-wise MTP path behind an explicit live-proof switch and aligned-cohort contract."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/probe.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/models/qwen4_exp.py",
+      "license": "Apache-2.0",
+      "modifications": "Extracted model-family recognition into a static probe with no MLX imports; MTP remains false until the concrete adapter and ABI are proven at runtime."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/probe.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/patches/mlx_vlm_qwen4_exp_compat; omlx/scheduler.py",
+      "license": "Apache-2.0",
+      "modifications": "Recorded Qwen4Exp text/VLM family support while exposing continuous batching, MTP and paged cache only as unproven contracts until a concrete adapter is verified."
+    },
+    {
+      "target_path": "responses/registry.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/server/protocols/responses/store.py",
+      "license": "Apache-2.0",
+      "modifications": "Added target principal isolation, reason-bearing cancellation, target-owned environment namespacing, terminal waiting and delete-race protection while retaining bounded MTPLX lifecycle semantics."
+    },
+    {
+      "target_path": "tools/dialects/qwen.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/api/tool_calling.py",
+      "license": "Apache-2.0",
+      "modifications": "Recast Qwen XML and JSON envelope parsing and marker suppression as a stateless cumulative ToolDialect with stable target-owned call identity."
+    },
+    {
+      "target_path": "tools/dialects/qwen.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/server/omlx_bridge/tool_calling.py",
+      "license": "Apache-2.0",
+      "modifications": "Retained MTPLX Qwen fallback behavior and malformed-envelope discipline while removing tokenizer, server and registry ownership."
+    },
+    {
+      "target_path": "tools/dialects/harmony.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/adapter/output_parser.py",
+      "license": "Apache-2.0",
+      "modifications": "Converted Harmony channel visibility and tool-recipient behavior from tokenizer-session output into a cumulative text ToolDialect."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/vision/tensor_processing.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/vision/processing.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted mlx-vlm-derived image preprocessing into an ordered eight-image owner-thread implementation bound to the target immutable checkpoint load plan."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/vision/tensor_tower.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/vision/qwen3_vl_tower.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted the mlx-vlm-derived tower to Qwen4Exp target naming, immutable shard mapping, exact module quantization, request receipts and owner-thread affinity."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/vision/tensor_splice.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/vision/splice.py",
+      "license": "Apache-2.0",
+      "modifications": "Replaced implicit request state with an identity-bound target cursor and exact tensor windows for prefill and MTP history replay."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/vision/tensor_mrope.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/vision/mrope.py; mtplx/models/qwen4_exp.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted the transitively MIT mlx-vlm M-RoPE algorithm into explicit per-request batch-one tensors while preserving dense-causal vision and sparse text selection semantics."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/model/sampling.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/sampling.py; mtplx/generation.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted the frozen NumPy sampler into a target-owned pure contract for deterministic filtering, per-request RNG, probability-ratio acceptance, residual correction and marginal-oracle tests; tensor execution wiring remains separately gated."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/model/tensor.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/models/qwen4_exp.py; mtplx/qsa_mtp_precompute.py; mtplx/cache_state.py; mtplx/attention_context.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted the Qwen4Exp QSA, GDN, PLE and embedded MTP tensor trunk to strict immutable target load plans, injected optional kernels and a batch-one row-serial execution port. Added exact greedy and stochastic singleton MTP verification, residual correction, request-local RNG, AR history repair, and sealed multi-image preprocessing/tower/splice/M-RoPE execution; all remain runtime-unverified under Compile Embargo."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/model/tensor.py",
+      "source_repository": "https://github.com/jundot/omlx.git",
+      "source_commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "source_path": "omlx/patches/mlx_vlm_qwen4_exp_compat/vendor/mlx_vlm/models/qwen4_exp/language.py",
+      "license": "Apache-2.0",
+      "modifications": "Adapted selective resident PLE shard lookup so each token touches only its required packed shard. Also retained the one-gather packed-shard fusion behind an explicit target capability and physical-memory admission, without importing the donor runtime or control plane."
+    },
+    {
+      "target_path": "runtime/fusion/qwen4_exp/model/tensor_support.py",
+      "source_repository": "https://github.com/youssofal/mtplx.git",
+      "source_commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "source_path": "mtplx/attention_context.py; mtplx/qsa_mtp_precompute.py; mtplx/models/qwen4_exp.py",
+      "license": "Apache-2.0",
+      "modifications": "Replaced donor process-global feature discovery with request-local context variables and explicit target-injected optional-kernel capability gates."
+    }
+  ]
+}

@@ -7,6 +7,7 @@ web_search, code_interpreter, etc.
 Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
 
+from .executor import RegistryToolExecutor
 from .registry import (
     BUILTIN_TOOLS,
     ToolRegistry,
@@ -19,6 +20,7 @@ from .registry import (
 
 __all__ = [
     "BUILTIN_TOOLS",
+    "RegistryToolExecutor",
     "ToolRegistry",
     "execute_tool",
     "extract_tool_calls",

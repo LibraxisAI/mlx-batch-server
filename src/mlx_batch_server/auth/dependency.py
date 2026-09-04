@@ -7,7 +7,8 @@ Implements the four security levels:
 - 2: HMAC, session, or API key (any one of them)
 - 3: session token only
 
-Returns a dict shaped as ``{user_id, session_id, auth_method, resolved_api_key?}``
+Returns a dict shaped as
+``{user_id, session_id, auth_method, response_owner_id, resolved_api_key?}``
 to give downstream code a single, consistent surface.
 """
 
@@ -17,12 +18,18 @@ import hmac as _hmac
 import logging
 from typing import Any
 
-from fastapi import HTTPException, Request, Security, status
+from fastapi import HTTPException, Request, Security, WebSocket, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from ..core.config import get_settings
 from .api_keys import validate_api_key as _validate_dynamic_key
 from .hmac import verify_hmac_request
+from .response_owner import (
+    build_api_key_response_owner,
+    build_hmac_response_owner,
+    build_open_response_owner,
+    build_session_response_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +68,17 @@ def build_open_auth_owner(client_host: str | None) -> str:
         or "127.0.0.1"
     )
     return f"open-{safe}"
+
+
+def _request_client_host(request: Request | None) -> str:
+    candidate = (
+        getattr(getattr(request, "client", None), "host", "127.0.0.1")
+        if request
+        else "127.0.0.1"
+    )
+    if not isinstance(candidate, str) or not candidate.strip():
+        return "127.0.0.1"
+    return candidate.strip()
 
 
 async def _resolve_api_key_auth(candidate: str | None) -> tuple[str, str] | None:
@@ -112,16 +130,13 @@ async def verify_auth(
     level = _normalized_security_level(raw_level)
 
     if level == 0:
-        client_host = (
-            getattr(getattr(request, "client", None), "host", "127.0.0.1")
-            if request
-            else "127.0.0.1"
-        )
+        client_host = _request_client_host(request)
         return {
             "user_id": f"bypass:{client_host}",
             "session_id": None,
             "auth_method": "bypass",
             "resolved_api_key": build_open_auth_owner(client_host),
+            "response_owner_id": build_open_response_owner(client_host),
         }
 
     if raw_level == 1:
@@ -141,7 +156,14 @@ async def verify_auth(
         and level != 3
     ):
         try:
-            return await verify_hmac_request(request)
+            info = await verify_hmac_request(request)
+            client_id = info.get("client_id")
+            if not isinstance(client_id, str) or not client_id:
+                raise RuntimeError("verified HMAC identity is missing client_id")
+            return {
+                **info,
+                "response_owner_id": build_hmac_response_owner(client_id),
+            }
         except HTTPException as e:
             logger.warning("HMAC auth failed: %s", e.detail)
             raise
@@ -153,7 +175,10 @@ async def verify_auth(
             info = await _resolve_session_auth(session_id)
             if info is not None:
                 info.setdefault("auth_method", "session")
-                return info
+                return {
+                    **info,
+                    "response_owner_id": build_session_response_owner(session_id),
+                }
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired session",
@@ -198,6 +223,7 @@ async def verify_auth(
                 "session_id": None,
                 "auth_method": method,
                 "resolved_api_key": key,
+                "response_owner_id": build_api_key_response_owner(key),
             }
 
     if candidates:
@@ -215,7 +241,42 @@ async def verify_auth(
             headers={"WWW-Authenticate": "Bearer, ApiKey"},
         )
 
-    return {"user_id": "anonymous", "session_id": None, "auth_method": "none"}
+    client_host = _request_client_host(request)
+    return {
+        "user_id": "anonymous",
+        "session_id": None,
+        "auth_method": "none",
+        "response_owner_id": build_open_response_owner(client_host),
+    }
+
+
+async def verify_websocket_auth(websocket: WebSocket) -> dict[str, Any]:
+    """Apply the HTTP auth contract to an empty-body WebSocket handshake."""
+
+    settings = get_settings()
+    api_key = websocket.headers.get(settings.api_key_header)
+    bearer_creds: HTTPAuthorizationCredentials | None = None
+    authorization = websocket.headers.get("authorization")
+    if authorization:
+        scheme, separator, credentials = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer" and credentials.strip():
+            bearer_creds = HTTPAuthorizationCredentials(
+                scheme=scheme,
+                credentials=credentials.strip(),
+            )
+
+    async def empty_body() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = dict(websocket.scope)
+    scope["type"] = "http"
+    scope["method"] = "GET"
+    request = Request(scope, receive=empty_body)
+    return await verify_auth(
+        request,
+        api_key=api_key,
+        bearer_creds=bearer_creds,
+    )
 
 
 async def verify_api_key(

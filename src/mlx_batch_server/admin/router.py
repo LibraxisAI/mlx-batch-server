@@ -8,12 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from ..auth.dependency import verify_auth
-from ..chat.mlx.runtime_aliases import get_runtime_aliases
-from ..chat.openai.models import models as model_routes
 from ..chat.openai.models.schema import (  # noqa: TC001
     ModelAliasRequest,
     ModelLoadRequest,
@@ -47,15 +45,27 @@ def _tool_status(name: str) -> dict[str, Any]:
     return status
 
 
-def _readiness_checks() -> list[dict[str, Any]]:
+def _readiness_checks(
+    role_status: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     cors = os.environ.get("MLX_BATCH_CORS", DEFAULT_CORS_ALLOW_ORIGINS)
     tools = [_tool_status(name) for name in ("loct", "aicx", "prview")]
+    port_detail = (
+        f"Role {role_status['role']} owns port {role_status['port']}."
+        if role_status is not None
+        else "Default runtime port is 10240; production roles are explicit."
+    )
+    runtime_detail: object = (
+        role_status
+        if role_status is not None
+        else "/v1/models/loaded and /health are wired."
+    )
     return [
         {
             "id": "port",
             "label": "Operator port",
             "ok": True,
-            "detail": "Default runtime port is 10240; production 8100 is untouched.",
+            "detail": port_detail,
         },
         {
             "id": "cors",
@@ -67,7 +77,7 @@ def _readiness_checks() -> list[dict[str, Any]]:
             "id": "runtime",
             "label": "Runtime introspection",
             "ok": True,
-            "detail": "/v1/models/loaded and /health are wired.",
+            "detail": runtime_detail,
         },
         {
             "id": "operator-tools",
@@ -90,12 +100,26 @@ async def admin_panel(_auth: dict = Depends(verify_auth)) -> HTMLResponse:
 
 
 @router.get("/api/admin/summary")
-async def admin_summary(_auth: dict = Depends(verify_auth)) -> dict[str, Any]:
+async def admin_summary(
+    http_request: Request,
+    _auth: dict = Depends(verify_auth),
+) -> dict[str, Any]:
     """Return the compact admin state used by the panel."""
-    health = await model_routes.health_check()
-    loaded = await model_routes.list_loaded_models()
-    aliases = get_runtime_aliases()
-    checks = _readiness_checks()
+    role_control = getattr(http_request.app.state, "role_control_service", None)
+    if role_control is None:
+        from ..chat.mlx.runtime_aliases import get_runtime_aliases
+        from ..chat.openai.models import models as model_routes
+
+        health = await model_routes.health_check()
+        loaded = await model_routes.list_loaded_models()
+        aliases = get_runtime_aliases()
+    else:
+        health = role_control.health_payload()
+        loaded = role_control.loaded_models_payload()
+        aliases = role_control.aliases_payload()["aliases"]
+    checks = _readiness_checks(
+        None if role_control is None else role_control.role_status()
+    )
     return {
         "status": "ok" if all(check["ok"] for check in checks) else "degraded",
         "pid": os.getpid(),
@@ -109,28 +133,59 @@ async def admin_summary(_auth: dict = Depends(verify_auth)) -> dict[str, Any]:
 
 @router.post("/api/admin/models/load")
 async def admin_load_model(
+    http_request: Request,
     request: ModelLoadRequest,
     _auth: dict = Depends(verify_auth),
 ) -> Any:
     """Load a model through the existing runtime-safe model endpoint."""
+    role_control = getattr(http_request.app.state, "role_control_service", None)
+    if role_control is not None:
+        try:
+            return await role_control.load_model(request)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    from ..chat.openai.models import models as model_routes
+
     return await model_routes.load_model(request)
 
 
 @router.post("/api/admin/models/unload")
 async def admin_unload_model(
+    http_request: Request,
     request: ModelUnloadRequest | None = None,
     _auth: dict = Depends(verify_auth),
 ) -> Any:
     """Unload a model through the existing runtime-safe model endpoint."""
+    role_control = getattr(http_request.app.state, "role_control_service", None)
+    if role_control is not None:
+        try:
+            return await role_control.unload_model(request)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    from ..chat.openai.models import models as model_routes
+
     return await model_routes.unload_model(request)
 
 
 @router.post("/api/admin/models/alias")
 async def admin_create_alias(
+    http_request: Request,
     request: ModelAliasRequest,
     _auth: dict = Depends(verify_auth),
 ) -> Any:
     """Create a runtime alias through the existing model endpoint."""
+    role_control = getattr(http_request.app.state, "role_control_service", None)
+    if role_control is not None:
+        try:
+            return role_control.register_alias(request)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from ..chat.openai.models import models as model_routes
+
     return await model_routes.create_model_alias(request)
 
 

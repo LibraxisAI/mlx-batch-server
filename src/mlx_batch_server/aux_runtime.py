@@ -11,7 +11,7 @@ from typing import Any
 
 from .utils.logger import logger
 
-RuntimeKey = tuple[str, str]
+AuxRuntimeKey = tuple[str, str]
 UnloadCallback = Callable[[], object]
 
 
@@ -36,13 +36,13 @@ class AuxiliaryRuntimeManager:
         self._clock = clock
         self._start_cleanup_thread = start_cleanup_thread
         self._condition = threading.Condition(threading.RLock())
-        self._resident: dict[RuntimeKey, _ResidentRuntime] = {}
-        self._active: dict[RuntimeKey, int] = {}
+        self._resident: dict[AuxRuntimeKey, _ResidentRuntime] = {}
+        self._active: dict[AuxRuntimeKey, int] = {}
         self._stop = False
         self._cleanup_thread: threading.Thread | None = None
 
     @staticmethod
-    def _key(lane: str, model_id: str) -> RuntimeKey:
+    def _key(lane: str, model_id: str) -> AuxRuntimeKey:
         return (lane.strip().lower(), model_id)
 
     def _ensure_cleanup_thread_locked(self) -> None:
@@ -59,7 +59,7 @@ class AuxiliaryRuntimeManager:
     def operation(self, lane: str, model_id: str) -> Iterator[None]:
         """Admit one queued/active operation before model loading can begin."""
         key = self._key(lane, model_id)
-        from .runtime_recycle import admit_heavy_runtime_work  # noqa: PLC0415
+        from .runtime_recycle import admit_heavy_runtime_work
 
         def admit() -> None:
             with self._condition:
@@ -81,7 +81,7 @@ class AuxiliaryRuntimeManager:
                 if entry is not None:
                     entry.deadline = self._clock() + self._idle_ttl_seconds
                 self._condition.notify_all()
-            from .runtime_recycle import notify_idle_process_recycler  # noqa: PLC0415
+            from .runtime_recycle import notify_idle_process_recycler
 
             notify_idle_process_recycler()
 
@@ -137,7 +137,7 @@ class AuxiliaryRuntimeManager:
         self.forget_lane(lane)
         self.register(lane, model_id, unload)
 
-    def retire_expired(self, *, now: float | None = None) -> list[RuntimeKey]:
+    def retire_expired(self, *, now: float | None = None) -> list[AuxRuntimeKey]:
         """Synchronously retire due idle runtimes; exposed for deterministic tests."""
         current_time = self._clock() if now is None else now
         with self._condition:
@@ -151,7 +151,7 @@ class AuxiliaryRuntimeManager:
             for _, entry in due:
                 entry.retiring = True
 
-        retired: list[RuntimeKey] = []
+        retired: list[AuxRuntimeKey] = []
         for key, entry in due:
             failed = False
             try:
@@ -170,7 +170,7 @@ class AuxiliaryRuntimeManager:
                 self._condition.notify_all()
 
         if retired:
-            from .runtime_recycle import request_idle_process_recycle  # noqa: PLC0415
+            from .runtime_recycle import request_idle_process_recycle
 
             request_idle_process_recycle("aux-runtime-idle-ttl")
         return retired
@@ -250,7 +250,7 @@ _aux_runtime_manager: AuxiliaryRuntimeManager | None = None
 def get_aux_runtime_manager() -> AuxiliaryRuntimeManager:
     global _aux_runtime_manager
     if _aux_runtime_manager is None:
-        from .core.config import get_settings  # noqa: PLC0415
+        from .core.config import get_settings
 
         _aux_runtime_manager = AuxiliaryRuntimeManager(
             get_settings().aux_model_idle_ttl_seconds
@@ -291,7 +291,7 @@ def replace_aux_runtime(
 def get_aux_runtime_snapshot() -> dict[str, Any]:
     runtime = _aux_runtime_manager
     if runtime is None:
-        from .core.config import get_settings  # noqa: PLC0415
+        from .core.config import get_settings
 
         return {
             "resident_by_lane": {},
