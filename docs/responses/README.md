@@ -1,8 +1,11 @@
 # Responses API
 
-MLX Batch Server implements OpenAI's `/v1/responses` API endpoint with full
-SSE streaming support. This directory contains documentation for the
-Responses API subsystem.
+MLX Batch Server implements OpenAI's `/v1/responses` API as the **primary**
+product surface, with HTTP/SSE and multiplexed WebSocket. This directory
+contains documentation for that subsystem.
+
+Production role `main` is port **8100** (fused Qwen Flash). Port **10240** is
+the unbound local developer bind, not a second product.
 
 - `HowToUse.md` - Usage examples and curl commands
 - `harmony.md` - GPT-OSS Harmony format support
@@ -11,13 +14,23 @@ Responses API subsystem.
 
 The Responses API is OpenAI's newer API format, designed for:
 - Server-sent events (SSE) streaming
+- Multiplexed WebSocket on the same `/v1/responses` path
 - Multi-turn conversation chaining via `previous_response_id`
 - Structured input format with content types
 
 ## Quick Start
 
 ```bash
-# Basic request
+# Production fused Flash owner (role main)
+curl -X POST http://127.0.0.1:8100/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit",
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Reply with exactly OK"}]}],
+    "reasoning": {"effort": "none"}
+  }'
+
+# Local unbound developer bind
 curl -X POST http://localhost:10240/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
