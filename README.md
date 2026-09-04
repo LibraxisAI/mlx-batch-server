@@ -2,7 +2,7 @@
 
 # MLX Batch Server
 
-*High-performance local AI inference server for Apple Silicon with batch processing*
+*Local OpenAI-compatible Responses inference owner for Apple Silicon*
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1--M4_Ultra-000000?logo=apple&logoColor=white)](https://developer.apple.com/metal/)
@@ -12,8 +12,12 @@
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI_API-compatible-412991?logo=openai&logoColor=white)]()
 [![Anthropic Compatible](https://img.shields.io/badge/Anthropic_API-compatible-D97757?logo=anthropic&logoColor=white)]()
 
-**MLX Batch Server** is a production-grade inference server optimized for Apple Silicon, featuring concurrent batch
-processing, OpenAI Responses API, and Harmony parser for GPT-OSS models.
+**MLX Batch Server** is the LibraxisAI inference owner. `/v1/responses` is the primary
+surface. Production role `main` on port **8100** runs fused Qwen Flash (`fused_mtp_mlx`)
+with native HTTP/SSE and multiplexed WebSocket, tools, vision, and MTP. Tensor execution
+is honestly **row-serial** today: health reports `tensor_batch_mode=row_serial` and
+`text.batch_capable=false`. The product name is historical; do not read it as true
+multi-row tensor batching.
 
 [Features](#-features) • [Quick Start](#-quick-start) • [API Reference](#-api-reference) • [Configuration](#-configuration)
 
@@ -25,12 +29,12 @@ processing, OpenAI Responses API, and Harmony parser for GPT-OSS models.
 
 This project is a **standalone fork** of [mlx-batch-server](https://github.com/madroidmaq/mlx-batch-server) by **[@madroidmaq](https://github.com/madroidmaq)**, whose excellent work laid the foundation for local MLX inference with OpenAI/Anthropic API compatibility.
 
-**VetCoders** extended the original project with:
+**VetCoders / LibraxisAI** extended the original project with:
 
-- Batch inference coordinator (10+ concurrent requests)
-- Full OpenAI Responses API (`/v1/responses`)
+- Native OpenAI `/v1/responses` as the primary product surface
+- Fused Qwen Flash runtime (`fused_mtp_mlx`) with signed 8100–8102 roles
 - Streaming Harmony parser for GPT-OSS models
-- Production hardening for 24/7 operation
+- Legacy mlx-lm batch coordinator kept as a compatibility lane, not the Flash product
 
 We maintain this as a separate project due to significant architectural divergence, while continuing to contribute
 improvements back to the upstream project where applicable.
@@ -41,22 +45,27 @@ improvements back to the upstream project where applicable.
 
 | Feature | Description |
 |---------|-------------|
-| **Batch Processing** | Handle 10+ concurrent requests via mlx-lm BatchGenerator |
-| **Responses API** | Full OpenAI `/v1/responses` with SSE streaming |
+| **Responses API** | Native `/v1/responses` with SSE and multiplexed WebSocket |
+| **Fused Flash runtime** | `fused_mtp_mlx` on signed role `main`/`8100`: text, vision, tools, MTP |
+| **Honest capabilities** | Fused Flash reports row-serial tensors; no true multi-row claim |
+| **Signed roles** | `8100` main, `8101` canary, `8102` vision (`legacy_mlx`) |
+| **Legacy mlx-lm batch** | Compatibility lane for unsupported models, not the Flash product |
 | **Harmony Parser** | Native GPT-OSS model support with channel parsing |
 | **Dual API** | Compatible with OpenAI and Anthropic SDKs |
-| **Model Management** | Dynamic load/unload endpoints |
+| **Model Management** | Dynamic load/unload/alias plus `/admin` |
 | **Privacy-First** | All processing happens locally on your Mac |
 
 ### What's Different From Upstream
 
 ```text
-├── Batch Coordinator      → Concurrent request batching (NEW)
-├── /v1/responses          → OpenAI Responses API (NEW)
-├── Harmony Streaming      → GPT-OSS channel parser (NEW)
-├── /v1/models/load        → Dynamic model loading (NEW)
-├── /v1/models/unload      → Model unloading (NEW)
-└── Production Config      → Environment-based settings (NEW)
+├── /v1/responses          → Primary OpenAI Responses surface (HTTP/SSE/WebSocket)
+├── Fused Flash backend    → fused_mtp_mlx owns Qwen Flash text/vision/tools/MTP
+├── Signed role topology   → 8100-8102 fail-closed manifest, not silent rebind
+├── Honest row-serial      → scheduler admits 8 / plans 4 decode rows; QSA is B=1
+├── Legacy batch lane      → mlx-lm BatchGenerator for unsupported models only
+├── Harmony Streaming      → GPT-OSS channel parser
+├── /v1/models/load        → Dynamic model loading
+└── /v1/models/unload      → Model unloading
 ```
 
 ---
@@ -67,7 +76,7 @@ improvements back to the upstream project where applicable.
 
 ```bash
 # Clone
-git clone https://github.com/VetCoders/mlx-batch-server.git
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
 cd mlx-batch-server
 
 # Core install (inference only)
@@ -90,12 +99,16 @@ Local development uses the editable sibling dependency `../mlx-vlm-local`, so up
 
 ### Run the Server
 
+Unbound local bind still defaults to **10240**. That is a developer bind, not the
+production product. Libraxis production uses the signed role manifest:
+`main`/`8100` fused Flash, `canary`/`8101`, `vision`/`8102`.
+
 ```bash
-# Default (port 10240)
+# Local unbound bind (developer default)
 mlx-batch-server
 
-# Custom port
-mlx-batch-server --port 10240
+# Production role main (fused Flash Responses owner)
+MLX_BATCH_RUNTIME_ROLE=main mlx-batch-server --port 8100
 
 # With debug logging
 MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
@@ -104,15 +117,16 @@ MLX_BATCH_LOG_LEVEL=debug mlx-batch-server
 ### Test It
 
 ```bash
-# Chat completion
-curl http://localhost:10240/v1/chat/completions \
+# Production Responses owner (role main / 8100)
+curl http://127.0.0.1:8100/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "mlx-community/Qwen3-0.6B-4bit",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "model": "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit",
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Reply with exactly OK"}]}],
+    "reasoning": {"effort": "none"}
   }'
 
-# Responses API (streaming)
+# Local unbound developer bind (10240) for a small mlx-lm model
 curl http://localhost:10240/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
@@ -162,29 +176,32 @@ The local `mlx-vlm` dependency already understands `qwen3.6-vl` and `qwen3.6-vl-
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `MLX_BATCH_RUNTIME_ROLE` | Signed role (`main`, `canary`, `vision`) | unbound |
 | `MLX_BATCH_LOG_LEVEL` | Logging level (`debug`, `info`, `warning`) | `info` |
 | `MLX_BATCH_CORS` | CORS origins (comma-separated) | `*` |
-| `MLX_BATCH_ENABLE_BATCH` | Enable batch inference | `true` |
-| `MLX_BATCH_BATCH_WINDOW_MS` | Batch collection window (ms) | `50` |
-| `MLX_BATCH_MAX_BATCH_SIZE` | Maximum concurrent requests | `10` |
+| `MLX_BATCH_ENABLE_BATCH` | Enable **legacy mlx-lm** batch coordinator (not fused Flash) | `true` |
+| `MLX_BATCH_BATCH_WINDOW_MS` | Legacy mlx-lm batch collection window (ms) | `50` |
+| `MLX_BATCH_MAX_BATCH_SIZE` | Legacy mlx-lm maximum concurrent requests | `10` |
 | `MLX_BATCH_DEFAULT_MODEL` | Model to load on startup | - |
 
-### Batch Processing
+### Legacy mlx-lm batch lane
 
-Batch processing collects incoming requests within a time window and processes them together, significantly improving
-throughput on Apple Silicon:
+The mlx-lm `BatchRequestCoordinator` still exists as a **compatibility lane** for
+unsupported models. Fused Flash on 8100 does **not** use it. That role admits up
+to 8 requests and may plan 4 decode rows, but QSA executes `B=1` row-serial and
+`/health` reports `text.batch_capable=false`.
 
 ```bash
-# Tune for your workload
+# Tune only the legacy mlx-lm compatibility lane
 MLX_BATCH_BATCH_WINDOW_MS=100 \
 MLX_BATCH_MAX_BATCH_SIZE=16 \
 mlx-batch-server
 ```
 
-**Performance (M3 Ultra, 512GB):**
-
-- Single request: ~50 tok/s
-- Batched (10 requests): ~35 tok/s per request = **350 tok/s total**
+Do not quote historical "350 tok/s batched" figures as fused Flash performance.
+Warm fused Flash receipts live in the 2026-09-04 acceptance artifacts (~53 tok/s
+direct median decode at concurrency 1). True multi-row tensor batching remains a
+future QSA/GDN cut, not a public promise.
 
 ---
 
@@ -338,8 +355,8 @@ make batch-stats     # Coordinator stats
 
 | Resource | Description |
 |----------|-------------|
-| [Responses API Guide](docs/responses/) | Full Responses API reference |
-| [Batch Processing Guide](docs/batch/) | Batch inference configuration |
+| [Responses API Guide](docs/responses/) | Primary `/v1/responses` surface |
+| [Legacy mlx-lm batch](docs/batch/) | Compatibility coordinator; not fused Flash |
 | [Harmony Parser](docs/responses/harmony.md) | GPT-OSS channel parsing |
 | [OpenAI API Guide](docs/openai-api.md) | OpenAI compatibility reference |
 | [Anthropic API Guide](docs/anthropic-api.md) | Anthropic compatibility reference |
@@ -358,7 +375,7 @@ make batch-stats     # Coordinator stats
 ## Contributing
 
 ```bash
-git clone https://github.com/VetCoders/mlx-batch-server.git
+git clone https://github.com/LibraxisAI/mlx-batch-server.git
 cd mlx-batch-server
 make setup && make test
 ```

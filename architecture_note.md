@@ -1,5 +1,13 @@
 # Architecture Note: Universal Multimodal Runtime Contract
 
+> **SUPERSEDED (2026-09-04 polarize).** This note describes the pre-fusion
+> wrapper / VLM split-brain. It is not current product truth.
+>
+> Current contract: `mlx-batch-server` owns `/v1/responses` on signed roles
+> 8100–8102. Role `main` (8100) is fused Qwen Flash (`fused_mtp_mlx`) with live
+> MTP and honest `tensor_batch_mode=row_serial` / `text.batch_capable=false`.
+> MTPLX and oMLX are bounded donors. See `AGENTS.md`.
+
 ## Current State
 
 The codebase currently suffers from a split-brain model lifecycle, leading to hidden dual residency for multimodal models.

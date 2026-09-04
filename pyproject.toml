@@ -1,7 +1,7 @@
 [project]
 name = "mlx-batch-server"
 version = "0.6.0-dev"
-description = "High-performance local AI inference server for Apple Silicon with batch processing, Responses API, and Harmony parser."
+description = "Local OpenAI-compatible Responses inference owner for Apple Silicon: fused Qwen Flash, signed 8100-8102 roles, honest row-serial MTP."
 authors = [
     { name = "Vetcoders", email = "hello@vetcoders.io" },
 ]

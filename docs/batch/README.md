@@ -1,24 +1,28 @@
 # Batch Processing Module
 
-MLX Batch Server includes a batch processing module for efficient handling of
-concurrent requests. This directory contains documentation for the batch
-inference subsystem.
+This directory documents the **legacy mlx-lm** batch coordinator
+(`BatchRequestCoordinator` / `BatchChatGenerator`). It is a compatibility lane
+for unsupported models.
+
+It is **not** the fused Qwen Flash product. Role `main` on 8100 uses
+`fused_mtp_mlx`, reports `tensor_batch_mode=row_serial` and
+`text.batch_capable=false`, and does not route `/v1/responses` through
+mlx-lm `BatchGenerator`.
 
 - `HowToUse.md` - Configuration and usage examples
 - `api-tester.html` - Interactive batch testing tool
 
-The batch module wraps mlx-lm's `BatchGenerator` to provide transparent
-batching of concurrent `/v1/responses` requests. When enabled, requests
-arriving within the batch window are collected and processed together,
-improving throughput for concurrent workloads.
+When the legacy lane is enabled, requests arriving within the batch window can
+be collected for unsupported mlx-lm models. Do not treat `/v1/batch/stats` as
+proof of fused Flash tensor batching.
 
 ## Quick Start
 
 ```bash
-# Start server with default batch settings
+# Legacy compatibility lane only (unbound local bind)
 mlx-batch-server
 
-# Check batch stats
+# Check legacy coordinator stats — not fused Flash tensor batching
 curl http://localhost:10240/v1/batch/stats | jq
 ```
 
@@ -36,12 +40,15 @@ Request 3 ─┘         │                          │
               Per-request queue ←───── Token dispatch
 ```
 
-## Target Performance
+## Target Performance (legacy mlx-lm lane only)
 
-- 10+ concurrent streaming requests
-- 500+ tok/s total throughput (70B model)
-- <500ms time-to-first-token per request
-- <150MB overhead per concurrent request
+These numbers are historical mlx-lm coordinator targets. They are **not** fused
+Flash promises. Fused Flash on 8100 is row-serial; warm concurrency-1 decode
+was measured near 53 tok/s in the 2026-09-04 paired acceptance run.
+
+- 10+ concurrent streaming requests (legacy coordinator)
+- Do not claim 500+ tok/s fused Flash tensor batching
+- <500ms time-to-first-token per request is a legacy target, not a fused SLA
 
 Refer to `HowToUse.md` for detailed configuration and testing instructions.
 
