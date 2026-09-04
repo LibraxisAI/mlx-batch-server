@@ -297,7 +297,9 @@ def test_ar_fallback_keeps_future_mtp_history_exact() -> None:
 def test_tensor_runtime_admits_only_sampling_it_can_preserve_exactly() -> None:
     source = _source(_TENSOR_PATH)
 
-    assert "sampling = _parse_tensor_sampling(canonical)" in source
+    assert "sampling = _parse_tensor_sampling(" in source
+    assert "context_length=self.plan.config.text.max_position_embeddings" in source
+    assert "prompt_tokens=len(tokens)" in source
     assert "_require_exact_greedy_sampling" not in source
     assert "acceptance_probability(target_p, draft_q, draft)" in source
     assert "residual_distribution(target_p, draft_q)" in source

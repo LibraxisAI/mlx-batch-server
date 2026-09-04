@@ -58,6 +58,7 @@ from mlx_lm.models.qwen3_next import (
 )
 from mlx_lm.tokenizer_utils import load as load_tokenizer
 
+from .....utils.model_limits import resolve_max_tokens
 from ....backends.fused_mtp_mlx import FusedStepResult
 from ....contracts import (
     GenerationRequest,
@@ -4538,7 +4539,6 @@ class _Qwen4ExpTensorRuntime:
             PreparedQwen4Prompt,
         ):
             raise ValueError("raw media requires a sealed PreparedQwen4Prompt")
-        sampling = _parse_tensor_sampling(canonical)
         if canonical.response_id in self._reservations:
             raise ValueError("duplicate tensor reservation")
         input_embeddings = None
@@ -4566,6 +4566,11 @@ class _Qwen4ExpTensorRuntime:
             raise ValueError(f"unsupported request modality: {request.modality!r}")
         if not tokens:
             raise ValueError("tokenized prompt must not be empty")
+        sampling = _parse_tensor_sampling(
+            canonical,
+            context_length=self.plan.config.text.max_position_embeddings,
+            prompt_tokens=len(tokens),
+        )
         prefix_context = _prefix_context_fingerprint(request)
         cache = self.model.make_cache()
         mtp_cache = self.model.make_mtp_cache()
@@ -5498,7 +5503,12 @@ _SAMPLER_FIELDS = {
 }
 
 
-def _parse_tensor_sampling(request: GenerationRequest) -> _TensorSamplingConfig:
+def _parse_tensor_sampling(
+    request: GenerationRequest,
+    *,
+    context_length: int,
+    prompt_tokens: int,
+) -> _TensorSamplingConfig:
     sampling = request.sampling
     allowed = _SAMPLER_FIELDS | {
         "max_output_tokens",
@@ -5528,14 +5538,25 @@ def _parse_tensor_sampling(request: GenerationRequest) -> _TensorSamplingConfig:
     ):
         raise ValueError("max_output_tokens and max_tokens must agree")
     max_output_tokens = canonical_limit if canonical_limit is not None else legacy_limit
-    if (
+    if max_output_tokens is not None and (
         isinstance(max_output_tokens, bool)
         or not isinstance(max_output_tokens, int)
         or max_output_tokens < 1
     ):
+        raise ValueError("Q4-TENSOR-TEXT max_output_tokens must be a positive integer")
+    if prompt_tokens >= context_length:
         raise ValueError(
-            "Q4-TENSOR-TEXT requires an explicit positive max_output_tokens"
+            "Q4-TENSOR-TEXT tokenized prompt length "
+            f"{prompt_tokens} must be smaller than model context length "
+            f"{context_length}"
         )
+    max_output_tokens = resolve_max_tokens(
+        requested=max_output_tokens,
+        context_length=context_length,
+        prompt_tokens=prompt_tokens,
+        fallback=None,
+        context_label=request.runtime.model_id,
+    )
     target_values = {
         key: sampling[key] for key in _SAMPLER_FIELDS if sampling.get(key) is not None
     }

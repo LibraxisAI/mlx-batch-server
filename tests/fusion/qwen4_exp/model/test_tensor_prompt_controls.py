@@ -20,7 +20,14 @@ def _request(
     tool_choice: object,
     *,
     reasoning: MappingProxyType[str, object] | None = None,
+    max_output_tokens: int | None = 32,
 ) -> GenerationRequest:
+    sampling: dict[str, object] = {
+        "parallel_tool_calls": True,
+        "tool_choice": tool_choice,
+    }
+    if max_output_tokens is not None:
+        sampling["max_output_tokens"] = max_output_tokens
     return GenerationRequest(
         response_id="resp_tools",
         runtime=RuntimeKey(
@@ -33,21 +40,48 @@ def _request(
             MappingProxyType({"type": "function", "name": "first"}),
             MappingProxyType({"type": "function", "name": "second"}),
         ),
-        sampling=MappingProxyType(
-            {
-                "max_output_tokens": 32,
-                "parallel_tool_calls": True,
-                "tool_choice": tool_choice,
-            }
-        ),
+        sampling=MappingProxyType(sampling),
         reasoning=reasoning or MappingProxyType({}),
     )
 
 
 def test_tensor_sampling_accepts_prompt_only_tool_controls() -> None:
-    sampling = _parse_tensor_sampling(_request("auto"))
+    sampling = _parse_tensor_sampling(
+        _request("auto"),
+        context_length=128,
+        prompt_tokens=16,
+    )
 
     assert sampling.max_output_tokens == 32
+
+
+def test_tensor_sampling_defaults_to_discovered_remaining_context() -> None:
+    sampling = _parse_tensor_sampling(
+        _request("auto", max_output_tokens=None),
+        context_length=128,
+        prompt_tokens=16,
+    )
+
+    assert sampling.max_output_tokens == 112
+
+
+def test_tensor_sampling_clamps_explicit_limit_to_remaining_context() -> None:
+    sampling = _parse_tensor_sampling(
+        _request("auto", max_output_tokens=256),
+        context_length=128,
+        prompt_tokens=16,
+    )
+
+    assert sampling.max_output_tokens == 112
+
+
+def test_tensor_sampling_rejects_prompt_that_fills_model_context() -> None:
+    with pytest.raises(ValueError, match="tokenized prompt length 128"):
+        _parse_tensor_sampling(
+            _request("auto", max_output_tokens=None),
+            context_length=128,
+            prompt_tokens=128,
+        )
 
 
 def test_tool_choice_controls_exact_template_tool_set() -> None:
