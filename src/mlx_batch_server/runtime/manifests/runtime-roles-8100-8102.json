@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "roles": [
+    {
+      "role": "main",
+      "port": 8100,
+      "requested_model": "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit",
+      "revision": "000544f8cddcbde27c1bc302deac2b5b4d45a5b1",
+      "model_dir": "/Volumes/Maciejowe/mlx_lm/models/huggingface/hub/models--grant-ai--Qwen3.8-Flash-Next-Abliterated-MLX-4bit/snapshots/000544f8cddcbde27c1bc302deac2b5b4d45a5b1",
+      "backend": "fused_mtp_mlx",
+      "pinned": true,
+      "local_required": true,
+      "capabilities": [
+        "text",
+        "vision",
+        "tools",
+        "mtp"
+      ]
+    },
+    {
+      "role": "canary",
+      "port": 8101,
+      "requested_model": "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit",
+      "revision": "000544f8cddcbde27c1bc302deac2b5b4d45a5b1",
+      "model_dir": "/Volumes/Maciejowe/mlx_lm/models/huggingface/hub/models--grant-ai--Qwen3.8-Flash-Next-Abliterated-MLX-4bit/snapshots/000544f8cddcbde27c1bc302deac2b5b4d45a5b1",
+      "backend": "fused_mtp_mlx",
+      "pinned": false,
+      "local_required": true,
+      "capabilities": [
+        "text",
+        "vision",
+        "tools",
+        "mtp"
+      ]
+    },
+    {
+      "role": "vision",
+      "port": 8102,
+      "requested_model": "LibraxisAI/Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-vmlx-mxfp8",
+      "revision": "bf82a9016781681d7b6d77f08c400ef917d82383",
+      "model_dir": "/Volumes/Maciejowe/mlx_lm/models/huggingface/hub/models--LibraxisAI--Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-vmlx-mxfp8/snapshots/bf82a9016781681d7b6d77f08c400ef917d82383",
+      "backend": "legacy_mlx",
+      "pinned": true,
+      "local_required": true,
+      "capabilities": [
+        "vision"
+      ]
+    }
+  ],
+  "signature": {
+    "algorithm": "sha256",
+    "sha256": "e9630032e90ff2fdf8b17b779e0276ef326afd39fd97889e023727be4ef0176a"
+  }
+}

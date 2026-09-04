@@ -18,6 +18,7 @@ from .provenance import get_runtime_provenance, stamp_runtime_environment
 DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:*,http://127.0.0.1:*,http://100.*:*,https://100.*:*"
 )
+PRODUCTION_ROLE_PORTS = frozenset({8100, 8101, 8102})
 # NOTE: The `100.*` wildcard covers Tailscale/CGNAT address ranges.
 # In a tightly controlled environment this is acceptable for local/tailnet use;
 # override via the MLX_BATCH_CORS env variable to restrict to localhost-only
@@ -88,10 +89,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CORS_ALLOW_ORIGINS,
         help='CORS origins, comma-separated (e.g., "*" or "http://localhost:3000")',
     )
+    parser.add_argument(
+        "--runtime-role",
+        choices=("main", "canary", "vision"),
+        default=None,
+        help="Enable the signed process-local runtime role",
+    )
+    parser.add_argument(
+        "--media-url-origin",
+        action="append",
+        default=[],
+        help="Exact HTTP(S) origin allowed for canonical media fetches",
+    )
     return parser
 
 
-def create_app():  # noqa: PLR0915
+def create_app(  # noqa: PLR0915
+    *,
+    responses_runtime=None,
+    responses_shutdown_timeout_s: float = 30.0,
+    worker_count: int | None = None,
+):
     """Create and configure the FastAPI application.
 
     This is called lazily to avoid slow imports when just showing --help.
@@ -109,60 +127,107 @@ def create_app():  # noqa: PLR0915
     from .middleware.logging import RequestResponseLoggingMiddleware
     from .routers import build_api_router
 
+    if responses_shutdown_timeout_s <= 0:
+        raise ValueError("responses_shutdown_timeout_s must be positive")
+
     settings = get_settings()
-    api_router = build_api_router(settings)
+    configured_worker_count = _configured_worker_count(worker_count)
+    responses_route_runtime = None
+    runtime_responses_router = None
+    role_control_service = None
+    runtime_control_router = None
+    if responses_runtime is not None:
+        from .responses.runtime_control import (
+            RoleControlService,
+            build_role_control_router,
+        )
+        from .responses.runtime_router import build_runtime_responses_router
+
+        responses_route_runtime = _resolve_responses_route_runtime(responses_runtime)
+        if (
+            getattr(responses_route_runtime, "requires_single_worker", False)
+            and configured_worker_count != 1
+        ):
+            raise RuntimeError(
+                "canonical Responses runtime requires exactly one worker"
+            )
+        runtime_responses_router = build_runtime_responses_router(
+            responses_route_runtime
+        )
+        role_control_service = RoleControlService(responses_route_runtime)
+        runtime_control_router = build_role_control_router(role_control_service)
+    api_router = build_api_router(
+        settings,
+        responses_router=runtime_responses_router,
+        runtime_control_router=runtime_control_router,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Application lifespan manager for startup/shutdown hooks."""
-        from .runtime_recycle import (
-            start_idle_process_recycler,
-            stop_idle_process_recycler,
-        )
+        legacy_runtime = responses_runtime is None
+        session_started = False
+        if legacy_runtime:
+            from .runtime_recycle import start_idle_process_recycler
 
-        await start_idle_process_recycler()
-        # Startup: opt-in session auth manager
-        if settings.session_auth_enabled:
-            os.environ.setdefault("SESSION_PROVIDER", settings.session_provider)
-            os.environ.setdefault("SESSION_REDIS_URL", settings.redis_url)
-            os.environ.setdefault(
-                "SESSION_DEFAULT_TTL_HOURS", str(settings.session_ttl_hours)
-            )
-            from .auth.session import session_auth
-
-            await session_auth.start()
+            await start_idle_process_recycler()
         try:
+            # Startup: opt-in session auth manager
+            if settings.session_auth_enabled:
+                os.environ.setdefault("SESSION_PROVIDER", settings.session_provider)
+                os.environ.setdefault("SESSION_REDIS_URL", settings.redis_url)
+                os.environ.setdefault(
+                    "SESSION_DEFAULT_TTL_HOURS", str(settings.session_ttl_hours)
+                )
+                from .auth.session import session_auth
+
+                await session_auth.start()
+                session_started = True
+            if role_control_service is not None:
+                await role_control_service.start_pinned_role()
             yield
         finally:
-            await stop_idle_process_recycler()
-            # Shutdown - cleanup batch coordinators
-            if settings.session_auth_enabled:
-                try:
-                    from .auth.session import session_auth
-
-                    await session_auth.stop()
-                except Exception:
-                    pass
-            from .images.image_runtime import shutdown_image_runtime_pool
-
             try:
-                from .batch import shutdown_all_coordinators
-                from .vision.vlm_batch import shutdown_all_vlm_coordinators
-
-                await shutdown_all_coordinators()
-                await shutdown_all_vlm_coordinators()
-            except ImportError:
-                pass  # Batch module may not be available
+                if responses_runtime is not None:
+                    await responses_runtime.shutdown(
+                        deadline_s=responses_shutdown_timeout_s
+                    )
             finally:
-                await shutdown_image_runtime_pool()
-                from .videos.video_runtime import shutdown_video_runtime
+                if session_started:
+                    try:
+                        from .auth.session import session_auth
 
-                await shutdown_video_runtime()
-                from .aux_runtime import shutdown_aux_runtime_manager
+                        await session_auth.stop()
+                    except Exception:
+                        pass
+                if legacy_runtime:
+                    from .runtime_recycle import stop_idle_process_recycler
 
-                await asyncio.to_thread(shutdown_aux_runtime_manager)
+                    await stop_idle_process_recycler()
+                    from .images.image_runtime import shutdown_image_runtime_pool
+
+                    try:
+                        from .batch import shutdown_all_coordinators
+                        from .vision.vlm_batch import shutdown_all_vlm_coordinators
+
+                        await shutdown_all_coordinators()
+                        await shutdown_all_vlm_coordinators()
+                    except ImportError:
+                        pass  # Batch module may not be available
+                    finally:
+                        await shutdown_image_runtime_pool()
+                        from .videos.video_runtime import shutdown_video_runtime
+
+                        await shutdown_video_runtime()
+                        from .aux_runtime import shutdown_aux_runtime_manager
+
+                        await asyncio.to_thread(shutdown_aux_runtime_manager)
 
     application = FastAPI(title="MLX Batch Server", lifespan=lifespan)
+    application.state.responses_runtime = responses_runtime
+    application.state.responses_route_runtime = responses_route_runtime
+    application.state.role_control_service = role_control_service
+    application.state.worker_count = configured_worker_count
 
     # Add request/response logging middleware
     application.add_middleware(RequestResponseLoggingMiddleware)
@@ -198,6 +263,74 @@ def create_app():  # noqa: PLR0915
     return application
 
 
+def _resolve_responses_route_runtime(responses_runtime):
+    """Return the one route graph owned by a direct or fused receipt."""
+
+    from .responses.runtime_router import ResponsesRouteRuntime
+
+    route_runtime = getattr(responses_runtime, "responses", responses_runtime)
+    if not isinstance(route_runtime, ResponsesRouteRuntime):
+        raise TypeError(
+            "responses_runtime must expose one controller/registry route graph"
+        )
+    if not callable(getattr(responses_runtime, "shutdown", None)):
+        raise TypeError("responses_runtime must expose shutdown(deadline_s=...)")
+    return route_runtime
+
+
+def _configured_worker_count(worker_count: int | None) -> int:
+    raw_count = (
+        os.environ.get("MLX_BATCH_WORKERS", "1")
+        if worker_count is None
+        else worker_count
+    )
+    if isinstance(raw_count, bool):
+        raise TypeError("worker_count must be an integer")
+    try:
+        value = int(raw_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("worker_count must be an integer") from exc
+    if value < 1:
+        raise ValueError("worker_count must be positive")
+    return value
+
+
+def _compose_process_runtime(
+    *,
+    runtime_role: str | None,
+    port: int,
+    media_url_origins: tuple[str, ...] = (),
+):
+    """Build the explicit role graph or reject ambiguous production ports."""
+
+    if runtime_role is None:
+        if port in PRODUCTION_ROLE_PORTS:
+            raise RuntimeError(
+                f"production port {port} requires an explicit runtime role"
+            )
+        return None
+
+    from .provenance import compose_source_build_receipt
+    from .responses.runtime_bootstrap import compose_role_responses_runtime
+    from .runtime.role_manifest import load_role_manifest, packaged_role_manifest_path
+
+    manifest = load_role_manifest(packaged_role_manifest_path())
+    spec = manifest.role_directory().resolve(runtime_role)
+    if port != spec.port:
+        raise RuntimeError(
+            f"runtime role {spec.name.value!r} owns port {spec.port}, not {port}"
+        )
+    build_receipt = compose_source_build_receipt(
+        role_manifest_sha256=manifest.role_manifest_sha256
+    )
+    return compose_role_responses_runtime(
+        process_role=spec.name,
+        role_manifest_path=manifest.source.path,
+        allowed_url_origins=media_url_origins,
+        build_receipt=build_receipt,
+    )
+
+
 # Lazy app instance for uvicorn
 # This is only created when uvicorn imports the module, not during CLI --help
 _app_instance = None
@@ -207,7 +340,22 @@ def _get_app():
     """Get or create the FastAPI app instance (for uvicorn)."""
     global _app_instance
     if _app_instance is None:
-        _app_instance = create_app()
+        runtime_role = os.environ.get("MLX_BATCH_RUNTIME_ROLE") or None
+        raw_port = os.environ.get("MLX_BATCH_PORT")
+        if runtime_role is not None and raw_port is None:
+            raise RuntimeError("MLX_BATCH_PORT is required with MLX_BATCH_RUNTIME_ROLE")
+        port = 10240 if raw_port is None else int(raw_port)
+        origins = tuple(
+            origin.strip()
+            for origin in os.environ.get("MLX_BATCH_MEDIA_URL_ORIGINS", "").split(",")
+            if origin.strip()
+        )
+        runtime = _compose_process_runtime(
+            runtime_role=runtime_role,
+            port=port,
+            media_url_origins=origins,
+        )
+        _app_instance = create_app(responses_runtime=runtime)
     return _app_instance
 
 
@@ -229,9 +377,29 @@ def start():
     # Set environment variables for app configuration
     os.environ["MLX_BATCH_LOG_LEVEL"] = args.log_level
     os.environ["MLX_BATCH_CORS"] = args.cors_allow_origins
+    os.environ["MLX_BATCH_WORKERS"] = str(args.workers)
+    os.environ["MLX_BATCH_PORT"] = str(args.port)
+    if args.runtime_role is None:
+        os.environ.pop("MLX_BATCH_RUNTIME_ROLE", None)
+    else:
+        os.environ["MLX_BATCH_RUNTIME_ROLE"] = args.runtime_role
+    os.environ["MLX_BATCH_MEDIA_URL_ORIGINS"] = ",".join(args.media_url_origin)
     # Capture the source checkout before Uvicorn imports the app or forks
     # workers. The inherited environment is the provenance contract.
     stamp_runtime_environment()
+
+    if args.runtime_role is not None and args.workers != 1:
+        parser.error("canonical Responses runtime requires exactly one worker")
+    responses_runtime = _compose_process_runtime(
+        runtime_role=args.runtime_role,
+        port=args.port,
+        media_url_origins=tuple(args.media_url_origin),
+    )
+    application = (
+        "mlx_batch_server.main:app"
+        if responses_runtime is None
+        else create_app(responses_runtime=responses_runtime, worker_count=args.workers)
+    )
 
     # NOW import uvicorn and start (lazy import)
     import uvicorn
@@ -242,7 +410,7 @@ def start():
 
     # Start server - uvicorn will import the app via __getattr__
     uvicorn.run(
-        "mlx_batch_server.main:app",
+        application,
         host=args.host,
         port=args.port,
         log_level=args.log_level,

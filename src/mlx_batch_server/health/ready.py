@@ -24,7 +24,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..core.config import get_settings
@@ -91,7 +91,13 @@ async def _check_auth_backends() -> bool:
 
 
 @router.get("/v1/ready")
-async def ready() -> JSONResponse:
+async def ready(request: Request) -> JSONResponse:
+    role_control = getattr(request.app.state, "role_control_service", None)
+    if role_control is not None:
+        status_code, payload = role_control.ready_payload()
+        payload["version"] = _package_version()
+        return JSONResponse(status_code=status_code, content=payload)
+
     settings = get_settings()
     checks: dict[str, Any] = {
         "process": True,

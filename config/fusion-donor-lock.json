@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "status": "resolved_lock_runtime_unverified",
+  "target": {
+    "repository": "https://github.com/LibraxisAI/mlx-batch-server.git",
+    "commit": "32cafd28b653b8c3c1794556b7adbb768b5250c7"
+  },
+  "platform": {
+    "implementation": "cpython",
+    "python": ">=3.11,<3.14",
+    "resolved_python": "3.13.0",
+    "system": "darwin",
+    "resolved_macos": "27.0",
+    "machine": "arm64"
+  },
+  "model": {
+    "repository": "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit",
+    "revision": "000544f8cddcbde27c1bc302deac2b5b4d45a5b1",
+    "architecture": "Qwen4ExpForConditionalGeneration",
+    "model_type": "qwen4_exp"
+  },
+  "candidate_abi": {
+    "mlx": {
+      "requirement": "==0.32.2",
+      "source": "registry",
+      "artifact_hash": "sha256:df8c75e509de868fca148dfeb38d92ce956eed386569c87caeb72bd16d2d6962"
+    },
+    "mlx-lm": {
+      "requirement": "git+https://github.com/ml-explore/mlx-lm.git",
+      "commit": "ab1806e8f5d6aa035973af194a1b9198ab4754dc",
+      "declared_version": "0.31.3",
+      "artifact_hash": "git-commit:ab1806e8f5d6aa035973af194a1b9198ab4754dc"
+    },
+    "transformers": {
+      "requirement": "==5.14.1",
+      "source": "registry",
+      "artifact_hash": "sha256:9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725"
+    },
+    "nanobind": {
+      "requirement": "==2.15.0",
+      "source": "registry",
+      "artifact_hash": "sha256:91dae9305c6242cf63ab11a5c41594e234e7a22fd9fcc2c5c4ba80724abc1787"
+    },
+    "mlx-vlm": {
+      "requirement": "git+https://github.com/LibraxisAI/mlx-vlm.git",
+      "commit": "1068e53849364373680daaf8e71ef280b4fcc68d",
+      "resolved_version": "0.6.14",
+      "purpose": "explicit legacy VLM families only",
+      "artifact_hash": "git-commit:1068e53849364373680daaf8e71ef280b4fcc68d"
+    }
+  },
+  "resolved_runtime_dependencies": {
+    "httpx": {
+      "requirement": ">=0.27.2,<0.28",
+      "resolved_version": "0.27.2",
+      "artifact_hash": "sha256:7bb2708e112d8fdd7829cd4243970f0c223274051cb35ee80c03301ee29a3df0"
+    },
+    "pymupdf": {
+      "requirement": ">=1.24,<2",
+      "resolved_version": "1.28.2",
+      "artifact_hash": "sha256:7113846b35dbf0a033f088e4f4fb543dabeb4b0b12c112966a1ca1ee2d5eacae"
+    }
+  },
+  "source_donors": {
+    "omlx": {
+      "repository": "https://github.com/jundot/omlx.git",
+      "commit": "e467261edc786efd33b1e9023d5c4a827f8aa1c1",
+      "license": "Apache-2.0",
+      "install_package": false,
+      "admitted_families": [
+        "omlx/request.py",
+        "omlx/scheduler.py",
+        "omlx/cache/",
+        "omlx/patches/mlx_lm_mtp/batch_generator.py",
+        "omlx/patches/mlx_vlm_qwen4_exp_compat/vendor/mlx_vlm/models/qwen4_exp/language.py"
+      ]
+    },
+    "mtplx": {
+      "repository": "https://github.com/youssofal/mtplx.git",
+      "commit": "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab",
+      "license": "Apache-2.0",
+      "install_package": false,
+      "admitted_families": [
+        "mtplx/models/qwen4_exp.py",
+        "mtplx/vision/",
+        "mtplx/attention_context.py",
+        "mtplx/qsa_mtp_precompute.py",
+        "mtplx/memory_plan.py",
+        "mtplx/cache_state.py"
+      ]
+    }
+  },
+  "rejected_runtime_surfaces": [
+    "omlx server, admin, EnginePool and ResponseStore",
+    "mtplx server, dashboard, SessionBank and model lifecycle",
+    "omlx DFlash and private ANE paths",
+    "donor HTTP routes and control planes"
+  ],
+  "known_conflicts": [
+    {
+      "surface": "target uv.lock",
+      "current": "mlx==0.32.2; mlx-lm==0.31.3@ab1806e8; transformers==5.14.1; mlx-vlm==0.6.14@1068e538",
+      "required_action": "resolved after Compile Embargo release; verify imports and runtime ABI"
+    },
+    {
+      "surface": "full oMLX package",
+      "current": "transformers>=5.12.1,<5.13",
+      "required_action": "do not install; adapt only admitted source families"
+    },
+    {
+      "surface": "native extension ABI",
+      "current": "lock and selected artifact hashes recorded",
+      "required_action": "build and import all native slices against this single lock"
+    }
+  ],
+  "release_gates": [
+    "resolve one lock without editable or floating inference dependencies",
+    "record registry and VCS artifact hashes",
+    "prove MLX, MLX-LM, Transformers and nanobind import compatibility",
+    "prove exact Qwen4Exp tokenizer, weight and vision load",
+    "bind the resolved lock SHA-256 into BuildReceipt.dependency_lock_sha256"
+  ],
+  "resolved_lock_sha256": "e57a1d6599646e00c5db740be2dad8a97f336f1311b847c2721698a19e0ad57d"
+}

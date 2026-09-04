@@ -17,6 +17,7 @@ _TEXT_KEYS = {"text", "input_text", "output_text"}
 _IMAGE_KEYS = {"input_image", "image_url", "image_base64"}
 _AUDIO_KEYS = {"input_audio", "audio_url"}
 _VIDEO_KEYS = {"input_video", "video_url"}
+_FILE_KEYS = {"input_file", "file_id", "file_url", "file_data"}
 
 DEFAULT_MODALITIES = ["text"]
 
@@ -42,26 +43,52 @@ def _normalise_part_dict(part: dict[str, Any]) -> dict[str, Any] | None:
             return None
         return {"type": "input_text", "text": _stringify(text_value)}
 
+    # File content. Preserve the wire-level reference or inline data so a
+    # capability-aware runtime can resolve it without a lossy text conversion.
+    if part_type in _FILE_KEYS or "file_url" in part or "file_data" in part:
+        file_id = part.get("file_id")
+        file_url = part.get("file_url")
+        file_data = part.get("file_data")
+        if not any(
+            isinstance(value, str) and value for value in (file_id, file_url, file_data)
+        ):
+            return None
+
+        normalised_file: dict[str, Any] = {"type": "input_file"}
+        for key, value in (
+            ("file_id", file_id),
+            ("file_url", file_url),
+            ("file_data", file_data),
+            ("filename", part.get("filename")),
+            ("detail", part.get("detail")),
+        ):
+            if isinstance(value, str) and value:
+                normalised_file[key] = value
+        return normalised_file
+
     # Image content
     if part_type in _IMAGE_KEYS or "image_url" in part or "image_base64" in part:
         image_base64 = part.get("image_base64")
-        image_url = part.get("image_url") or part.get("url") or part.get("file_id")
+        image_url = part.get("image_url") or part.get("url")
+        file_id = part.get("file_id")
 
         if isinstance(image_base64, dict):
-            image_base64 = (
-                image_base64.get("data")
-                or image_base64.get("url")
-                or image_base64.get("file_id")
-            )
+            nested = image_base64
+            image_base64 = nested.get("data") or nested.get("url")
+            file_id = file_id or nested.get("file_id")
         if isinstance(image_url, dict):
-            image_url = image_url.get("url") or image_url.get("file_id")
+            nested = image_url
+            image_url = nested.get("url")
+            file_id = file_id or nested.get("file_id")
 
-        if not image_base64 and not image_url:
+        if not image_base64 and not image_url and not file_id:
             return None
 
         normalised: dict[str, Any] = {"type": "input_image"}
         if image_base64:
             normalised["image_base64"] = image_base64
+        elif file_id:
+            normalised["file_id"] = file_id
         elif isinstance(image_url, str) and image_url.startswith("data:"):
             normalised["image_base64"] = image_url
         else:
@@ -209,7 +236,7 @@ def has_media_content(normalised_body: dict[str, Any]) -> bool:
         return True
 
     # Check input turns for media parts
-    media_types = {"input_image", "input_audio", "input_video"}
+    media_types = {"input_image", "input_audio", "input_video", "input_file"}
     for turn in normalised_body.get("input", []):
         if not isinstance(turn, dict):
             continue
@@ -259,6 +286,20 @@ def parts_to_plaintext(parts: Iterable[dict[str, Any]] | Any) -> str:
             url = part.get("video_url")
             if url:
                 lines.append(f"[Video: {url}]")
+        elif part_type == "input_file":
+            reference = (
+                part.get("filename")
+                or part.get("file_id")
+                or part.get("file_url")
+                or part.get("file_data")
+            )
+            if reference:
+                value = str(reference)
+                lines.append(
+                    f"[File: {value[:50]}...]"
+                    if len(value) > 50
+                    else f"[File: {value}]"
+                )
         elif part_type and part_type.startswith("output_"):
             text = part.get("text")
             if text:

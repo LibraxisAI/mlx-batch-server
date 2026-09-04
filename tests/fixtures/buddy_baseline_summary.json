@@ -1,0 +1,16 @@
+{
+  "source_sha256": "382c7ece2bfeaadcf85ec4771d844064ffec51f057acc7c034f9f1ae3e40b52e",
+  "event_count": 691,
+  "sequence_min": 0,
+  "sequence_max": 690,
+  "unique_sequences": 691,
+  "response_id": "resp_8baceb84a5b246498087dc6a99398867",
+  "terminal_type": "response.completed",
+  "output_item_count": 8,
+  "function_call_count": 3,
+  "reasoning_delta_count": 302,
+  "output_text_delta_count": 358,
+  "parallel_tool_calls": false,
+  "provider": "LibraxisAI/MTPLX",
+  "upstream_model": "qwen3.8-27b-abliterated-mtplx-6bit"
+}

@@ -1,0 +1,253 @@
+{
+  "schema_version": "three-more-responses-north-star.v1",
+  "consumer": {
+    "repository": "https://github.com/div0-space/3more-studio.git",
+    "commit": "c20c31e1789ad82612d719c307dee96d67f27853",
+    "source_files": [
+      "src/lib/xai/responses.ts",
+      "src/lib/xai/browser-stream.ts",
+      "src/lib/xai/agent.server.ts"
+    ],
+    "current_transport": "responses-sse",
+    "target_transport": "responses-websocket",
+    "fallback_transport": "responses-sse",
+    "max_images_per_turn": 8,
+    "max_tool_rounds": 8,
+    "first_activity_timeout_ms": 120000,
+    "launch_input_modalities": ["input_text", "input_image", "input_file"],
+    "video_generation_owner": "3more-generation-job-lane"
+  },
+  "official_contracts": [
+    "https://developers.openai.com/api/docs/guides/websocket-mode",
+    "https://developers.openai.com/api/docs/guides/steering",
+    "https://developers.openai.com/api/reference/resources/responses/websocket-events"
+  ],
+  "connection_contract": {
+    "max_active_responses": 16,
+    "max_named_streams": 32,
+    "same_lane_order": "fifo-no-overlap",
+    "different_lanes": "concurrent-interleaving",
+    "routine_client_events": [
+      "response.create"
+    ],
+    "capability_gated_client_events": [
+      "response.steer"
+    ],
+    "steer_policy": "Flash returns request-scoped steering_not_supported until semantic steering is proven; no fake acceptance",
+    "forbidden_routine_client_events": [
+      "response.inject",
+      "response.cancel",
+      "ping"
+    ],
+    "liveness": "websocket-ping-pong"
+  },
+  "commands": {
+    "photo_initial": {
+      "type": "response.create",
+      "stream_id": "studio.photo",
+      "model": "buddy",
+      "store": false,
+      "instructions": "${BUDDY_SYSTEM_AND_PHOTO_LENS}",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Porownaj osiem kadrow i odczytaj dolaczony brief."
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_1_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_2_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_3_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_4_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_5_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_6_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_7_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_image",
+              "image_url": "${IMAGE_8_DATA_URL}",
+              "detail": "high"
+            },
+            {
+              "type": "input_file",
+              "file_data": "${BRIEF_FILE_DATA}",
+              "filename": "session-brief.pdf"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "inspect_canvas",
+          "description": "Return the authoritative current canvas receipt.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "strict": true
+        },
+        {
+          "type": "function",
+          "name": "render_canvas",
+          "description": "Render a new canvas version from an approved intent.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "prompt": {
+                "type": "string"
+              },
+              "route": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "prompt",
+              "route"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      ],
+      "parallel_tool_calls": true,
+      "metadata": {
+        "product": "3more-studio",
+        "lens": "photo",
+        "mode": "chat",
+        "thread_id": "${THREAD_ID}",
+        "round_id": "${ROUND_ID}"
+      }
+    },
+    "photo_tool_continuation": {
+      "type": "response.create",
+      "stream_id": "studio.photo",
+      "model": "buddy",
+      "store": false,
+      "previous_response_id": "${PHOTO_RESPONSE_ID}",
+      "input": [
+        {
+          "type": "function_call_output",
+          "call_id": "${INSPECT_CANVAS_CALL_ID}",
+          "output": "${INSPECT_CANVAS_JSON_RECEIPT}"
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Widok kanwy po inspect_canvas. Ocen go wzrokiem."
+            },
+            {
+              "type": "input_image",
+              "image_url": "${CANVAS_VIEW_DATA_URL}",
+              "detail": "high"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "tool_choice": "none"
+    },
+    "writer_parallel": {
+      "type": "response.create",
+      "stream_id": "studio.writer",
+      "model": "buddy",
+      "store": false,
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Napisz podpis do wybranego kadru."
+            }
+          ]
+        }
+      ]
+    },
+    "photo_steer": {
+      "type": "response.steer",
+      "previous_response_id": "${ACTIVE_PHOTO_RESPONSE_ID}",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Skup sie na spojrzeniu i swietle twarzy."
+            },
+            {
+              "type": "input_image",
+              "image_url": "${CROP_DATA_URL}",
+              "detail": "original"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "http_cancel": {
+    "method": "POST",
+    "path": "/v1/responses/${RESPONSE_ID}/cancel"
+  },
+  "buddy_quality_gate": {
+    "baseline_sha256": "382c7ece2bfeaadcf85ec4771d844064ffec51f057acc7c034f9f1ae3e40b52e",
+    "golden_dimensions": [
+      "image_specific_observations",
+      "tool_choice_and_arguments",
+      "canvas_action",
+      "final_answer_quality"
+    ],
+    "policy": "protocol correctness cannot compensate for a worse Buddy answer"
+  },
+  "acceptance_invariants": [
+    "photo_initial_preserves_all_eight_images_and_the_file_reference",
+    "reasoning_and_output_text_never_repeat_the_same_content",
+    "function_call_identity_is_stable_and_each_side_effect_executes_once",
+    "tool_continuation_preserves_call_id_and_places_receipts_before_canvas_views",
+    "previous_response_id_continuations_do_not_repeat_instructions",
+    "same_stream_id_is_fifo_and_different_stream_ids_can_interleave",
+    "named_lane_events_and_request_scoped_errors_echo_stream_id",
+    "terminal_sse_and_websocket_events_carry_the_same_full_response",
+    "cancel_or_disconnect_waits_for_runtime_cleanup_before_one_terminal",
+    "routine_websocket_never_accepts_beta_response_inject",
+    "flash_steering_is_explicitly_unsupported_until_capability_proof",
+    "buddy_quality_preserves_or_improves_the_captured_baseline",
+    "no_cloud_fallback_occurs_for_local_unavailability"
+  ]
+}

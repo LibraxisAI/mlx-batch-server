@@ -32,6 +32,7 @@ class ContentPartType(StrEnum):
     INPUT_IMAGE = "input_image"
     INPUT_VIDEO = "input_video"
     INPUT_AUDIO = "input_audio"
+    INPUT_FILE = "input_file"
     OUTPUT_TEXT = "output_text"
     REASONING_TEXT = "reasoning_text"
 
@@ -45,6 +46,10 @@ class ContentPart(BaseModel):
     image_base64: str | None = None
     video_url: str | None = None
     audio_url: str | None = None
+    file_id: str | None = None
+    file_url: str | None = None
+    file_data: str | None = None
+    filename: str | None = None
     detail: str | None = None  # For images: "auto", "low", "high"
 
 
