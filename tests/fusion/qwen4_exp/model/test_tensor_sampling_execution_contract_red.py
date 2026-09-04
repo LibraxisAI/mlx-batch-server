@@ -94,7 +94,12 @@ def test_reserve_builds_one_seeded_rng_only_when_sampling_needs_it() -> None:
         and "default_rng" in ast.unparse(node)
     ]
 
-    assert "sampling = _parse_tensor_sampling(canonical)" in reserve
+    assert "sampling = _parse_tensor_sampling(" in reserve
+    assert "context_length=self.plan.config.text.max_position_embeddings" in reserve
+    assert "prompt_tokens=len(tokens)" in reserve
+    assert reserve.index("if not tokens") < reserve.index(
+        "sampling = _parse_tensor_sampling("
+    )
     assert "np.random.default_rng(sampling.seed)" in reserve
     assert "if sampling.needs_rng" in reserve
     assert "else None" in reserve
