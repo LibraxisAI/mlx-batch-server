@@ -10,6 +10,7 @@ from mlx_batch_server.runtime.contracts import (
     RuntimeKey,
 )
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.tensor import (
+    _chat_template_messages,
     _chat_template_reasoning,
     _chat_template_tools,
     _parse_tensor_sampling,
@@ -137,4 +138,61 @@ def test_invalid_reasoning_controls_fail_before_tokenization() -> None:
     with pytest.raises(ValueError, match=r"reasoning\.effort"):
         _chat_template_reasoning(
             _request("none", reasoning=MappingProxyType({"effort": "minimal"}))
+        )
+
+
+def test_chat_template_projects_developer_without_mutating_lineage() -> None:
+    messages = (
+        MappingProxyType(
+            {
+                "role": "developer",
+                "content": (
+                    MappingProxyType({"type": "input_text", "text": "Be precise."}),
+                ),
+            }
+        ),
+        MappingProxyType({"role": "user", "content": "Hello"}),
+    )
+
+    rendered = _chat_template_messages(messages)
+
+    assert rendered == [
+        {"role": "system", "content": "Be precise."},
+        {"role": "user", "content": "Hello"},
+    ]
+    assert messages[0]["role"] == "developer"
+
+
+def test_chat_template_coalesces_leading_instruction_roles_in_order() -> None:
+    rendered = _chat_template_messages(
+        (
+            {"role": "system", "content": "Platform policy."},
+            {"role": "developer", "content": "Product voice."},
+            {
+                "role": "tool",
+                "content": "receipt",
+                "call_id": "call_1",
+                "type": "function_call_output",
+            },
+        )
+    )
+
+    assert rendered == [
+        {"role": "system", "content": "Platform policy.\n\nProduct voice."},
+        {
+            "role": "tool",
+            "content": "receipt",
+            "call_id": "call_1",
+            "type": "function_call_output",
+        },
+    ]
+
+
+def test_chat_template_rejects_late_developer_role() -> None:
+    with pytest.raises(ValueError, match="must precede conversation"):
+        _chat_template_messages(
+            (
+                {"role": "user", "content": "Hello"},
+                {"role": "developer", "content": "Replace policy."},
+            )
         )
