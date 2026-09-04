@@ -4359,6 +4359,52 @@ def _render_prepared_messages(
     return rendered, image_count
 
 
+def _chat_template_instruction_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, Sequence) or isinstance(content, str | bytes):
+        raise ValueError("Qwen4Exp instruction content must be text")
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, Mapping):
+            raise ValueError("Qwen4Exp instruction parts must be mappings")
+        text = item.get("text")
+        if not isinstance(text, str):
+            raise ValueError("Qwen4Exp instruction messages cannot contain media")
+        parts.append(text)
+    return "".join(parts)
+
+
+def _chat_template_messages(
+    messages: Sequence[Mapping[str, Any]],
+) -> list[dict[str, object]]:
+    """Project canonical Responses roles onto the Qwen checkpoint template."""
+
+    instructions: list[str] = []
+    rendered: list[dict[str, object]] = []
+    conversation_started = False
+    for message in messages:
+        role = message.get("role")
+        if role in {"system", "developer"}:
+            if conversation_started:
+                raise ValueError(
+                    "Qwen4Exp system/developer messages must precede conversation"
+                )
+            instructions.append(_chat_template_instruction_text(message.get("content")))
+            continue
+        conversation_started = True
+        rendered.append(dict(message))
+    if instructions:
+        rendered.insert(
+            0,
+            {
+                "role": "system",
+                "content": "\n\n".join(part for part in instructions if part),
+            },
+        )
+    return rendered
+
+
 def _expand_image_pad_tokens(
     token_ids: tuple[int, ...],
     *,
@@ -4547,7 +4593,7 @@ class _Qwen4ExpTensorRuntime:
             if canonical.media:
                 raise ValueError("text modality cannot carry canonical media")
             prompt = self.tokenizer.apply_chat_template(
-                list(canonical.messages),
+                _chat_template_messages(canonical.messages),
                 tools=_chat_template_tools(canonical),
                 tokenize=True,
                 add_generation_prompt=True,
@@ -4620,7 +4666,7 @@ class _Qwen4ExpTensorRuntime:
                 "sealed message images must match the resolved bundle",
             )
         tokenized = self.tokenizer.apply_chat_template(
-            rendered,
+            _chat_template_messages(rendered),
             tools=_chat_template_tools(request),
             tokenize=True,
             add_generation_prompt=True,
