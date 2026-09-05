@@ -12,23 +12,36 @@ re-deciding, so the streaming and non-streaming paths cannot drift apart. A
 caller that drives the engine directly — the documented substitution seam —
 gets the ``detached`` profile classified here, so no request can reach the
 turn source unclassified.
+
+Two protocol decisions are resolved here and handed to the projector, which
+is not allowed to guess either of them: whether Anthropic thinking may reach
+the wire (and who signs it), and which capacity lane actually served the
+turn. Both read the admitted profile — never the shape of the runtime events
+that come back.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from mlx_batch_server.utils.logger import logger
 
+from .anthropic_schema import ResponseServiceTier, ThinkingConfigEnabled
 from .capabilities import (
+    AnthropicCapabilityProfile,
     CapabilityAdmission,
+    CapabilityStatus,
     detached_profile,
     enforce_capabilities,
 )
-from .errors import AnthropicAPIError
-from .projector import AnthropicMessageProjector
+from .errors import AnthropicAPIError, UnsupportedCapabilityError
+from .projector import (
+    AnthropicMessageProjector,
+    ThinkingProjection,
+    ThinkingSignatureOwner,
+)
 from .request_mapper import build_turn
 from .turn_source import AnthropicTurnSource, require_turn_source
 
@@ -42,6 +55,12 @@ if TYPE_CHECKING:
     )
 
 
+#: The one capacity lane this process serves. Local inference has no priority
+#: queue and no batch lane, so ``auto`` and ``standard_only`` both land here —
+#: and the response says so instead of echoing the request back.
+DELIVERED_SERVICE_TIER: Final = ResponseServiceTier.STANDARD
+
+
 def new_message_id() -> str:
     """Mint one message identifier in Anthropic's ``msg_`` shape."""
 
@@ -51,8 +70,18 @@ def new_message_id() -> str:
 class AnthropicMessagesEngine:
     """Protocol-side owner of one Anthropic Messages turn."""
 
-    def __init__(self, *, turn_source: AnthropicTurnSource | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        turn_source: AnthropicTurnSource | None = None,
+        thinking_signature_owner: ThinkingSignatureOwner | None = None,
+    ) -> None:
         self._turn_source = turn_source
+        # No production owner is bound anywhere in this repository, and the
+        # public capability profile says enabled thinking is unsupported. The
+        # parameter exists so admitting thinking later is one explicit
+        # binding — not so that today's surface can pretend it has one.
+        self._thinking_signature_owner = thinking_signature_owner
 
     def _source(self) -> AnthropicTurnSource:
         return self._turn_source or require_turn_source()
@@ -63,14 +92,63 @@ class AnthropicMessagesEngine:
         admission: CapabilityAdmission | None,
     ) -> tuple[AnthropicMessageProjector, AsyncIterator[TurnEvent]]:
         if admission is None:
-            enforce_capabilities(request, detached_profile(request.model))
+            admission = enforce_capabilities(request, detached_profile(request.model))
+        profile = admission.profile
+        # Both decisions are taken before ``build_turn`` and before the turn
+        # source is touched, so a refusal is an HTTP failure — on the
+        # streaming transport too, where the caller has not yet been handed a
+        # StreamingResponse and no SSE byte can exist.
+        thinking = self._thinking_projection(request, profile)
+        service_tier = _admitted_service_tier(request, profile)
         turn = build_turn(request)
         projector = AnthropicMessageProjector(
             message_id=new_message_id(),
             # The alias the client asked for, held stable for the whole turn.
             model_alias=request.model,
+            thinking=thinking,
+            service_tier=service_tier,
         )
         return projector, self._source().stream(turn).__aiter__()
+
+    def _thinking_projection(
+        self,
+        request: MessagesRequest,
+        profile: AnthropicCapabilityProfile,
+    ) -> ThinkingProjection:
+        """Decide, from the profile alone, whether thinking may be projected.
+
+        Omitted and disabled thinking are refused *output*, not refused
+        requests: the turn runs normally and simply carries no thinking on the
+        wire, however much the runtime reasons internally.
+        """
+
+        if request.thinking is None or not isinstance(
+            request.thinking, ThinkingConfigEnabled
+        ):
+            return ThinkingProjection.refused()
+
+        entry = profile.classification("thinking.enabled", "thinking.type")
+        if entry.status is CapabilityStatus.UNSUPPORTED:
+            # The same refusal W3-AA raises at preflight, restated for callers
+            # that drive the engine directly through the substitution seam.
+            raise UnsupportedCapabilityError(
+                "Anthropic thinking.enabled at thinking.type",
+                f"{entry.detail} Owner: {entry.owner}.",
+            )
+
+        owner = self._thinking_signature_owner
+        if owner is None:
+            # A profile that claims enabled thinking without naming anything
+            # that can sign a block has claimed a capability, not proved one.
+            # ``budget_tokens`` is refused rather than accepted as decoration.
+            raise UnsupportedCapabilityError(
+                "Anthropic thinking.enabled at thinking.type",
+                "The capability profile admits extended thinking but no "
+                "signature owner is bound to this engine, so a thinking block "
+                "could not carry the integrity signature the protocol "
+                "requires, and budget_tokens has nothing enforcing it.",
+            )
+        return ThinkingProjection.signed_by(owner)
 
     async def generate(
         self,
@@ -131,4 +209,30 @@ class AnthropicMessagesEngine:
                 yield projected
 
 
-__all__ = ["AnthropicMessagesEngine", "new_message_id"]
+def _admitted_service_tier(
+    request: MessagesRequest,
+    profile: AnthropicCapabilityProfile,
+) -> ResponseServiceTier:
+    """Resolve the tier that will actually be reported for this turn.
+
+    A requested tier the profile does not admit is a field-specific refusal,
+    not a silent downgrade: the client learns that ``service_tier`` was the
+    problem rather than receiving a turn served by an unreported lane.
+    """
+
+    if request.service_tier is None:
+        return DELIVERED_SERVICE_TIER
+    entry = profile.classification("service_tier", "service_tier")
+    if entry.status is CapabilityStatus.UNSUPPORTED:
+        raise UnsupportedCapabilityError(
+            "Anthropic service_tier at service_tier",
+            f"{entry.detail} Owner: {entry.owner}.",
+        )
+    return DELIVERED_SERVICE_TIER
+
+
+__all__ = [
+    "DELIVERED_SERVICE_TIER",
+    "AnthropicMessagesEngine",
+    "new_message_id",
+]

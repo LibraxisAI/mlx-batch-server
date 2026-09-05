@@ -32,8 +32,24 @@ class StopReason(StrEnum):
 
 
 class ServiceTier(StrEnum):
+    """What a client may *ask* for."""
+
     AUTO = "auto"
     STANDARD_ONLY = "standard_only"
+
+
+class ResponseServiceTier(StrEnum):
+    """What was actually *served*.
+
+    A different vocabulary from :class:`ServiceTier` on purpose: the request
+    names a routing preference, the response names the capacity lane that ran
+    the turn. Collapsing the two would let ``standard_only`` be echoed back as
+    though it were a delivered tier.
+    """
+
+    STANDARD = "standard"
+    PRIORITY = "priority"
+    BATCH = "batch"
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +73,12 @@ class ThinkingBlock(BaseModel):
 
     type: Literal["thinking"] = "thinking"
     thinking: str
-    signature: str = ""
+    # Required, exactly as the official SDK models it. There is no default: a
+    # block opened on the wire says ``signature=""`` out loud (the signature
+    # arrives later as a signature_delta), while a terminal block has to be
+    # handed a real one. A defaulted field let an unsigned terminal thinking
+    # block look well-formed, which is the hole W3-AB closes.
+    signature: str
 
 
 class ToolUseBlock(BaseModel):
@@ -433,6 +454,10 @@ class Usage(BaseModel):
     output_tokens: int = 0
     cache_creation_input_tokens: int | None = None
     cache_read_input_tokens: int | None = None
+    #: The capacity lane that actually served the turn. Reported here — the
+    #: same place the official API reports it — so a client reads the
+    #: delivered tier instead of inferring it from what it asked for.
+    service_tier: ResponseServiceTier | None = None
 
 
 class MessageDeltaUsage(BaseModel):
@@ -680,6 +705,7 @@ __all__ = [
     "RequestToolResultBlock",
     "RequestToolUseBlock",
     "RequestWebSearchToolResultBlock",
+    "ResponseServiceTier",
     "ServiceTier",
     "SignatureDeltaBody",
     "StopReason",

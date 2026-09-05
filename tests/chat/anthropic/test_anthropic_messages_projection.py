@@ -27,7 +27,11 @@ from mlx_batch_server.chat.anthropic.errors import (
     UnsupportedCapabilityError,
 )
 from mlx_batch_server.chat.anthropic.messages_engine import AnthropicMessagesEngine
-from mlx_batch_server.chat.anthropic.projector import AnthropicMessageProjector
+from mlx_batch_server.chat.anthropic.projector import (
+    AnthropicMessageProjector,
+    ThinkingProjection,
+    ThinkingSignature,
+)
 from mlx_batch_server.chat.anthropic.request_mapper import build_turn
 from mlx_batch_server.chat.anthropic.turn_source import (
     AnthropicTurn,
@@ -55,8 +59,33 @@ ALIAS = "qwen-flash"
 PHYSICAL = "/Volumes/models/Qwen3-Next-80B-A3B-Instruct-4bit"
 
 
-def _projector() -> AnthropicMessageProjector:
-    return AnthropicMessageProjector(message_id="msg_test", model_alias=ALIAS)
+class _SigningOwner:
+    """A signature owner that exists only inside this test module.
+
+    No production owner is bound anywhere. Admitting thinking in a test is
+    therefore an explicit act with a visible signer, which is the point: the
+    projector cannot reach a thinking block without one.
+    """
+
+    def sign_thinking(
+        self, *, message_id: str, index: int, thinking: str
+    ) -> ThinkingSignature:
+        del thinking
+        return ThinkingSignature(
+            owner="test-signer", value=f"sig::{message_id}::{index}"
+        )
+
+
+def _projector(
+    *, thinking: ThinkingProjection | None = None
+) -> AnthropicMessageProjector:
+    return AnthropicMessageProjector(
+        message_id="msg_test", model_alias=ALIAS, thinking=thinking
+    )
+
+
+def _admitted_projector() -> AnthropicMessageProjector:
+    return _projector(thinking=ThinkingProjection.signed_by(_SigningOwner()))
 
 
 def _drain(projector: AnthropicMessageProjector, events) -> list:
@@ -236,9 +265,14 @@ def test_exact_stop_sequence_projects_identically_to_stream_and_envelope() -> No
 
 
 def test_reasoning_and_text_never_share_a_block():
-    """Thinking and output text stay on separate, non-duplicating channels."""
+    """Thinking and output text stay on separate, non-duplicating channels.
 
-    projector = _projector()
+    Admitted thinking is the only tier where this question can be asked at
+    all; the unadmitted tiers emit no thinking to confuse with text, and
+    ``test_anthropic_thinking_integrity`` owns that proof.
+    """
+
+    projector = _admitted_projector()
     emitted = _drain(
         projector,
         [
@@ -295,6 +329,15 @@ def test_reasoning_and_text_never_share_a_block():
     assert [block.type for block in terminal.content] == ["thinking", "text"]
     assert terminal.content[1].text == "Hello there"
     assert terminal.stop_reason is StopReason.END_TURN
+    # The admitted block is signed, and the signature travelled on the wire
+    # before the block closed.
+    assert terminal.content[0].signature == "sig::msg_test::0"
+    signature_deltas = [
+        event
+        for event in _of_type(emitted, "content_block_delta")
+        if event.delta.type == "signature_delta"
+    ]
+    assert [delta.delta.signature for delta in signature_deltas] == ["sig::msg_test::0"]
 
 
 def test_runtime_alias_never_leaks_the_physical_model():
