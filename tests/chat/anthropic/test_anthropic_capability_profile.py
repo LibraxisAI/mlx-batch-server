@@ -238,7 +238,7 @@ UNSUPPORTED_CASES: tuple[tuple[str, dict[str, Any], str], ...] = (
                 }
             ]
         },
-        "messages.0.content.0.type",
+        "messages.0.content.0.source.data",
     ),
     (
         "document_input",
@@ -255,26 +255,7 @@ UNSUPPORTED_CASES: tuple[tuple[str, dict[str, Any], str], ...] = (
                 }
             ]
         },
-        "messages.0.content.0.type",
-    ),
-    (
-        "search_result_input",
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "search_result",
-                            "source": "https://x",
-                            "title": "t",
-                            "content": [_TEXT_BLOCK],
-                        }
-                    ],
-                }
-            ]
-        },
-        "messages.0.content.0.type",
+        "messages.0.content.0.source.url",
     ),
     (
         "server_tool_use",
@@ -472,6 +453,24 @@ SUPPORTED_CASES: tuple[tuple[str, dict[str, Any]], ...] = (
             ],
         },
     ),
+    (
+        "search_result_as_untrusted_text",
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "search_result",
+                            "source": "https://x",
+                            "title": "t",
+                            "content": [_TEXT_BLOCK],
+                        }
+                    ],
+                }
+            ]
+        },
+    ),
 )
 
 
@@ -659,6 +658,7 @@ def test_profile_resolves_role_and_backend_without_acquiring_a_model(
     assert (main.role, main.backend) == ("main", "fused_mtp_mlx")
     assert (vision.role, vision.backend) == ("vision", "legacy_mlx")
     assert main.supports("tools") and not vision.supports("tools")
+    assert main.media_source_fields == vision.media_source_fields == frozenset()
     assert source.entries == []
 
 
@@ -667,6 +667,8 @@ def test_detached_role_is_named_not_absent() -> None:
 
     assert profile.role == DETACHED_ROLE
     assert profile.supports("tools")
+    assert profile.supports("content.search_result")
+    assert profile.media_source_fields == frozenset()
     assert not profile.supports("thinking.enabled")
     assert detached_profile("anything").role == DETACHED_ROLE
 
@@ -718,6 +720,7 @@ def test_removing_a_classification_makes_the_request_fail_closed() -> None:
         role=profile.role,
         backend=profile.backend,
         declared_capabilities=profile.declared_capabilities,
+        media_source_fields=profile.media_source_fields,
         fields=MappingProxyType(
             {
                 key: value
