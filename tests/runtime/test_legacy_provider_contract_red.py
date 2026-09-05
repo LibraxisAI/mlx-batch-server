@@ -436,3 +436,147 @@ def test_module_has_no_eager_mlx_or_second_cache_construction() -> None:
     assert ".clear_cache(" not in source
     assert "queue.Queue(" in source
     assert "maxsize=event_queue_size" in source
+
+
+def _typed_call_request() -> GenerationRequest:
+    """The same continuation baton the fused preparer receives."""
+
+    return GenerationRequest(
+        response_id="resp_legacy_tool",
+        runtime=RUNTIME,
+        messages=(
+            {
+                "type": "message",
+                "role": "user",
+                "content": ({"type": "input_text", "text": "inspect"},),
+            },
+            {
+                "type": "function_call",
+                "role": "assistant",
+                "id": "fc_1",
+                "call_id": "call_inspect",
+                "name": "inspect",
+                "arguments": '{"region":"top"}',
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "role": "tool",
+                "call_id": "call_inspect",
+                "output": "receipt",
+                "content": ({"type": "input_text", "text": "receipt"},),
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": ({"type": "input_text", "text": "what now"},),
+            },
+        ),
+        tools=({"type": "function", "name": "inspect", "parameters": {}},),
+        sampling={"max_output_tokens": 32},
+    )
+
+
+async def _payload_for(request: GenerationRequest) -> Mapping[str, Any]:
+    cache = _Cache()
+    stream = _StreamFactory(_events())
+    port = await CachedLegacyPortProvider(cache=cache, stream_factory=stream).acquire(
+        RUNTIME, LoadConfig(max_admitted_requests=2)
+    )
+    await _collect(port, request)
+    return stream.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_legacy_renderer_seals_a_typed_call_instead_of_assistant_text() -> None:
+    payload = await _payload_for(_typed_call_request())
+
+    assert [item.get("type") for item in payload["input"]] == [
+        "message",
+        "function_call",
+        "function_call_output",
+        "message",
+    ]
+    assert payload["input"][1] == {
+        "type": "function_call",
+        "call_id": "call_inspect",
+        "name": "inspect",
+        "arguments": '{"region":"top"}',
+        "id": "fc_1",
+        "status": "completed",
+    }
+    assert "role" not in payload["input"][1]
+    assert "content" not in payload["input"][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ({"call_id": " "}, "call_id must not be empty"),
+        ({"name": ""}, "name must not be empty"),
+        ({"arguments": {"region": "top"}}, "arguments must be text"),
+        ({"role": "user"}, "assistant role"),
+        ({"status": "cancelled"}, "status is unsupported"),
+        (
+            {"content": ({"type": "input_text", "text": "smuggled"},)},
+            "cannot carry message content",
+        ),
+    ),
+)
+async def test_legacy_renderer_refuses_malformed_call_identity(
+    mutation: dict[str, Any],
+    match: str,
+) -> None:
+    request = _typed_call_request()
+    messages = list(request.messages)
+    messages[1] = {**messages[1], **mutation}
+    with pytest.raises(LegacyPortContractError, match=match):
+        await _payload_for(
+            GenerationRequest(
+                response_id=request.response_id,
+                runtime=request.runtime,
+                messages=tuple(messages),
+                tools=request.tools,
+                sampling=request.sampling,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_renderer_refuses_an_orphan_tool_result() -> None:
+    request = _typed_call_request()
+    messages = list(request.messages)
+    messages[2] = {**messages[2], "call_id": "call_nobody_made"}
+    with pytest.raises(LegacyPortContractError, match="no preceding function_call"):
+        await _payload_for(
+            GenerationRequest(
+                response_id=request.response_id,
+                runtime=request.runtime,
+                messages=tuple(messages),
+                tools=request.tools,
+                sampling=request.sampling,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_adapter_starts_a_tool_item_with_its_typed_identity() -> None:
+    cache = _Cache()
+    stream = _StreamFactory(_events())
+    port = await CachedLegacyPortProvider(cache=cache, stream_factory=stream).acquire(
+        RUNTIME, LoadConfig(max_admitted_requests=2)
+    )
+
+    observed = await _collect(port, _request())
+    started = next(
+        event
+        for event in observed
+        if isinstance(event, OutputItemStarted) and event.kind == "function_call"
+    )
+    assert (started.call_id, started.name) == ("call_1", "inspect")
+    assert all(
+        event.call_id is None and event.name is None
+        for event in observed
+        if isinstance(event, OutputItemStarted) and event.kind != "function_call"
+    )

@@ -578,7 +578,16 @@ def test_length_finish_projects_official_incomplete_terminal() -> None:
         "response": {
             "status": "incomplete",
             "incomplete_details": {"reason": "max_output_tokens"},
-            "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+            "usage": {
+                "input_tokens": 4,
+                "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0,
+                },
+                "output_tokens": 2,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 6,
+            },
         },
     }
 
@@ -1288,7 +1297,16 @@ def test_usage_projects_through_standard_in_progress_event() -> None:
         "type": "response.in_progress",
         "response": {
             "status": "in_progress",
-            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+            "usage": {
+                "input_tokens": 2,
+                "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0,
+                },
+                "output_tokens": 3,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 5,
+            },
         },
     }
 
@@ -1437,3 +1455,266 @@ async def test_response_steer_interrupts_parent_and_commits_inherited_successor(
         },
         stream_id=StreamId("main"),
     )
+
+
+_PHYSICAL_MODEL = "grant-ai/Qwen3.8-Flash-Next"
+_PUBLIC_ALIAS = "buddy"
+_REQUEST_SETTINGS = {
+    "tools": [
+        {
+            "type": "function",
+            "name": "lookup",
+            "description": "look one fact up",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": True,
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_output_tokens": 256,
+    "instructions": "answer briefly",
+}
+
+
+def _mixed_lifecycle_events() -> tuple[TurnEvent, ...]:
+    """Reasoning, visible text and one tool call in a single alias-resolved turn."""
+
+    usage = UsageUpdate(11, 13, 24, cached_input_tokens=3, reasoning_output_tokens=5)
+    return (
+        TurnStarted(
+            "resp_mixed",
+            _PHYSICAL_MODEL,
+            123,
+            requested_model=_PUBLIC_ALIAS,
+            request_settings=_REQUEST_SETTINGS,
+        ),
+        OutputItemStarted("reasoning", 0, "rs_1"),
+        ContentPartStarted("reasoning_summary_text", 0, 0, "rs_1"),
+        ReasoningDelta("chain ", "rs_1", 0, 0),
+        ReasoningDelta("thought", "rs_1", 0, 0),
+        ReasoningCompleted("chain thought", "rs_1", 0, 0),
+        ContentPartCompleted("reasoning_summary_text", 0, 0, "rs_1", "chain thought"),
+        OutputItemCompleted("reasoning", 0, "rs_1", text="chain thought"),
+        OutputItemStarted("message", 1, "msg_1"),
+        ContentPartStarted("output_text", 1, 0, "msg_1"),
+        TextDelta("final ", "msg_1", 1, 0),
+        TextDelta("answer", "msg_1", 1, 0),
+        TextCompleted("final answer", "msg_1", 1, 0),
+        ContentPartCompleted("output_text", 1, 0, "msg_1", "final answer"),
+        OutputItemCompleted("message", 1, "msg_1", text="final answer"),
+        OutputItemStarted("function_call", 2, "fc_1", "call_1", "lookup"),
+        ToolDelta(2, "call_1", "fc_1", "lookup", '{"q":'),
+        ToolDelta(2, "call_1", "fc_1", None, '"cats"}'),
+        ToolCompleted(2, "call_1", "fc_1", "lookup", '{"q":"cats"}'),
+        OutputItemCompleted(
+            "function_call",
+            2,
+            "fc_1",
+            call_id="call_1",
+            name="lookup",
+            arguments='{"q":"cats"}',
+        ),
+        usage,
+        TurnCompleted("tool_calls", usage),
+    )
+
+
+def _projected_stream(
+    events: tuple[TurnEvent, ...] = (),
+) -> tuple[dict[str, Any], ...]:
+    """Project one whole turn exactly as the transport lane publishes it."""
+
+    from mlx_batch_server.responses.transport import ResponseSnapshotBuilder
+
+    builder = ResponseSnapshotBuilder()
+    projected: list[dict[str, Any]] = []
+    for sequence_number, event in enumerate(events or _mixed_lifecycle_events()):
+        builder.observe(event)
+        projected.append(
+            project_event(
+                TransportEnvelope(
+                    StreamId("main"),
+                    sequence_number,
+                    event,
+                    snapshot=builder.snapshot(event),
+                )
+            )
+        )
+    return tuple(projected)
+
+
+_LIFECYCLE_EVENT_TYPES = frozenset(
+    (
+        "response.created",
+        "response.in_progress",
+        "response.completed",
+        "response.incomplete",
+        "response.failed",
+    )
+)
+
+
+def test_every_lifecycle_snapshot_validates_against_the_installed_sdk() -> None:
+    """The generated official types are the schema oracle for every snapshot."""
+
+    from openai.types.responses import Response
+
+    projected = _projected_stream()
+    lifecycle = tuple(
+        item for item in projected if item["type"] in _LIFECYCLE_EVENT_TYPES
+    )
+    assert {item["type"] for item in lifecycle} >= {
+        "response.created",
+        "response.in_progress",
+        "response.completed",
+    }
+    for item in lifecycle:
+        snapshot = item["response"]
+        for required in (
+            "id",
+            "object",
+            "created_at",
+            "model",
+            "status",
+            "output",
+            "parallel_tool_calls",
+            "tool_choice",
+            "tools",
+        ):
+            assert required in snapshot, (item["type"], required)
+        Response.model_validate(snapshot)
+
+
+def test_removing_a_required_request_setting_makes_the_snapshot_red() -> None:
+    """The oracle must actually reject a partial snapshot, or it proves nothing."""
+
+    from openai.types.responses import Response
+    from pydantic import ValidationError
+
+    created = next(
+        item for item in _projected_stream() if item["type"] == "response.created"
+    )
+    for field in ("parallel_tool_calls", "tool_choice", "tools", "model"):
+        partial = {
+            key: value for key, value in created["response"].items() if key != field
+        }
+        with pytest.raises(ValidationError):
+            Response.model_validate(partial)
+
+
+def test_added_output_items_validate_and_carry_no_completed_content() -> None:
+    """An added item is complete in shape and empty in content."""
+
+    from openai.types.responses import (
+        ResponseFunctionToolCall,
+        ResponseOutputMessage,
+        ResponseReasoningItem,
+    )
+    from pydantic import ValidationError
+
+    added = {
+        item["item"]["type"]: item["item"]
+        for item in _projected_stream()
+        if item["type"] == "response.output_item.added"
+    }
+    assert set(added) == {"reasoning", "message", "function_call"}
+
+    ResponseReasoningItem.model_validate(added["reasoning"])
+    assert added["reasoning"]["summary"] == []
+    ResponseOutputMessage.model_validate(added["message"])
+    assert added["message"]["content"] == []
+    call = ResponseFunctionToolCall.model_validate(added["function_call"])
+    assert (call.call_id, call.name, call.arguments) == ("call_1", "lookup", "")
+
+    prefilled = {**added["function_call"]}
+    del prefilled["call_id"]
+    with pytest.raises(ValidationError):
+        ResponseFunctionToolCall.model_validate(prefilled)
+
+
+def test_added_items_never_prefill_the_content_their_done_events_carry() -> None:
+    projected = _projected_stream()
+    added = {
+        item["item"]["id"]: item["item"]
+        for item in projected
+        if item["type"] == "response.output_item.added"
+    }
+    done = {
+        item["item"]["id"]: item["item"]
+        for item in projected
+        if item["type"] == "response.output_item.done"
+    }
+    assert set(added) == set(done)
+    assert done["msg_1"]["content"][0]["text"] == "final answer"
+    assert added["msg_1"]["content"] == []
+    assert done["rs_1"]["summary"][0]["text"] == "chain thought"
+    assert added["rs_1"]["summary"] == []
+    assert done["fc_1"]["arguments"] == '{"q":"cats"}'
+    assert added["fc_1"]["arguments"] == ""
+
+
+def test_public_alias_is_the_only_model_on_the_wire() -> None:
+    """One public value, one internal value, never conflated."""
+
+    events = _mixed_lifecycle_events()
+    started = events[0]
+    assert isinstance(started, TurnStarted)
+    assert started.model == _PHYSICAL_MODEL
+    assert started.requested_model == _PUBLIC_ALIAS
+
+    projected = _projected_stream(events)
+    models = {
+        item["response"]["model"]
+        for item in projected
+        if item["type"] in _LIFECYCLE_EVENT_TYPES
+    }
+    assert models == {_PUBLIC_ALIAS}
+    assert _PHYSICAL_MODEL not in json.dumps(projected)
+
+
+def test_snapshot_identity_and_settings_are_stable_across_the_whole_stream() -> None:
+    projected = _projected_stream()
+    lifecycle = tuple(
+        item["response"] for item in projected if item["type"] in _LIFECYCLE_EVENT_TYPES
+    )
+    terminal = lifecycle[-1]
+    for snapshot in lifecycle:
+        for field in ("id", "created_at", "model", "tools", "tool_choice"):
+            assert snapshot[field] == terminal[field], field
+        assert snapshot["object"] == "response"
+
+    sequence_numbers = [item["sequence_number"] for item in projected]
+    assert sequence_numbers == sorted(sequence_numbers)
+    assert len(set(sequence_numbers)) == len(sequence_numbers)
+
+
+def test_terminal_snapshot_reconstructs_every_output_item_exactly_once() -> None:
+    terminal = next(
+        item for item in _projected_stream() if item["type"] == "response.completed"
+    )["response"]
+    assert [item["id"] for item in terminal["output"]] == ["rs_1", "msg_1", "fc_1"]
+    assert terminal["output"][2]["call_id"] == "call_1"
+    assert terminal["usage"]["total_tokens"] == 24
+
+
+def test_reasoning_and_visible_text_never_cross_channels() -> None:
+    projected = _projected_stream()
+    reasoning_text = "".join(
+        item["delta"]
+        for item in projected
+        if item["type"] == "response.reasoning_summary_text.delta"
+    )
+    visible_text = "".join(
+        item["delta"]
+        for item in projected
+        if item["type"] == "response.output_text.delta"
+    )
+    assert reasoning_text == "chain thought"
+    assert visible_text == "final answer"
+    assert reasoning_text not in visible_text
+    for item in projected:
+        if item["type"].startswith("response.output_text"):
+            assert "chain thought" not in json.dumps(item)
+        if item["type"].startswith("response.reasoning_summary_text"):
+            assert "final answer" not in json.dumps(item)

@@ -12,12 +12,43 @@ from typing import Any, TypeAlias, cast
 
 from ..runtime.events import (
     TERMINAL_EVENT_TYPES,
+    OutputItemCompleted,
+    OutputItemStarted,
     SequencedTurnEvent,
+    TurnCancelled,
+    TurnCompleted,
     TurnEvent,
+    TurnFailed,
+    TurnStarted,
+    UsageUpdate,
 )
 
 _STREAM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
 _DEFAULT_LANE = None
+
+# Official Responses defaults echoed back when the client omitted the setting.
+# These are the documented protocol values, not inferred placeholders.
+_TOOL_CHOICE_DEFAULT = "auto"
+_PARALLEL_TOOL_CALLS_DEFAULT = True
+
+# Optional Response settings echoed verbatim when the prepared request carries
+# them. Anything outside this set stays off the wire rather than being guessed.
+_ECHOED_REQUEST_SETTINGS = (
+    "instructions",
+    "max_output_tokens",
+    "metadata",
+    "previous_response_id",
+    "reasoning",
+    "temperature",
+    "text",
+    "top_p",
+    "truncation",
+)
+
+# Runtime-resolution provenance that must stay behind the public boundary.
+_INTERNAL_METADATA_KEYS = frozenset(
+    ("requested_model", "resolved_model", "runtime_role")
+)
 
 
 class TransportProtocolError(RuntimeError):
@@ -188,11 +219,298 @@ WebSocketCommand: TypeAlias = (
 
 
 @dataclass(frozen=True, slots=True)
+class ResponseSnapshotIdentity:
+    """The two identities of one response, kept explicit and never conflated.
+
+    ``public_model`` is the alias the client requested and the only value a
+    protocol boundary may publish. ``physical_model`` is the resolved runtime
+    identity the backend and the runtime projection keep validating against.
+    """
+
+    response_id: str
+    created_at: int
+    public_model: str
+    physical_model: str
+
+    def __post_init__(self) -> None:
+        for name in ("response_id", "public_model", "physical_model"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must not be blank")
+        if isinstance(self.created_at, bool) or not isinstance(self.created_at, int):
+            raise ValueError("created_at must be an integer")
+        if self.created_at < 0:
+            raise ValueError("created_at must be non-negative")
+
+
+def request_settings_from(
+    *,
+    tools: Sequence[Mapping[str, Any]] = (),
+    sampling: Mapping[str, Any] | None = None,
+    reasoning: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    """Source the stable Response settings from one prepared request.
+
+    Internal runtime-resolution metadata never crosses the public boundary: the
+    physical model and its role stay behind it, so a published snapshot cannot
+    reveal a second identity beside the requested alias.
+    """
+
+    source: dict[str, Any] = dict(sampling or {})
+    settings: dict[str, Any] = {
+        "tools": [dict(tool) for tool in tools],
+        "tool_choice": source.get("tool_choice", _TOOL_CHOICE_DEFAULT),
+        "parallel_tool_calls": source.get(
+            "parallel_tool_calls", _PARALLEL_TOOL_CALLS_DEFAULT
+        ),
+    }
+    for key in _ECHOED_REQUEST_SETTINGS:
+        if key in source and source[key] is not None:
+            settings[key] = source[key]
+    if reasoning:
+        settings["reasoning"] = dict(reasoning)
+    client_metadata = {
+        key: value
+        for key, value in (metadata or {}).items()
+        if key not in _INTERNAL_METADATA_KEYS
+    }
+    if client_metadata:
+        settings["metadata"] = client_metadata
+    return settings
+
+
+def render_usage(usage: UsageUpdate) -> dict[str, Any]:
+    """One usage shape for every Responses surface."""
+
+    return {
+        "input_tokens": usage.input_tokens,
+        "input_tokens_details": {
+            "cache_write_tokens": usage.cache_write_input_tokens,
+            "cached_tokens": usage.cached_input_tokens,
+        },
+        "output_tokens": usage.output_tokens,
+        "output_tokens_details": {
+            "reasoning_tokens": usage.reasoning_output_tokens,
+        },
+        "total_tokens": usage.total_tokens,
+    }
+
+
+def render_started_item(event: OutputItemStarted) -> dict[str, Any]:
+    """Render an opening output item with every SDK-required field and no content.
+
+    Incremental payloads stay empty here: the content arrives through the
+    dedicated delta and done events, never prefilled on the added item.
+    """
+
+    if event.kind == "message":
+        return {
+            "id": event.item_id,
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [],
+        }
+    if event.kind == "reasoning":
+        return {
+            "id": event.item_id,
+            "type": "reasoning",
+            "status": "in_progress",
+            "summary": [],
+        }
+    return {
+        "id": event.item_id,
+        "type": "function_call",
+        "status": "in_progress",
+        "call_id": event.call_id,
+        "name": event.name,
+        "arguments": "",
+    }
+
+
+def render_completed_item(event: OutputItemCompleted) -> dict[str, Any]:
+    """Render one finished output item with its complete official payload."""
+
+    if event.kind == "message":
+        return {
+            "id": event.item_id,
+            "type": "message",
+            "status": event.status,
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": event.text,
+                    "annotations": [],
+                    "logprobs": [],
+                }
+            ],
+        }
+    if event.kind == "reasoning":
+        return {
+            "id": event.item_id,
+            "type": "reasoning",
+            "status": event.status,
+            "summary": [{"type": "summary_text", "text": event.text}],
+        }
+    return {
+        "id": event.item_id,
+        "type": "function_call",
+        "status": event.status,
+        "call_id": event.call_id,
+        "name": event.name,
+        "arguments": event.arguments,
+    }
+
+
+def build_response_snapshot(
+    *,
+    identity: ResponseSnapshotIdentity,
+    status: str,
+    request_settings: Mapping[str, Any] | None = None,
+    output: Sequence[Mapping[str, Any]] = (),
+    usage: Mapping[str, Any] | None = None,
+    error: Mapping[str, Any] | None = None,
+    incomplete_details: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble one complete Response snapshot.
+
+    This is the single construction point shared by the streaming projector and
+    the terminal runtime projection, so every lifecycle snapshot of a response
+    agrees on identity, request settings and shape.
+    """
+
+    if not isinstance(identity, ResponseSnapshotIdentity):
+        raise TypeError("snapshot identity must be a ResponseSnapshotIdentity")
+    settings = dict(request_settings or {})
+    snapshot: dict[str, Any] = {
+        "id": identity.response_id,
+        "object": "response",
+        "created_at": identity.created_at,
+        "model": identity.public_model,
+        "status": status,
+        "output": [dict(item) for item in output],
+        "tools": list(settings.pop("tools", ())),
+        "tool_choice": settings.pop("tool_choice", _TOOL_CHOICE_DEFAULT),
+        "parallel_tool_calls": settings.pop(
+            "parallel_tool_calls", _PARALLEL_TOOL_CALLS_DEFAULT
+        ),
+        "usage": dict(usage) if usage is not None else None,
+        "error": dict(error) if error is not None else None,
+        "incomplete_details": (
+            dict(incomplete_details) if incomplete_details is not None else None
+        ),
+    }
+    for key in _ECHOED_REQUEST_SETTINGS:
+        if key in settings:
+            snapshot[key] = settings[key]
+    return snapshot
+
+
+class ResponseSnapshotBuilder:
+    """Accumulate one response's public snapshot from canonical turn events.
+
+    The builder is per-response lane state, not a response store: it holds only
+    what the wire needs to publish a complete snapshot beside every lifecycle
+    event, and it never outlives its stream.
+    """
+
+    __slots__ = ("_identity", "_output", "_settings", "_usage")
+
+    def __init__(self) -> None:
+        self._identity: ResponseSnapshotIdentity | None = None
+        self._settings: Mapping[str, Any] = {}
+        self._output: list[dict[str, Any]] = []
+        self._usage: dict[str, Any] | None = None
+
+    @property
+    def identity(self) -> ResponseSnapshotIdentity | None:
+        return self._identity
+
+    def observe(self, event: TurnEvent) -> None:
+        """Fold one canonical event into the snapshot state."""
+
+        if isinstance(event, TurnStarted):
+            self._identity = ResponseSnapshotIdentity(
+                response_id=event.response_id,
+                created_at=event.created_at,
+                public_model=event.public_model,
+                physical_model=event.model,
+            )
+            self._settings = dict(event.request_settings)
+            return
+        if isinstance(event, OutputItemCompleted):
+            self._output.append(render_completed_item(event))
+            return
+        if isinstance(event, UsageUpdate):
+            self._usage = render_usage(event)
+
+    def snapshot(self, event: TurnEvent) -> dict[str, Any] | None:
+        """Build the complete snapshot this lifecycle event should carry."""
+
+        if self._identity is None:
+            return None
+
+        status = "in_progress"
+        output: Sequence[Mapping[str, Any]] | None = None
+        error: Mapping[str, Any] | None = None
+        incomplete_details: Mapping[str, Any] | None = None
+
+        if isinstance(event, TurnStarted):
+            output = ()
+        elif isinstance(event, TurnCompleted):
+            if event.finish_reason == "length":
+                status = "incomplete"
+                incomplete_details = {"reason": "max_output_tokens"}
+            else:
+                status = "completed"
+        elif isinstance(event, TurnFailed):
+            status = "failed"
+            error = {"code": event.code, "message": event.error}
+        elif isinstance(event, TurnCancelled):
+            if event.reason == "steered":
+                status = "incomplete"
+                incomplete_details = {"reason": "steered"}
+            else:
+                status = "cancelled"
+
+        return self._build(
+            status,
+            output=output,
+            error=error,
+            incomplete_details=incomplete_details,
+        )
+
+    def _build(
+        self,
+        status: str,
+        *,
+        output: Sequence[Mapping[str, Any]] | None = None,
+        error: Mapping[str, Any] | None = None,
+        incomplete_details: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        identity = self._identity
+        if identity is None:  # pragma: no cover - guarded by snapshot()
+            raise ValueError("snapshot requested before the turn started")
+        return build_response_snapshot(
+            identity=identity,
+            status=status,
+            request_settings=self._settings,
+            output=self._output if output is None else output,
+            usage=self._usage,
+            error=error,
+            incomplete_details=incomplete_details,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TransportEnvelope:
     stream_id: StreamId | None
     sequence_number: int
     event: TurnEvent
     terminal_response: Awaitable[Mapping[str, Any]] | None = None
+    snapshot: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.sequence_number < 0:
@@ -249,6 +567,7 @@ class _QueuedEvent:
     sequence_number: int
     event: TurnEvent
     terminal_response: Awaitable[Mapping[str, Any]] | None = None
+    snapshot: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +599,9 @@ class _ActiveResponse:
     cancel_invoked: bool = False
     cancel_requested_reason: str | None = None
     steer_pending: bool = False
+    snapshot_builder: ResponseSnapshotBuilder = field(
+        default_factory=ResponseSnapshotBuilder
+    )
     startup_complete: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation_complete: asyncio.Event = field(default_factory=asyncio.Event)
     pump: asyncio.Task[None] | None = None
@@ -581,6 +903,7 @@ class MultiplexedTransportSession:
                             sequence_number=queued.sequence_number,
                             event=queued.event,
                             terminal_response=queued.terminal_response,
+                            snapshot=queued.snapshot,
                         )
             await self._events_ready.wait()
 
@@ -734,6 +1057,7 @@ class MultiplexedTransportSession:
                                 if isinstance(event, TERMINAL_EVENT_TYPES)
                                 else None
                             ),
+                            snapshot=self._observe_snapshot(active, event),
                         ),
                     ):
                         self._enqueue_transport_error_locked(
@@ -793,6 +1117,16 @@ class MultiplexedTransportSession:
                 await self._request_source_cancel(active, "missing_terminal_event")
         finally:
             active.startup_complete.set()
+
+    @staticmethod
+    def _observe_snapshot(
+        active: _ActiveResponse,
+        event: TurnEvent,
+    ) -> Mapping[str, Any] | None:
+        """Fold the event into lane snapshot state and return its snapshot."""
+
+        active.snapshot_builder.observe(event)
+        return active.snapshot_builder.snapshot(event)
 
     def _enqueue_locked(
         self,

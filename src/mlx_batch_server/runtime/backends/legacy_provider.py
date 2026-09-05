@@ -566,12 +566,23 @@ class _ResponsesEventTranslator:
             raise LegacyProviderExecutionError("duplicate output item start")
         self._items[index] = (item_kind, item_id)
         if item_kind == "function_call":
+            call_id = _required_text(item, "call_id")
+            name = _required_text(item, "name")
             self._tool_state[index] = {
-                "call_id": _required_text(item, "call_id"),
+                "call_id": call_id,
                 "item_id": item_id,
-                "name": _required_text(item, "name"),
+                "name": name,
                 "arguments": str(item.get("arguments") or ""),
             }
+            return (
+                OutputItemStarted(
+                    kind=item_kind,
+                    index=index,
+                    item_id=item_id,
+                    call_id=call_id,
+                    name=name,
+                ),
+            )
         return (OutputItemStarted(kind=item_kind, index=index, item_id=item_id),)
 
     def _content_start(self, raw: Mapping[str, Any]) -> ContentPartStarted:
@@ -818,6 +829,7 @@ def _responses_payload(
             + ", ".join(sorted(unsupported_sampling))
         )
     messages = [_copy_message(message) for message in request.messages]
+    _reject_orphan_tool_results(messages)
     media_by_message: dict[int, list[tuple[int, Mapping[str, Any]]]] = {}
     for raw_part in request.media:
         part = dict(raw_part)
@@ -832,8 +844,10 @@ def _responses_payload(
 
     for message_index, positioned in media_by_message.items():
         message = messages[message_index]
-        if message.get("type") == "function_call_output":
-            raise LegacyPortContractError("function_call_output cannot own media")
+        if message.get("type") in {"function_call", "function_call_output"}:
+            raise LegacyPortContractError(
+                f"{message['type']} cannot own media",
+            )
         text_parts = list(message.get("content") or [])
         total = len(text_parts) + len(positioned)
         media = dict(positioned)
@@ -864,19 +878,89 @@ def _responses_payload(
 
 
 def _copy_message(message: Mapping[str, Any]) -> dict[str, Any]:
-    if message.get("type") == "function_call_output":
+    item_type = message.get("type")
+    if item_type == "function_call_output":
         return {
             "type": "function_call_output",
             "call_id": _required_text(message, "call_id"),
             "output": _required_text(message, "output"),
         }
+    if item_type == "function_call":
+        return _copy_function_call(message)
     copied: dict[str, Any] = {
         "role": _required_text(message, "role"),
         "content": [dict(part) for part in message.get("content", ())],
     }
-    if message.get("type") == "message":
+    if item_type == "message":
         copied["type"] = "message"
     return copied
+
+
+def _required_request_text(value: Mapping[str, Any], key: str) -> str:
+    result = value.get(key)
+    if not isinstance(result, str) or not result.strip():
+        raise LegacyPortContractError(f"function_call {key} must not be empty")
+    return result
+
+
+def _reject_orphan_tool_results(messages: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse a tool result no typed call in this request can explain.
+
+    Only requests that actually carry typed calls are judged here: a lane whose
+    upstream still flattens calls into assistant text has no typed identity for
+    this boundary to reason about, and its lineage was already validated before
+    it reached the backend.
+    """
+
+    call_ids = {
+        message["call_id"]
+        for message in messages
+        if message.get("type") == "function_call"
+    }
+    if not call_ids:
+        return
+    seen: set[str] = set()
+    for message in messages:
+        item_type = message.get("type")
+        if item_type == "function_call":
+            seen.add(str(message["call_id"]))
+        elif item_type == "function_call_output":
+            call_id = str(message["call_id"])
+            if call_id not in seen:
+                raise LegacyPortContractError(
+                    "function_call_output has no preceding function_call"
+                )
+
+
+def _copy_function_call(message: Mapping[str, Any]) -> dict[str, Any]:
+    """Render one canonical tool call as the official typed item.
+
+    The call keeps its exact identity here instead of being flattened into an
+    assistant text turn, so the model sees the call it actually made.
+    """
+
+    role = message.get("role")
+    if role is not None and str(role).strip().lower() != "assistant":
+        raise LegacyPortContractError("function_call must keep its assistant role")
+    if message.get("content"):
+        raise LegacyPortContractError("function_call cannot carry message content")
+    arguments = message.get("arguments")
+    if not isinstance(arguments, str):
+        raise LegacyPortContractError("function_call arguments must be text")
+    item: dict[str, Any] = {
+        "type": "function_call",
+        "call_id": _required_request_text(message, "call_id"),
+        "name": _required_request_text(message, "name"),
+        "arguments": arguments,
+    }
+    if "id" in message:
+        item["id"] = _required_request_text(message, "id")
+    if "status" in message:
+        status = message.get("status")
+        if status not in {"in_progress", "completed", "incomplete"}:
+            raise LegacyPortContractError("function_call status is unsupported")
+        item["status"] = status
+    return item
 
 
 def _looks_multimodal(model: ModelSpec) -> bool:

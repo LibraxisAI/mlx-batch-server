@@ -30,6 +30,11 @@ from ..runtime.events import (
     UsageUpdate,
 )
 from .controller import PreparedResponse
+from .transport import (
+    ResponseSnapshotIdentity,
+    build_response_snapshot,
+    request_settings_from,
+)
 
 
 class RuntimeProjectionError(ValueError):
@@ -116,15 +121,32 @@ class RuntimeResponseProjection:
             raise TypeError("runtime projection requires PreparedResponse")
         if not callable(clock):
             raise TypeError("clock must be callable")
-        response_id = prepared.request.response_id
-        model = prepared.request.runtime.model_id
+        request = prepared.request
+        response_id = request.response_id
+        model = request.runtime.model_id
         if not isinstance(response_id, str) or not response_id.strip():
             raise ValueError("prepared response_id must not be blank")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("prepared model must not be blank")
+        requested_model = request.metadata.get("requested_model")
+        if requested_model is not None and (
+            not isinstance(requested_model, str) or not requested_model.strip()
+        ):
+            raise ValueError("prepared requested_model must not be blank")
 
         self._response_id = response_id
+        # Physical runtime identity: every runtime event keeps validating
+        # against this and it never reaches the wire.
         self._model = model
+        # Public protocol identity: the alias the client requested, and the
+        # only model value this projection publishes.
+        self._public_model = requested_model if requested_model is not None else model
+        self._request_settings = request_settings_from(
+            tools=request.tools,
+            sampling=request.sampling,
+            reasoning=request.reasoning,
+            metadata=request.metadata,
+        )
         self._created_at = int(clock())
         self._last_sequence_number: int | None = None
         self._started: TurnStarted | None = None
@@ -207,6 +229,13 @@ class RuntimeResponseProjection:
             raise RuntimeProjectionError(
                 "TurnStarted model does not match prepared response"
             )
+        if (
+            event.requested_model is not None
+            and event.requested_model != self._public_model
+        ):
+            raise RuntimeProjectionError(
+                "TurnStarted requested_model does not match prepared response"
+            )
         self._started = event
         self._created_at = event.created_at
 
@@ -217,7 +246,14 @@ class RuntimeResponseProjection:
             )
         if event.item_id in self._item_ids:
             raise RuntimeProjectionError(f"duplicate output item id {event.item_id!r}")
-        self._items[event.index] = _ItemState(event.kind, event.item_id)
+        # A function call is admitted with its identity already fixed; nothing
+        # downstream may introduce, change or drop it later.
+        self._items[event.index] = _ItemState(
+            event.kind,
+            event.item_id,
+            call_id=event.call_id,
+            name=event.name,
+        )
         self._item_ids.add(event.item_id)
 
     def _complete_item(self, event: OutputItemCompleted) -> None:
@@ -327,13 +363,10 @@ class RuntimeResponseProjection:
                 "tool arguments delta cannot follow its done event"
             )
         if item.call_id is None:
-            if event.name is None:
-                raise RuntimeProjectionError(
-                    "first tool delta must include the tool name"
-                )
-            item.call_id = event.call_id
-            item.name = event.name
-        elif event.call_id != item.call_id:
+            raise RuntimeProjectionError(
+                "function_call output item started without its tool identity"
+            )
+        if event.call_id != item.call_id:
             raise RuntimeProjectionError(
                 "tool call id changed during argument streaming"
             )
@@ -349,7 +382,7 @@ class RuntimeResponseProjection:
             )
         if item.call_id is None or item.name is None:
             raise RuntimeProjectionError(
-                "tool done requires a preceding named tool delta"
+                "tool done requires an output item started with its tool identity"
             )
         if item.tool_completed:
             raise RuntimeProjectionError("tool done event already emitted")
@@ -410,20 +443,23 @@ class RuntimeResponseProjection:
                 {"reason": "steered"} if event.reason == "steered" else None
             )
 
-        response = {
-            "id": self._response_id,
-            "object": "response",
-            "status": status,
-            "model": self._model,
-            "created_at": self._created_at,
-            "output": [
+        response = build_response_snapshot(
+            identity=ResponseSnapshotIdentity(
+                response_id=self._response_id,
+                created_at=self._created_at,
+                public_model=self._public_model,
+                physical_model=self._model,
+            ),
+            status=status,
+            request_settings=self._request_settings,
+            output=[
                 self._project_item(self._items[index])
                 for index in range(len(self._items))
             ],
-            "usage": self._project_usage(),
-            "error": error,
-            "incomplete_details": incomplete_details,
-        }
+            usage=self._project_usage(),
+            error=error,
+            incomplete_details=incomplete_details,
+        )
         self._terminal = _deep_freeze(response)
 
     def _project_item(self, item: _ItemState) -> dict[str, Any]:
@@ -457,21 +493,22 @@ class RuntimeResponseProjection:
                 ],
             }
 
-        projected: dict[str, Any] = {
+        if item.call_id is None or item.name is None:  # pragma: no cover - guarded
+            raise RuntimeProjectionError(
+                "function_call output item has no admitted tool identity"
+            )
+        return {
             "id": item.item_id,
             "type": "function_call",
             "status": status,
+            "call_id": item.call_id,
+            "name": item.name,
             "arguments": (
                 item.done_arguments
                 if item.done_arguments is not None
                 else "".join(item.argument_chunks)
             ),
         }
-        if item.call_id is not None:
-            projected["call_id"] = item.call_id
-        if item.name is not None:
-            projected["name"] = item.name
-        return projected
 
     def _project_usage(self) -> dict[str, Any] | None:
         if self._usage is None:

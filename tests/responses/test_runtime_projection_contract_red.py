@@ -96,7 +96,7 @@ def test_mixed_reasoning_message_and_tool_projection_is_exact() -> None:
         TextCompleted("final answer", "msg_1", 1, 0),
         ContentPartCompleted("output_text", 1, 0, "msg_1", "final answer"),
         OutputItemCompleted("message", 1, "msg_1", text="final answer"),
-        OutputItemStarted("function_call", 2, "fc_1"),
+        OutputItemStarted("function_call", 2, "fc_1", "call_1", "lookup"),
         ToolDelta(2, "call_1", "fc_1", "lookup", '{"q":'),
         ToolDelta(2, "call_1", "fc_1", None, '"cats"}'),
         ToolCompleted(2, "call_1", "fc_1", "lookup", '{"q":"cats"}'),
@@ -149,6 +149,9 @@ def test_mixed_reasoning_message_and_tool_projection_is_exact() -> None:
                 "arguments": '{"q":"cats"}',
             },
         ],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
         "usage": {
             "input_tokens": 11,
             "input_tokens_details": {
@@ -180,6 +183,9 @@ def test_failure_and_cancellation_have_controller_terminal_statuses() -> None:
         "model": "buddy",
         "created_at": 42,
         "output": [],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
         "usage": None,
         "error": {"code": "backend_error", "message": "backend unavailable"},
         "incomplete_details": None,
@@ -310,4 +316,134 @@ def test_item_identity_and_done_payload_mismatches_fail_closed() -> None:
     with pytest.raises(RuntimeProjectionError, match="does not match"):
         projection.observe(
             SequencedTurnEvent(4, TextCompleted("goodbye", "msg_1", 0, 0))
+        )
+
+
+_PHYSICAL_MODEL = "grant-ai/Qwen3.8-Flash-Next"
+
+
+def _aliased_prepared() -> PreparedResponse:
+    """A `buddy` request resolved onto a physical runtime, as production does."""
+
+    return PreparedResponse(
+        request=GenerationRequest(
+            response_id="resp_alias",
+            runtime=RuntimeKey(model_id=_PHYSICAL_MODEL),
+            messages=({"role": "user", "content": "hello"},),
+            tools=(
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            ),
+            sampling={"temperature": 0.2, "tool_choice": "auto"},
+            metadata={
+                "requested_model": "buddy",
+                "resolved_model": _PHYSICAL_MODEL,
+                "runtime_role": "main",
+            },
+        ),
+        materialized_messages=({"role": "user", "content": "hello"},),
+    )
+
+
+def test_terminal_publishes_the_alias_while_the_runtime_validates_the_physical() -> (
+    None
+):
+    """One public value, one internal value, and the runtime still checks its own."""
+
+    projection = RuntimeResponseProjection(_aliased_prepared(), clock=lambda: 5.0)
+    _observe(
+        projection,
+        (
+            TurnStarted("resp_alias", _PHYSICAL_MODEL, 5),
+            TurnCompleted("stop"),
+        ),
+    )
+    terminal = projection.terminal_envelope()
+
+    assert terminal["model"] == "buddy"
+    assert _PHYSICAL_MODEL not in repr(terminal)
+    assert terminal["tools"][0]["name"] == "lookup"
+    assert terminal["temperature"] == 0.2
+
+    physical_witness = RuntimeResponseProjection(_aliased_prepared())
+    with pytest.raises(RuntimeProjectionError, match="model does not match"):
+        physical_witness.observe(
+            SequencedTurnEvent(0, TurnStarted("resp_alias", "buddy", 5))
+        )
+
+
+def test_internal_runtime_resolution_never_crosses_the_public_boundary() -> None:
+    projection = RuntimeResponseProjection(_aliased_prepared(), clock=lambda: 5.0)
+    _observe(
+        projection,
+        (TurnStarted("resp_alias", _PHYSICAL_MODEL, 5), TurnCompleted("stop")),
+    )
+    published = repr(projection.terminal_envelope())
+
+    for leaked in ("resolved_model", "runtime_role", _PHYSICAL_MODEL):
+        assert leaked not in published
+
+
+def test_turn_started_alias_must_agree_with_the_prepared_request() -> None:
+    projection = RuntimeResponseProjection(_aliased_prepared())
+    with pytest.raises(RuntimeProjectionError, match="requested_model does not match"):
+        projection.observe(
+            SequencedTurnEvent(
+                0,
+                TurnStarted(
+                    "resp_alias",
+                    _PHYSICAL_MODEL,
+                    5,
+                    requested_model="someone_elses_alias",
+                ),
+            )
+        )
+
+
+def test_terminal_envelope_validates_against_the_installed_sdk() -> None:
+    from openai.types.responses import Response
+
+    projection = RuntimeResponseProjection(_aliased_prepared(), clock=lambda: 5.0)
+    _observe(
+        projection,
+        (
+            TurnStarted("resp_alias", _PHYSICAL_MODEL, 5),
+            OutputItemStarted("function_call", 0, "fc_1", "call_1", "lookup"),
+            ToolDelta(0, "call_1", "fc_1", "lookup", "{}"),
+            ToolCompleted(0, "call_1", "fc_1", "lookup", "{}"),
+            OutputItemCompleted(
+                "function_call",
+                0,
+                "fc_1",
+                call_id="call_1",
+                name="lookup",
+                arguments="{}",
+            ),
+            TurnCompleted("tool_calls"),
+        ),
+    )
+    validated = Response.model_validate(dict(projection.terminal_envelope()))
+    assert validated.model == "buddy"
+    assert validated.output[0].call_id == "call_1"
+
+
+def test_tool_arguments_cannot_introduce_or_change_admitted_identity() -> None:
+    projection = RuntimeResponseProjection(_aliased_prepared())
+    _observe(
+        projection,
+        (
+            TurnStarted("resp_alias", _PHYSICAL_MODEL, 5),
+            OutputItemStarted("function_call", 0, "fc_1", "call_1", "lookup"),
+        ),
+    )
+    with pytest.raises(RuntimeProjectionError, match="call id changed"):
+        projection.observe(
+            SequencedTurnEvent(9, ToolDelta(0, "foreign", "fc_1", "lookup", "{}"))
+        )
+    with pytest.raises(RuntimeProjectionError, match="name changed"):
+        projection.observe(
+            SequencedTurnEvent(10, ToolDelta(0, "call_1", "fc_1", "other", "{}"))
         )
