@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import socket
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -699,3 +700,268 @@ def test_runtime_router_has_no_legacy_responses_dependencies() -> None:
         module.endswith((".adapter", ".store", ".context_builder"))
         for module in imported_modules
     )
+
+
+# --- Lossless official tool continuation over the real controller stack -------
+#
+# These contracts refuse a fake controller: they wire the real registry, the
+# real canonical mapper and the real controller behind the shipped router, and
+# assert the GenerationRequest the backend actually receives.
+
+CALL_ID = "call_weather_1"
+CALL_ARGUMENTS = '{"city":"Kielce"}'
+TOOL_RESULT = '{"temp_c":18}'
+_CALL_ITEM = {
+    "id": "fc_weather_1",
+    "type": "function_call",
+    "status": "completed",
+    "call_id": CALL_ID,
+    "name": "get_weather",
+    "arguments": CALL_ARGUMENTS,
+}
+
+
+class _ScriptedProjection:
+    """Terminal envelopes are scripted; the projector itself is out of scope."""
+
+    def __init__(self, response_id: str, output: list[dict[str, Any]]) -> None:
+        self._response_id = response_id
+        self._output = output
+
+    def observe(self, event: SequencedTurnEvent) -> None:
+        del event
+
+    def terminal_envelope(self) -> Mapping[str, Any]:
+        return {
+            "id": self._response_id,
+            "object": "response",
+            "created_at": 1,
+            "model": "buddy",
+            "status": "completed",
+            "output": self._output,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+class _ToolHandle:
+    def __init__(self, response_id: str) -> None:
+        self._response_id = response_id
+        self.closed = asyncio.Event()
+
+    @property
+    def response_id(self) -> str:
+        return self._response_id
+
+    def cancel(self, reason: str) -> None:
+        del reason
+        self.closed.set()
+
+    async def wait_closed(self) -> None:
+        await self.closed.wait()
+
+
+class _CapturingStarter:
+    """Stand in for the model runtime and keep every canonical request seen."""
+
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+
+    async def start(self, request: Any, sink: Any, *, cancel: Any) -> _ToolHandle:
+        del cancel
+        self.requests.append(request)
+        sink.emit(
+            TurnStarted(
+                response_id=request.response_id,
+                model=request.runtime.model_id,
+                created_at=1,
+            )
+        )
+        sink.emit(TurnCompleted("stop"))
+        handle = _ToolHandle(request.response_id)
+        handle.closed.set()
+        return handle
+
+
+class _ToolRuntime:
+    """Real registry + real canonical mapper + real controller behind the router."""
+
+    def __init__(self) -> None:
+        from mlx_batch_server.responses.controller import ResponsesController
+        from mlx_batch_server.responses.registry import ResponseRegistry
+        from mlx_batch_server.responses.runtime_mapper import (
+            CanonicalResponsesMapper,
+        )
+        from mlx_batch_server.runtime.contracts import BackendKind, RuntimeKey
+
+        self.starter = _CapturingStarter()
+        self.rounds = 0
+
+        def resolve_runtime(**kwargs: Any) -> RuntimeKey:
+            return RuntimeKey(
+                model_id=kwargs["model"],
+                revision=kwargs["revision"],
+                adapter_path=kwargs["adapter_path"],
+                draft_model_id=kwargs["draft_model_id"],
+                backend=BackendKind.FUSED_MTP_MLX,
+            )
+
+        def projection_factory(prepared: Any) -> _ScriptedProjection:
+            self.rounds += 1
+            output: list[dict[str, Any]] = (
+                [dict(_CALL_ITEM)]
+                if self.rounds == 1
+                else [
+                    {
+                        "id": "msg_2",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "18 stopni."}],
+                    }
+                ]
+            )
+            return _ScriptedProjection(prepared.request.response_id, output)
+
+        self.response_registry = ResponseRegistry()
+        self.responses_controller = ResponsesController(
+            registry=self.response_registry,
+            mapper=CanonicalResponsesMapper(
+                resolve_runtime=resolve_runtime,
+                projection_factory=projection_factory,
+            ),
+            starter=self.starter,
+        )
+
+
+def _assert_continuation_history(runtime: _ToolRuntime) -> None:
+    """The successor must reach the backend as an ordered call/result pair."""
+
+    assert len(runtime.starter.requests) == 2
+    messages = [dict(message) for message in runtime.starter.requests[1].messages]
+
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool"]
+    assert json.loads(messages[1]["content"][0]["text"]) == {
+        "type": "function_call",
+        "call_id": CALL_ID,
+        "name": "get_weather",
+        "arguments": CALL_ARGUMENTS,
+    }
+    assert messages[2]["type"] == "function_call_output"
+    assert messages[2]["call_id"] == CALL_ID
+    assert messages[2]["output"] == TOOL_RESULT
+
+    # Canonical history keeps the typed call item, not only its rendering.
+    first = runtime.response_registry.parent_messages(
+        runtime.starter.requests[0].response_id,
+        owner_id=OWNER,
+    )
+    assert first[-1] == {
+        "type": "function_call",
+        "role": "assistant",
+        "call_id": CALL_ID,
+        "name": "get_weather",
+        "arguments": CALL_ARGUMENTS,
+        "id": "fc_weather_1",
+        "status": "completed",
+    }
+
+
+def test_http_successor_receives_the_official_call_with_its_result() -> None:
+    runtime = _ToolRuntime()
+    client = TestClient(_app(runtime))
+
+    first = client.post(
+        "/v1/responses",
+        json={"model": "buddy", "input": "Jaka pogoda w Kielcach?"},
+    )
+    assert first.status_code == 200
+    first_id = first.json()["id"]
+
+    second = client.post(
+        "/v1/responses",
+        json={
+            "model": "buddy",
+            "previous_response_id": first_id,
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": CALL_ID,
+                    "output": TOOL_RESULT,
+                }
+            ],
+        },
+    )
+    assert second.status_code == 200
+
+    _assert_continuation_history(runtime)
+
+
+def test_websocket_successor_shares_the_same_canonical_mapping_and_registry() -> None:
+    runtime = _ToolRuntime()
+    client = TestClient(_app(runtime))
+
+    with client.websocket_connect("/v1/responses") as websocket:
+        websocket.send_json(
+            {
+                "type": "response.create",
+                "stream_id": "studio",
+                "model": "buddy",
+                "input": "Jaka pogoda w Kielcach?",
+            }
+        )
+        assert websocket.receive_json()["type"] == "response.created"
+        completed = websocket.receive_json()
+        assert completed["type"] == "response.completed"
+        first_id = completed["response"]["id"]
+
+        websocket.send_json(
+            {
+                "type": "response.create",
+                "stream_id": "studio",
+                "model": "buddy",
+                "previous_response_id": first_id,
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": CALL_ID,
+                        "output": TOOL_RESULT,
+                    }
+                ],
+            }
+        )
+        assert websocket.receive_json()["type"] == "response.created"
+        assert websocket.receive_json()["type"] == "response.completed"
+
+    _assert_continuation_history(runtime)
+
+
+def test_http_successor_rejects_a_tool_result_the_lineage_cannot_explain() -> None:
+    runtime = _ToolRuntime()
+    client = TestClient(_app(runtime))
+
+    first = client.post(
+        "/v1/responses",
+        json={"model": "buddy", "input": "Jaka pogoda w Kielcach?"},
+    )
+    first_id = first.json()["id"]
+
+    orphan = client.post(
+        "/v1/responses",
+        json={
+            "model": "buddy",
+            "previous_response_id": first_id,
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_foreign",
+                    "output": TOOL_RESULT,
+                }
+            ],
+        },
+    )
+
+    assert orphan.status_code == 400
+    body = orphan.json()["error"]
+    assert body["code"] == "invalid_responses_request"
+    assert body["param"] == "input[0].call_id"
+    assert len(runtime.starter.requests) == 1

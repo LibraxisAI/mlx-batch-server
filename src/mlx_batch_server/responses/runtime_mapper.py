@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -17,7 +18,25 @@ _TEXT_TYPES = frozenset(("text", "input_text", "output_text"))
 _MEDIA_TYPES = frozenset(("input_image", "input_file", "input_audio", "input_video"))
 _PART_TYPES = _TEXT_TYPES | _MEDIA_TYPES
 _MESSAGE_ITEM_TYPE = "message"
+_FUNCTION_CALL_ITEM_TYPE = "function_call"
 _FUNCTION_OUTPUT_ITEM_TYPE = "function_call_output"
+_ITEM_STATUSES = frozenset(("in_progress", "completed", "incomplete"))
+_FUNCTION_CALL_FIELDS = frozenset(
+    {"type", "id", "call_id", "name", "arguments", "status", "namespace"}
+)
+_FUNCTION_OUTPUT_FIELDS = frozenset({"type", "id", "call_id", "output", "status"})
+# Inherited lineage arrives already canonical, so it also carries the canonical
+# role and rendered content the mapper itself wrote on the previous round.
+_CANONICAL_ITEM_FIELDS = frozenset({"role", "content"})
+_FUNCTION_CALL_LINEAGE_FIELDS = _FUNCTION_CALL_FIELDS | _CANONICAL_ITEM_FIELDS
+_FUNCTION_OUTPUT_LINEAGE_FIELDS = _FUNCTION_OUTPUT_FIELDS | _CANONICAL_ITEM_FIELDS
+_FUNCTION_OUTPUT_CONTENT_FIELDS: Mapping[str, frozenset[str]] = {
+    "input_text": frozenset({"type", "text"}),
+    "input_image": frozenset({"type", "detail", "file_id", "image_url"}),
+    "input_file": frozenset(
+        {"type", "detail", "file_data", "file_id", "file_url", "filename"}
+    ),
+}
 _SUPPORTED_TOP_LEVEL_FIELDS = frozenset(
     {
         "adapter_path",
@@ -187,8 +206,9 @@ class CanonicalResponsesMapper:
         normalised = normalise_responses_payload(raw)
         current = _current_messages(normalised, raw_input=raw.get("input"))
         parents = tuple(
-            _canonical_message(item, "parent_messages") for item in parent_messages
+            _canonical_lineage_item(item, "parent_messages") for item in parent_messages
         )
+        _validate_call_lineage(parents, current)
         instructions = _instruction_messages(raw)
         lineage_messages = _instructions_first((*parents, *current))
         materialized = _instructions_first((*instructions, *lineage_messages))
@@ -304,6 +324,9 @@ def _validate_raw_input(raw_input: Any) -> None:
         if not isinstance(entry, Mapping):
             raise _invalid("input entries must be text or message mappings", param)
         item_type = entry.get("type")
+        if item_type == _FUNCTION_CALL_ITEM_TYPE:
+            _validate_function_call(entry, param)
+            continue
         if item_type == _FUNCTION_OUTPUT_ITEM_TYPE:
             call_id = _validate_function_call_output(entry, param)
             if call_id in function_call_ids:
@@ -331,8 +354,37 @@ def _validate_raw_input(raw_input: Any) -> None:
         _validate_raw_content(entry.get("content"), f"{param}.content")
 
 
-def _validate_function_call_output(entry: Mapping[str, Any], param: str) -> str:
-    unknown = set(entry) - {"type", "call_id", "output"}
+def _validate_function_call(
+    entry: Mapping[str, Any],
+    param: str,
+    *,
+    allowed: frozenset[str] = _FUNCTION_CALL_FIELDS,
+) -> str:
+    """Validate one official `function_call` item against the installed SDK shape."""
+
+    unknown = set(entry) - allowed
+    if unknown:
+        raise _invalid("function_call contains unsupported fields", param)
+    call_id = _required_item_identity(entry, "call_id", "function_call", param)
+    _required_item_identity(entry, "name", "function_call", param)
+    if not isinstance(entry.get("arguments"), str):
+        raise _invalid(
+            "function_call arguments must be a JSON string",
+            f"{param}.arguments",
+        )
+    _validate_optional_item_identity(entry, "id", "function_call", param)
+    _validate_optional_item_identity(entry, "namespace", "function_call", param)
+    _validate_item_status(entry, "function_call", param)
+    return call_id
+
+
+def _validate_function_call_output(
+    entry: Mapping[str, Any],
+    param: str,
+    *,
+    allowed: frozenset[str] = _FUNCTION_OUTPUT_FIELDS,
+) -> str:
+    unknown = set(entry) - allowed
     if unknown:
         raise _invalid(
             "function_call_output contains unsupported fields",
@@ -348,18 +400,101 @@ def _validate_function_call_output(entry: Mapping[str, Any], param: str) -> str:
             "function_call_output output is required",
             f"{param}.output",
         )
-    call_id = entry.get("call_id")
-    if not isinstance(call_id, str) or not call_id or call_id != call_id.strip():
-        raise _invalid(
-            "function_call_output call_id must be a non-blank string",
-            f"{param}.call_id",
-        )
-    if not isinstance(entry.get("output"), str):
-        raise _invalid(
-            "function_call_output output must be a string",
-            f"{param}.output",
-        )
+    call_id = _required_item_identity(
+        entry, "call_id", _FUNCTION_OUTPUT_ITEM_TYPE, param
+    )
+    _validate_optional_item_identity(entry, "id", _FUNCTION_OUTPUT_ITEM_TYPE, param)
+    _validate_item_status(entry, _FUNCTION_OUTPUT_ITEM_TYPE, param)
+    _validate_function_output_union(entry["output"], f"{param}.output")
     return call_id
+
+
+def _validate_function_output_union(output: Any, param: str) -> None:
+    """Accept the installed SDK `output` union: text or official content items."""
+
+    if isinstance(output, str):
+        return
+    if not _is_sequence(output):
+        raise _invalid(
+            "function_call_output output must be text or official output content",
+            param,
+        )
+    items = tuple(output)
+    if not items:
+        raise _invalid(
+            "function_call_output output content must not be empty",
+            param,
+        )
+    for index, item in enumerate(items):
+        item_param = f"{param}[{index}]"
+        if not isinstance(item, Mapping):
+            raise _invalid(
+                "function_call_output output content must be mappings",
+                item_param,
+            )
+        kind = item.get("type")
+        allowed = (
+            _FUNCTION_OUTPUT_CONTENT_FIELDS.get(kind) if isinstance(kind, str) else None
+        )
+        if allowed is None:
+            raise _invalid(
+                "function_call_output output content type is unsupported",
+                f"{item_param}.type",
+            )
+        if set(item) - allowed:
+            raise _invalid(
+                "function_call_output output content has unsupported fields",
+                item_param,
+            )
+        if kind == "input_text":
+            if not isinstance(item.get("text"), str):
+                raise _invalid(
+                    "function_call_output output text must be a string",
+                    f"{item_param}.text",
+                )
+            continue
+        sources = (
+            ("file_id", "image_url")
+            if kind == "input_image"
+            else ("file_data", "file_id", "file_url")
+        )
+        if not any(
+            isinstance(item.get(field), str) and item[field].strip()
+            for field in sources
+        ):
+            raise _invalid(
+                "function_call_output output content has no source",
+                item_param,
+            )
+
+
+def _required_item_identity(
+    entry: Mapping[str, Any], field: str, item_type: str, param: str
+) -> str:
+    value = entry.get(field)
+    if field not in entry:
+        raise _invalid(f"{item_type} {field} is required", f"{param}.{field}")
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise _invalid(
+            f"{item_type} {field} must be a non-blank string",
+            f"{param}.{field}",
+        )
+    return value
+
+
+def _validate_optional_item_identity(
+    entry: Mapping[str, Any], field: str, item_type: str, param: str
+) -> None:
+    if field not in entry or entry[field] is None:
+        return
+    _required_item_identity(entry, field, item_type, param)
+
+
+def _validate_item_status(entry: Mapping[str, Any], item_type: str, param: str) -> None:
+    if "status" not in entry or entry["status"] is None:
+        return
+    if entry["status"] not in _ITEM_STATUSES:
+        raise _invalid(f"{item_type} status is unknown", f"{param}.status")
 
 
 def _validate_raw_content(content: Any, param: str) -> None:
@@ -598,6 +733,11 @@ def _current_messages(
         param = f"input[{index}]"
         if (
             isinstance(raw_item, Mapping)
+            and raw_item.get("type") == _FUNCTION_CALL_ITEM_TYPE
+        ):
+            current.append(_canonical_function_call(raw_item, param))
+        elif (
+            isinstance(raw_item, Mapping)
             and raw_item.get("type") == _FUNCTION_OUTPUT_ITEM_TYPE
         ):
             current.append(_canonical_function_call_output(raw_item, param))
@@ -613,25 +753,144 @@ def _current_messages(
 
 
 def _canonical_function_call_output(
-    value: Mapping[str, Any], param: str
+    value: Mapping[str, Any],
+    param: str,
+    *,
+    allowed: frozenset[str] = _FUNCTION_OUTPUT_FIELDS,
 ) -> Mapping[str, Any]:
-    call_id = _validate_function_call_output(value, param)
-    output = value["output"]
-    if not isinstance(output, str):  # pragma: no cover - validated above
-        raise _invalid(
-            "function_call_output output must be a string",
-            f"{param}.output",
-        )
+    call_id = _validate_function_call_output(value, param, allowed=allowed)
+    output = _deliverable_function_output(value["output"], f"{param}.output")
     content = (_FrozenDict({"type": "input_text", "text": output}),)
-    return _FrozenDict(
-        {
-            "type": _FUNCTION_OUTPUT_ITEM_TYPE,
-            "role": "tool",
-            "call_id": call_id,
-            "output": output,
-            "content": content,
-        }
+    canonical: dict[str, Any] = {
+        "type": _FUNCTION_OUTPUT_ITEM_TYPE,
+        "role": "tool",
+        "call_id": call_id,
+        "output": output,
+        "content": content,
+    }
+    _carry_item_identity(canonical, value, ("id", "status"))
+    return _FrozenDict(canonical)
+
+
+def _deliverable_function_output(output: Any, param: str) -> str:
+    """Reduce the official output union to the text the model renderers accept.
+
+    The union is validated in full before this point, so nothing here can
+    stringify or silently drop a variant. Image, file and multi-part text
+    outputs keep their wire identity in the request and are refused with an
+    explicit capability error at this narrowest semantic boundary, because no
+    installed renderer can carry them on a `function_call_output` item.
+    """
+
+    if isinstance(output, str):
+        return output
+    items = tuple(output)
+    if len(items) == 1 and items[0].get("type") == "input_text":
+        return str(items[0]["text"])
+    raise ResponsesMappingError(
+        "function_call_output output content is not supported by this runtime",
+        code="unsupported_capability",
+        param=param,
     )
+
+
+def _canonical_function_call(
+    value: Mapping[str, Any],
+    param: str,
+    *,
+    allowed: frozenset[str] = _FUNCTION_CALL_FIELDS,
+) -> Mapping[str, Any]:
+    """Preserve one official `function_call` losslessly in canonical history."""
+
+    call_id = _validate_function_call(value, param, allowed=allowed)
+    name = str(value["name"])
+    arguments = str(value["arguments"])
+    canonical: dict[str, Any] = {
+        "type": _FUNCTION_CALL_ITEM_TYPE,
+        "role": "assistant",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "content": (
+            _FrozenDict(
+                {
+                    "type": "input_text",
+                    "text": _function_call_text(call_id, name, arguments),
+                }
+            ),
+        ),
+    }
+    _carry_item_identity(canonical, value, ("id", "status", "namespace"))
+    return _FrozenDict(canonical)
+
+
+def _function_call_text(call_id: str, name: str, arguments: str) -> str:
+    """Render the call exactly as the official item, deterministically."""
+
+    return json.dumps(
+        {
+            "type": _FUNCTION_CALL_ITEM_TYPE,
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _carry_item_identity(
+    canonical: dict[str, Any],
+    value: Mapping[str, Any],
+    fields: tuple[str, ...],
+) -> None:
+    for field in fields:
+        carried = value.get(field)
+        if isinstance(carried, str) and carried:
+            canonical[field] = carried
+
+
+def _canonical_lineage_item(value: Any, param: str) -> Mapping[str, Any]:
+    """Canonicalize one inherited item without losing its official identity."""
+
+    if isinstance(value, Mapping):
+        item_type = value.get("type")
+        if item_type == _FUNCTION_CALL_ITEM_TYPE:
+            return _canonical_function_call(
+                value, param, allowed=_FUNCTION_CALL_LINEAGE_FIELDS
+            )
+        if item_type == _FUNCTION_OUTPUT_ITEM_TYPE:
+            return _canonical_function_call_output(
+                value, param, allowed=_FUNCTION_OUTPUT_LINEAGE_FIELDS
+            )
+    return _canonical_message(value, param)
+
+
+def _validate_call_lineage(
+    parents: Sequence[Mapping[str, Any]],
+    current: Sequence[Mapping[str, Any]],
+) -> None:
+    """Reject a tool result that no preceding call in the lineage can explain."""
+
+    seen: set[str] = set()
+    for index, item in enumerate((*parents, *current)):
+        item_type = item.get("type")
+        if item_type == _FUNCTION_CALL_ITEM_TYPE:
+            seen.add(str(item["call_id"]))
+        elif item_type == _FUNCTION_OUTPUT_ITEM_TYPE:
+            call_id = str(item["call_id"])
+            if call_id in seen:
+                continue
+            param = (
+                f"input[{index - len(parents)}].call_id"
+                if index >= len(parents)
+                else "previous_response_id"
+            )
+            raise _invalid(
+                "no function_call in this conversation matches "
+                f"function_call_output call_id {call_id!r}",
+                param,
+            )
 
 
 def _canonical_message(value: Any, param: str) -> Mapping[str, Any]:
@@ -676,6 +935,11 @@ def _text_message(message: Mapping[str, Any]) -> Mapping[str, Any]:
     }
     message_type = message.get("type")
     if message_type == _MESSAGE_ITEM_TYPE:
+        canonical["type"] = _MESSAGE_ITEM_TYPE
+    elif message_type == _FUNCTION_CALL_ITEM_TYPE:
+        # No installed renderer seals a `function_call` item yet, so the call is
+        # delivered as the assistant turn that produced it, carrying the exact
+        # official item as its text. Canonical history keeps the typed item.
         canonical["type"] = _MESSAGE_ITEM_TYPE
     elif message_type == _FUNCTION_OUTPUT_ITEM_TYPE:
         canonical.update(
@@ -809,39 +1073,7 @@ def _sampling(payload: Mapping[str, Any], *, has_tools: bool) -> Mapping[str, An
         sampling["parallel_tool_calls"] = parallel_tool_calls
     tool_choice = payload.get("tool_choice")
     if tool_choice is not None:
-        if not isinstance(tool_choice, str | Mapping):
-            raise _invalid("tool_choice must be text or a mapping", "tool_choice")
-        if isinstance(tool_choice, str) and tool_choice not in {
-            "auto",
-            "none",
-            "required",
-        }:
-            raise ResponsesMappingError(
-                "only auto, none, required, or function tool_choice is supported",
-                code="unsupported_tool_choice",
-                param="tool_choice",
-            )
-        if isinstance(tool_choice, Mapping):
-            if set(tool_choice) - {"type", "name"}:
-                raise ResponsesMappingError(
-                    "function tool_choice contains unsupported fields",
-                    code="unsupported_parameter",
-                    param="tool_choice",
-                )
-            if tool_choice.get("type") != "function":
-                raise ResponsesMappingError(
-                    "only function tool_choice is supported locally",
-                    code="unsupported_tool_choice",
-                    param="tool_choice.type",
-                )
-            name = tool_choice.get("name")
-            if not isinstance(name, str) or not name.strip():
-                raise _invalid(
-                    "function tool_choice name must be non-blank",
-                    "tool_choice.name",
-                )
-        if not has_tools and tool_choice != "none":
-            raise _invalid("tool_choice requires tools", "tool_choice")
+        _validate_tool_choice(tool_choice, has_tools=has_tools)
         sampling["tool_choice"] = _freeze(tool_choice)
     for field in ("response_format", "text"):
         if field in payload and payload[field] is not None:
@@ -849,6 +1081,42 @@ def _sampling(payload: Mapping[str, Any], *, has_tools: bool) -> Mapping[str, An
                 raise _invalid(f"{field} must be a mapping", field)
             sampling[field] = _freeze(payload[field])
     return _FrozenDict(sampling)
+
+
+def _validate_tool_choice(tool_choice: Any, *, has_tools: bool) -> None:
+    if not isinstance(tool_choice, str | Mapping):
+        raise _invalid("tool_choice must be text or a mapping", "tool_choice")
+    if isinstance(tool_choice, str) and tool_choice not in {
+        "auto",
+        "none",
+        "required",
+    }:
+        raise ResponsesMappingError(
+            "only auto, none, required, or function tool_choice is supported",
+            code="unsupported_tool_choice",
+            param="tool_choice",
+        )
+    if isinstance(tool_choice, Mapping):
+        if set(tool_choice) - {"type", "name"}:
+            raise ResponsesMappingError(
+                "function tool_choice contains unsupported fields",
+                code="unsupported_parameter",
+                param="tool_choice",
+            )
+        if tool_choice.get("type") != "function":
+            raise ResponsesMappingError(
+                "only function tool_choice is supported locally",
+                code="unsupported_tool_choice",
+                param="tool_choice.type",
+            )
+        name = tool_choice.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise _invalid(
+                "function tool_choice name must be non-blank",
+                "tool_choice.name",
+            )
+    if not has_tools and tool_choice != "none":
+        raise _invalid("tool_choice requires tools", "tool_choice")
 
 
 def _metadata(

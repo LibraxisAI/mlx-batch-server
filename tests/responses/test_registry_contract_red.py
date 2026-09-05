@@ -556,3 +556,129 @@ def test_shutdown_request_runs_cancel_on_caller_and_wait_is_separate() -> None:
         materialized_messages=[],
     )
     assert registry.wait_for_shutdown(waiters, 0.0) is True
+
+
+def test_parent_lineage_materializes_the_complete_output_item_sequence() -> None:
+    """A stored function_call must reach round two, not only assistant text."""
+
+    registry = ResponseRegistry()
+    inputs = [{"role": "user", "content": "Jaka pogoda w Kielcach?"}]
+    registry.begin(
+        "resp_tool",
+        owner_id=OWNER_A,
+        store=True,
+        materialized_messages=inputs,
+    )
+    registry.commit(
+        "resp_tool",
+        {
+            "id": "resp_tool",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Sprawdzam."}],
+                },
+                {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": '{"city":"Kielce"}',
+                },
+            ],
+        },
+        owner_id=OWNER_A,
+        materialized_messages=inputs,
+    )
+
+    assert registry.input_messages("resp_tool", owner_id=OWNER_A) == inputs
+    assert registry.parent_messages("resp_tool", owner_id=OWNER_A) == [
+        *inputs,
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "Sprawdzam."}],
+        },
+        {
+            "type": "function_call",
+            "role": "assistant",
+            "call_id": "call_1",
+            "name": "get_weather",
+            "arguments": '{"city":"Kielce"}',
+            "id": "fc_1",
+            "status": "completed",
+        },
+    ]
+
+
+def test_unusable_stored_function_call_cannot_anchor_a_continuation() -> None:
+    """An identity-less call must fail closed, not hand the model an orphan."""
+
+    registry = ResponseRegistry()
+    inputs = [{"role": "user", "content": "hello"}]
+    registry.begin(
+        "resp_partial",
+        owner_id=OWNER_A,
+        store=True,
+        materialized_messages=inputs,
+    )
+    registry.commit(
+        "resp_partial",
+        {
+            "id": "resp_partial",
+            "object": "response",
+            "status": "incomplete",
+            "output": [
+                {"type": "function_call", "status": "incomplete", "arguments": "{"}
+            ],
+        },
+        owner_id=OWNER_A,
+        materialized_messages=inputs,
+    )
+
+    with pytest.raises(ResponseRegistryError) as error:
+        registry.parent_messages("resp_partial", owner_id=OWNER_A)
+    assert error.value.code == "response_invalid_lineage"
+    assert error.value.status_code == 409
+    assert error.value.param == "previous_response_id"
+    # The stored response itself stays readable and owner-isolated.
+    assert registry.get("resp_partial", owner_id=OWNER_A)["status"] == "incomplete"
+    assert registry.input_messages("resp_partial", owner_id=OWNER_A) == inputs
+
+
+def test_store_false_lineage_is_not_retained_for_tool_continuations() -> None:
+    registry = ResponseRegistry()
+    registry.begin(
+        "resp_nostore",
+        owner_id=OWNER_A,
+        store=False,
+        materialized_messages=[{"role": "user", "content": "hi"}],
+    )
+    registry.commit(
+        "resp_nostore",
+        {
+            "id": "resp_nostore",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "status": "completed",
+                    "call_id": "call_1",
+                    "name": "t",
+                    "arguments": "{}",
+                }
+            ],
+        },
+        owner_id=OWNER_A,
+        materialized_messages=[{"role": "user", "content": "hi"}],
+    )
+
+    with pytest.raises(ResponseRegistryError) as error:
+        registry.parent_messages("resp_nostore", owner_id=OWNER_A)
+    assert error.value.param == "previous_response_id"
+    assert error.value.code != "response_invalid_lineage"
