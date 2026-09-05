@@ -196,13 +196,7 @@ def test_vlm_batch_coordinator_attaches_llm_surface(monkeypatch) -> None:
     monkeypatch.setattr(
         vlm_batch,
         "_vlm_batch_generate",
-        lambda model,
-        processor,
-        *,
-        images=None,
-        prompts=None,
-        max_tokens=128,
-        **kwargs: (
+        lambda model, processor, *, images=None, prompts=None, max_tokens=128, **kwargs: (
             SimpleNamespace(
                 texts=["batched vision"],
                 prompt_tokens=3,

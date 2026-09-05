@@ -135,7 +135,8 @@ def test_business_endpoints_accept_static_api_key(
             )
 
     class FakeAnthropicModel:
-        def generate(self, request):
+        def generate(self, request, *, admission):
+            assert admission is not None
             return _DumpableResponse(
                 {
                     "id": "msg_test",
@@ -212,10 +213,9 @@ def test_business_endpoints_accept_static_api_key(
     monkeypatch.setattr(chat_router, "endpoint_runtime_session", _noop_runtime_session)
     monkeypatch.setattr(chat_router, "_create_text_model", get_fake_text_model)
     monkeypatch.setattr(
-        anthropic_router, "endpoint_runtime_session", _noop_runtime_session
-    )
-    monkeypatch.setattr(
-        anthropic_router, "_create_anthropic_model", get_fake_anthropic_model
+        anthropic_router,
+        "_create_request_engine",
+        lambda *_args: get_fake_anthropic_model(),
     )
     monkeypatch.setattr(model_routes, "get_models_service", get_fake_models_service)
     monkeypatch.setattr(

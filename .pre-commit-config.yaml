@@ -38,7 +38,7 @@ repos:
 
   # Ruff - ultra-fast Python linter & formatter (replaces black, isort, flake8)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.15.11
     hooks:
       - id: ruff
         entry: python3 scripts/quality/phase_gate.py --gate ruff -- ruff check
