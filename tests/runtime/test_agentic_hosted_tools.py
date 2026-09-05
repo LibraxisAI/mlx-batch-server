@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import hashlib
+import inspect
 import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -508,6 +509,13 @@ async def test_per_call_timeout_is_f8_not_an_outer_deadline() -> None:
 
 @pytest.mark.asyncio
 async def test_successful_hosted_execution_grounds_one_more_round() -> None:
+    from openai.types.responses import ResponseFunctionWebSearch
+
+    from mlx_batch_server.responses.transport import (
+        render_completed_item,
+        render_started_item,
+    )
+
     inner = _FakeInner(
         (
             _Round(tool_calls=(("call_a", "web_search", '{"query":"loctree"}'),)),
@@ -519,8 +527,14 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     events, _ = await _drive(starter, _request(({"type": "web_search"},)))
 
     started = _of(events, HostedCallStarted)
+    item_starts = [
+        event for event in _of(events, OutputItemStarted) if event.kind == "hosted_call"
+    ]
     receipts = _of(events, HostedCallCompleted)
-    assert len(started) == 1 and len(receipts) == 1
+    assert len(item_starts) == len(started) == len(receipts) == 1
+    assert item_starts[0].action == started[0].action == {"query": "loctree"}
+    with pytest.raises(TypeError):
+        item_starts[0].action["query"] = "mutated"  # type: ignore[index,union-attr]
     assert events.index(started[0]) < events.index(receipts[0])
     assert receipts[0].status == "completed"
     assert receipts[0].receipt["result_count"] == 1
@@ -547,6 +561,18 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     assert action["sources"] == ("https://ok.example",)
     assert events.index(receipts[0]) < events.index(hosted_items[0])
 
+    # Delivery trace: the same admitted runtime facts form both exact SDK
+    # items, with no future source on the opening item and only the
+    # receipt-proven source on the sealed completion.
+    opened_payload = render_started_item(item_starts[0])
+    completed_payload = render_completed_item(hosted_items[0])
+    ResponseFunctionWebSearch.model_validate(opened_payload)
+    ResponseFunctionWebSearch.model_validate(completed_payload)
+    assert opened_payload["action"] == {"type": "search", "query": "loctree"}
+    assert completed_payload["action"]["sources"] == [
+        {"type": "url", "url": "https://ok.example"}
+    ]
+
     # V4: the outer usage equals the monotone sum over both child rounds.
     completed = _of(events, TurnCompleted)[0]
     assert completed.usage is not None
@@ -563,6 +589,11 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     kinds = [e.kind for e in _of(events, OutputItemStarted)]
     assert "function_call" not in kinds
     assert kinds.count("hosted_call") == 1
+
+
+def test_hosted_start_computes_the_opening_action_once() -> None:
+    source = inspect.getsource(agentic_module._HostedAgenticTurn._emit_hosted_started)
+    assert source.count("_call_action(call)") == 1
 
 
 @pytest.mark.asyncio

@@ -179,13 +179,14 @@ class TurnStarted:
 
 @dataclass(frozen=True, slots=True)
 class OutputItemStarted:
-    """Open one output item, carrying tool identity from its very first event."""
+    """Open one output item with every immutable input known at admission."""
 
     kind: str
     index: int
     item_id: str
     call_id: str | None = None
     name: str | None = None
+    action: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in OUTPUT_ITEM_KINDS:
@@ -199,7 +200,27 @@ class OutputItemStarted:
                 )
             _require_identity("call_id", self.call_id)
             _require_identity("name", self.name)
+            if self.kind == HOSTED_CALL_ITEM_KIND:
+                if self.action is None:
+                    raise ValueError(
+                        "hosted_call output item start requires its opening action"
+                    )
+                frozen = _freeze_mapping(self.action)
+                if not frozen:
+                    raise ValueError(
+                        "hosted_call output item start requires a non-empty action"
+                    )
+                object.__setattr__(self, "action", frozen)
+                return
+            if self.action is not None:
+                raise ValueError(
+                    "function_call output item start cannot carry a hosted action"
+                )
             return
+        if self.action is not None:
+            raise ValueError(
+                f"{self.kind} output item start cannot carry a hosted action"
+            )
         if self.call_id is not None or self.name is not None:
             raise ValueError(
                 f"{self.kind} output item start cannot carry tool identity"

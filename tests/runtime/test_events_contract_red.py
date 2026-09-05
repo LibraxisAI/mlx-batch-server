@@ -107,17 +107,57 @@ def test_hosted_events_reject_empty_identity() -> None:
         )
 
 
-def test_hosted_call_output_item_start_requires_tool_identity() -> None:
+def test_hosted_call_output_item_start_requires_identity_and_opening_action() -> None:
     with pytest.raises(ValueError):
         OutputItemStarted(kind=HOSTED_CALL_ITEM_KIND, index=0, item_id="hosted_1")
+    with pytest.raises(ValueError, match="requires its opening action"):
+        OutputItemStarted(
+            kind=HOSTED_CALL_ITEM_KIND,
+            index=0,
+            item_id="hosted_1",
+            call_id="call_1",
+            name="web_search",
+        )
+    with pytest.raises(ValueError, match="non-empty action"):
+        OutputItemStarted(
+            kind=HOSTED_CALL_ITEM_KIND,
+            index=0,
+            item_id="hosted_1",
+            call_id="call_1",
+            name="web_search",
+            action={},
+        )
     event = OutputItemStarted(
         kind=HOSTED_CALL_ITEM_KIND,
         index=0,
         item_id="hosted_1",
         call_id="call_1",
         name="web_search",
+        action={"query": "loctree", "nested": {"values": [1, 2]}},
     )
     assert event.call_id == "call_1"
+    assert event.action is not None
+    assert event.action["nested"]["values"] == (1, 2)
+    with pytest.raises(TypeError):
+        event.action["query"] = "mutated"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        event.action["nested"]["values"] = ()  # type: ignore[index]
+
+
+def test_only_hosted_item_starts_may_carry_an_action() -> None:
+    for kind, identity in (
+        ("message", {}),
+        ("reasoning", {}),
+        ("function_call", {"call_id": "call_1", "name": "lookup"}),
+    ):
+        with pytest.raises(ValueError, match="cannot carry a hosted action"):
+            OutputItemStarted(
+                kind=kind,
+                index=0,
+                item_id=f"{kind}_1",
+                action={"query": "loctree"},
+                **identity,  # type: ignore[arg-type]
+            )
 
 
 def test_hosted_call_output_item_completion_permits_failed_status() -> None:

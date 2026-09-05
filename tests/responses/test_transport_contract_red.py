@@ -34,6 +34,7 @@ from mlx_batch_server.responses.transport import (
     parse_websocket_command,
     render_completed_item,
     render_hosted_call_item,
+    render_started_item,
 )
 from mlx_batch_server.responses.websocket import (
     ResponsesWebSocketSession,
@@ -1733,6 +1734,19 @@ _SEALED_SEARCH_ACTION = {
     "sources": ("https://a.example/one", "https://b.example/two"),
 }
 
+_OPENING_SEARCH_ACTION = {"query": "mlx batch server"}
+
+
+def _hosted_started_event(**action: Any) -> OutputItemStarted:
+    return OutputItemStarted(
+        kind="hosted_call",
+        index=2,
+        item_id="ws_1",
+        call_id="call_ws_1",
+        name="web_search",
+        action=action or _OPENING_SEARCH_ACTION,
+    )
+
 
 def _hosted_completed_event(status: str = "completed") -> OutputItemCompleted:
     action = dict(_SEALED_SEARCH_ACTION)
@@ -1831,6 +1845,75 @@ def test_hosted_completed_item_renders_exactly_from_the_sealed_action() -> None:
     ResponseFunctionWebSearch.model_validate(failed)
 
 
+def test_hosted_started_item_is_exact_and_sdk_valid() -> None:
+    from openai.types.responses import ResponseFunctionWebSearch
+
+    rendered = render_started_item(_hosted_started_event())
+    assert rendered == {
+        "id": "ws_1",
+        "type": "web_search_call",
+        "status": "in_progress",
+        "action": {"type": "search", "query": "mlx batch server"},
+    }
+    parsed = ResponseFunctionWebSearch.model_validate(rendered)
+    assert parsed.action.query == "mlx batch server"
+    assert "sources" not in rendered["action"]
+    assert "results" not in rendered
+    assert "text" not in rendered
+    assert rendered["type"] != "function_call"
+
+
+def test_hosted_started_item_fails_closed_for_non_search_or_unknown_actions() -> None:
+    with pytest.raises(ValueError, match="hosted web_search starts"):
+        render_started_item(
+            OutputItemStarted(
+                "hosted_call",
+                0,
+                "fetch_1",
+                "call_fetch",
+                "web_fetch",
+                {"url": "https://example.com"},
+            )
+        )
+    with pytest.raises(ValueError, match="exactly one query"):
+        render_started_item(_hosted_started_event(arguments="{}"))
+    with pytest.raises(ValueError, match="exactly one query"):
+        render_started_item(
+            _hosted_started_event(
+                query="mlx batch server",
+                sources=["https://prefabricated.example"],
+            )
+        )
+    with pytest.raises(ValueError, match="non-empty query"):
+        render_started_item(_hosted_started_event(query=" "))
+
+
+def test_non_hosted_started_item_goldens_are_unchanged() -> None:
+    assert render_started_item(OutputItemStarted("message", 0, "msg_1")) == {
+        "id": "msg_1",
+        "type": "message",
+        "status": "in_progress",
+        "role": "assistant",
+        "content": [],
+    }
+    assert render_started_item(OutputItemStarted("reasoning", 1, "rs_1")) == {
+        "id": "rs_1",
+        "type": "reasoning",
+        "status": "in_progress",
+        "summary": [],
+    }
+    assert render_started_item(
+        OutputItemStarted("function_call", 2, "fc_1", "call_1", "lookup")
+    ) == {
+        "id": "fc_1",
+        "type": "function_call",
+        "status": "in_progress",
+        "call_id": "call_1",
+        "name": "lookup",
+        "arguments": "",
+    }
+
+
 def test_hosted_fetch_actions_have_no_responses_item_rendering() -> None:
     with pytest.raises(ValueError, match="search actions"):
         render_hosted_call_item("ws_2", "completed", {"kind": "fetch", "url": "u"})
@@ -1893,6 +1976,7 @@ def _spine_turn_events() -> tuple[TurnEvent, ...]:
             name="lookup",
             arguments="{}",
         ),
+        _hosted_started_event(),
         _hosted_completed_event(),
         usage,
         TurnCompleted("tool_calls", usage),
