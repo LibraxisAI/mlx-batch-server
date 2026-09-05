@@ -352,11 +352,15 @@ def test_validation_model_eval_and_scatter_failures_do_not_increment(
 def test_refused_verified_commit_never_increments_target_verify_evidence() -> None:
     runtime = _runtime(_FakeTensorModel(refuse_commit=True))
 
-    with pytest.raises(RuntimeError, match="verified-window commit was refused"):
-        runtime._decode_mtp_batch((_reservation(10), _reservation(20)), draft_depth=2)
+    outcomes = runtime._decode_mtp_batch(
+        (_reservation(10), _reservation(20)),
+        draft_depth=2,
+    )
 
+    assert len(outcomes) == 2
     phases = _telemetry(runtime)["phases"]
     assert phases["mtp_draft"]["completed_calls"] == 2
     assert phases["target_verify"]["completed_calls"] == 0
     assert phases["target_correction"]["completed_calls"] == 0
-    assert phases["mtp_history_update"]["completed_calls"] == 0
+    assert phases["target_decode"]["completed_calls"] == 1
+    assert phases["mtp_history_update"]["completed_calls"] == 2
