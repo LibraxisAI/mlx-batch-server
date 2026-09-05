@@ -65,9 +65,9 @@ async def test_one_exact_request_returns_at_most_five_closed_results() -> None:
     assert request.url.scheme == "https"
     assert request.url.host == "api.search.brave.com"
     assert request.url.path == "/res/v1/web/search"
-    assert BRAVE_WEB_SEARCH_ENDPOINT == (
+    assert (
         f"{request.url.scheme}://{request.url.host}{request.url.path}"
-    )
+    ) == BRAVE_WEB_SEARCH_ENDPOINT
     assert request.url.params.get("q") == query
     assert request.url.params.get("count") == "5"
     assert request.headers["Accept"] == "application/json"

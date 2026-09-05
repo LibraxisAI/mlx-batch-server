@@ -933,9 +933,7 @@ class AnthropicMessageProjector:
                 "hosted citation source range exceeds its web_fetch document",
                 error_type="api_error",
             )
-        if (
-            source_text[event.source_start : event.source_end] != event.cited_text
-        ):
+        if source_text[event.source_start : event.source_end] != event.cited_text:
             raise AnthropicAPIError(
                 "hosted citation source range is not verbatim web_fetch document text",
                 error_type="api_error",
