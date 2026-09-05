@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess
+import subprocess  # nosec B404
 import tomllib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -166,7 +166,7 @@ def compose_source_build_receipt(
 
 def _read_git_checkout(repo_root: Path) -> RuntimeProvenance:
     try:
-        sha = subprocess.run(
+        sha = subprocess.run(  # nosec B603
             ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
             check=True,
             capture_output=True,
@@ -175,7 +175,7 @@ def _read_git_checkout(repo_root: Path) -> RuntimeProvenance:
         ).stdout.strip()
         if _FULL_GIT_SHA.fullmatch(sha) is None:
             return RuntimeProvenance(source_sha=None, source_dirty=None)
-        status = subprocess.run(
+        status = subprocess.run(  # nosec B603
             ["git", "-C", str(repo_root), "status", "--porcelain"],
             check=True,
             capture_output=True,

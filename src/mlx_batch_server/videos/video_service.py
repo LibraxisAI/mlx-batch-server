@@ -11,7 +11,7 @@ import base64
 import binascii
 import hashlib
 import os
-import subprocess
+import subprocess  # nosec B404
 import tempfile
 import time
 import uuid
@@ -105,7 +105,7 @@ class MlxVideoAdapter:
             command = self._ltx_command(request, output_path, image, end_image)
             # shell=False; executable/module are server-owned and every request
             # value is one argv element validated by VideoGenerationRequest.
-            completed = subprocess.run(  # nosemgrep: python.django.security.injection.command.subprocess-injection.subprocess-injection
+            completed = subprocess.run(  # nosec B603  # nosemgrep: python.django.security.injection.command.subprocess-injection.subprocess-injection
                 command,
                 cwd=self.root,
                 env=self._environment(),

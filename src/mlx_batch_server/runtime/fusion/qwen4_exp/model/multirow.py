@@ -26,9 +26,7 @@ class MultirowBatchPlan(Generic[_T]):
             raise ValueError("row_count must be non-negative")
         if self.active_ordinals != tuple(sorted(set(self.active_ordinals))):
             raise ValueError("active ordinals must be unique and ordered")
-        if any(
-            not 0 <= ordinal < self.row_count for ordinal in self.active_ordinals
-        ):
+        if any(not 0 <= ordinal < self.row_count for ordinal in self.active_ordinals):
             raise ValueError("active ordinal is outside the scheduler cohort")
 
     @classmethod

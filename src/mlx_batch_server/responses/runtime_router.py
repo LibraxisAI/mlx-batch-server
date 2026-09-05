@@ -41,7 +41,7 @@ class ResponsesRouteRuntime(Protocol):
     response_registry: ResponseRegistry
 
 
-def build_runtime_responses_router(
+def build_runtime_responses_router(  # noqa: PLR0915 - protocol route factory
     runtime: ResponsesRouteRuntime,
     *,
     cancel_wait_timeout_s: float = 30.0,
@@ -468,9 +468,7 @@ def _operation_error(
     error: CompactionError | ResponsesOperationError,
 ) -> JSONResponse:
     status_code = int(getattr(error, "status_code", 400))
-    error_type = (
-        "server_error" if status_code >= 500 else "invalid_request_error"
-    )
+    error_type = "server_error" if status_code >= 500 else "invalid_request_error"
     return JSONResponse(
         content={
             "error": {
