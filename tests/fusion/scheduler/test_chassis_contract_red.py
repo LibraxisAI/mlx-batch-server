@@ -236,6 +236,38 @@ def test_completed_decode_frees_admission_capacity() -> None:
     )
 
 
+def test_stop_sequence_value_survives_scheduler_terminalization() -> None:
+    scheduler = SchedulerChassis()
+    scheduler.submit(SchedulerRequest("stopped"))
+    _complete_prefill(scheduler, "stopped")
+    plan = scheduler.next_plan()
+
+    update = scheduler.complete_step(
+        plan,
+        decode_results=(
+            DecodeResult(
+                "stopped",
+                17,
+                finished=True,
+                finish_reason="stop_sequence",
+                stop_sequence="Exact END",
+            ),
+        ),
+    )
+
+    assert update.terminal_requests[0].reason == "stop_sequence"
+    assert update.terminal_requests[0].stop_sequence == "Exact END"
+
+
+def test_stop_sequence_terminal_contract_rejects_encoded_or_stray_values() -> None:
+    with pytest.raises(ValueError, match="requires an exact value"):
+        DecodeResult("missing", 1, finished=True, finish_reason="stop_sequence")
+    with pytest.raises(ValueError, match="non-stop terminal"):
+        DecodeResult(
+            "stray", 1, finished=True, finish_reason="stop", stop_sequence="END"
+        )
+
+
 def test_plan_must_be_completed_before_next_step() -> None:
     scheduler = SchedulerChassis()
     scheduler.submit(SchedulerRequest("request"))

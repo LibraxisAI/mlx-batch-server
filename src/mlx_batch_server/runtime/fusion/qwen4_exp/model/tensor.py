@@ -75,6 +75,7 @@ from ...cache import CacheCleanupReceipt, CacheReleaseReason, CacheTier
 from ...mtp import MtpAlignment, MtpDecision, MtpDisableReason, MtpPolicy
 from ...output import Qwen4OutputChunk, Qwen4TurnEventEncoderFactory
 from ...scheduler import DecodeResult, PrefillResult, SchedulerConfig, SchedulerPlan
+from ...stop_sequences import IncrementalStopMatcher
 from ..execution import Qwen4ExpExecutionBinding
 from ..media import PreparedMediaItem, PreparedQwen4Prompt, PreparedTextItem
 from ..media_resolver import ResolvedImage, ResolvedText
@@ -4525,6 +4526,7 @@ class _TensorSamplingConfig:
     target: SamplerConfig
     draft: SamplerConfig
     seed: int
+    stop_sequences: tuple[str, ...] = ()
 
     @property
     def needs_rng(self) -> bool:
@@ -4557,8 +4559,28 @@ class _TensorOutputState:
     think_start_id: int | None
     think_end_id: int | None
     in_reasoning: bool
+    stop_sequences: tuple[str, ...] = ()
     trim_visible_prefix: bool = False
     reasoning_tokens: int = 0
+    _text_stop_matcher: IncrementalStopMatcher | None = field(
+        init=False,
+        default=None,
+        repr=False,
+    )
+    _reasoning_stop_matcher: IncrementalStopMatcher | None = field(
+        init=False,
+        default=None,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.stop_sequences:
+            self._text_stop_matcher = IncrementalStopMatcher(self.stop_sequences)
+            self._reasoning_stop_matcher = IncrementalStopMatcher(self.stop_sequences)
+
+    @property
+    def stop_sequence_constrained(self) -> bool:
+        return bool(self.stop_sequences)
 
     def is_protocol_token(self, token_id: int) -> bool:
         return token_id in self.stop_token_ids or token_id in {
@@ -4583,6 +4605,41 @@ class _TensorOutputState:
             return "", ""
         self.trim_visible_prefix = False
         return text, ""
+
+    def filter_stops(
+        self,
+        text_delta: str,
+        reasoning_delta: str,
+    ) -> tuple[str, str, str | None]:
+        if text_delta and reasoning_delta:
+            raise RuntimeError("one decoder chunk cannot cross output channels")
+        if text_delta and self._text_stop_matcher is not None:
+            observation = self._text_stop_matcher.feed(text_delta)
+            return observation.emitted, "", observation.stop_sequence
+        if reasoning_delta and self._reasoning_stop_matcher is not None:
+            observation = self._reasoning_stop_matcher.feed(reasoning_delta)
+            return "", observation.emitted, observation.stop_sequence
+        return text_delta, reasoning_delta, None
+
+    def flush_channel_boundary(self, token_id: int) -> tuple[str, str]:
+        if token_id == self.think_start_id and self._text_stop_matcher is not None:
+            return self._text_stop_matcher.flush(), ""
+        if token_id == self.think_end_id and self._reasoning_stop_matcher is not None:
+            return "", self._reasoning_stop_matcher.flush()
+        return "", ""
+
+    def finish_stops(self) -> tuple[str, str]:
+        text = (
+            self._text_stop_matcher.finish()
+            if self._text_stop_matcher is not None
+            else ""
+        )
+        reasoning = (
+            self._reasoning_stop_matcher.finish()
+            if self._reasoning_stop_matcher is not None
+            else ""
+        )
+        return text, reasoning
 
 
 @dataclass(slots=True)
@@ -5158,6 +5215,7 @@ class _Qwen4ExpTensorRuntime:
                     self._think_start_id,
                     self._think_end_id,
                 ),
+                stop_sequences=sampling.stop_sequences,
             ),
             detokenizer=new_streaming_detokenizer(self.tokenizer),
             input_embeddings=input_embeddings,
@@ -5345,6 +5403,8 @@ class _Qwen4ExpTensorRuntime:
                 self._encoders[row.request_id] = encoder
             first_output_index = reservation.output_tokens - len(outcome.tokens) + 1
             row_events: list[Any] = []
+            matched_stop_sequence: str | None = None
+
             for index, token in enumerate(outcome.tokens):
                 if reservation.output_state.is_protocol_token(token):
                     reservation.detokenizer.finalize()
@@ -5354,11 +5414,25 @@ class _Qwen4ExpTensorRuntime:
                             -1,
                             pending_text,
                         )
+                        matched_stop_sequence = self._emit_filtered_output(
+                            reservation.output_state,
+                            encoder,
+                            row_events,
+                            text_delta=text_delta,
+                            reasoning_delta=reasoning_delta,
+                            usage=_usage(reservation, first_output_index + index),
+                        )
+                    if matched_stop_sequence is not None:
+                        break
+                    boundary_text, boundary_reasoning = (
+                        reservation.output_state.flush_channel_boundary(token)
+                    )
+                    if boundary_text or boundary_reasoning:
                         row_events.extend(
                             encoder.feed(
                                 Qwen4OutputChunk(
-                                    text_delta=text_delta,
-                                    reasoning_delta=reasoning_delta,
+                                    text_delta=boundary_text,
+                                    reasoning_delta=boundary_reasoning,
                                     usage=_usage(
                                         reservation, first_output_index + index
                                     ),
@@ -5374,13 +5448,17 @@ class _Qwen4ExpTensorRuntime:
                     token,
                     decoded,
                 )
-                chunk = Qwen4OutputChunk(
+                matched_stop_sequence = self._emit_filtered_output(
+                    reservation.output_state,
+                    encoder,
+                    row_events,
                     text_delta=text_delta,
                     reasoning_delta=reasoning_delta,
                     usage=_usage(reservation, first_output_index + index),
                 )
-                row_events.extend(encoder.feed(chunk))
-            if outcome.finished:
+                if matched_stop_sequence is not None:
+                    break
+            if outcome.finished and matched_stop_sequence is None:
                 reservation.detokenizer.finalize()
                 final_text = reservation.detokenizer.last_segment
                 if final_text:
@@ -5388,19 +5466,39 @@ class _Qwen4ExpTensorRuntime:
                         -1,
                         final_text,
                     )
-                    row_events.extend(
-                        encoder.feed(
-                            Qwen4OutputChunk(
-                                text_delta=text_delta,
-                                reasoning_delta=reasoning_delta,
-                                usage=_usage(reservation),
+                    matched_stop_sequence = self._emit_filtered_output(
+                        reservation.output_state,
+                        encoder,
+                        row_events,
+                        text_delta=text_delta,
+                        reasoning_delta=reasoning_delta,
+                        usage=_usage(reservation),
+                    )
+                if matched_stop_sequence is None:
+                    pending_text, pending_reasoning = (
+                        reservation.output_state.finish_stops()
+                    )
+                    if pending_text or pending_reasoning:
+                        row_events.extend(
+                            encoder.feed(
+                                Qwen4OutputChunk(
+                                    text_delta=pending_text,
+                                    reasoning_delta=pending_reasoning,
+                                    usage=_usage(reservation),
+                                )
                             )
                         )
-                    )
+            effective_finished = outcome.finished or matched_stop_sequence is not None
+            effective_finish_reason = (
+                "stop_sequence"
+                if matched_stop_sequence is not None
+                else outcome.finish_reason
+            )
+            if effective_finished:
                 row_events.extend(
                     encoder.finish(
                         _usage(reservation),
-                        finish_reason=outcome.finish_reason or "stop",
+                        finish_reason=effective_finish_reason or "stop",
                     )
                 )
                 self._encoders.pop(row.request_id, None)
@@ -5409,8 +5507,9 @@ class _Qwen4ExpTensorRuntime:
                 DecodeResult(
                     request_id=row.request_id,
                     position=reservation.position,
-                    finished=outcome.finished,
-                    finish_reason=outcome.finish_reason,
+                    finished=effective_finished,
+                    finish_reason=effective_finish_reason,
+                    stop_sequence=matched_stop_sequence,
                 )
             )
             self._decode_rows += 1
@@ -5429,6 +5528,31 @@ class _Qwen4ExpTensorRuntime:
             mtp_rejected_tokens=mtp_rejected_tokens,
             mtp_fallbacks=fallbacks,
         )
+
+    @staticmethod
+    def _emit_filtered_output(
+        output_state: _TensorOutputState,
+        encoder: Any,
+        events: list[Any],
+        *,
+        text_delta: str,
+        reasoning_delta: str,
+        usage: UsageUpdate,
+    ) -> str | None:
+        filtered_text, filtered_reasoning, matched = output_state.filter_stops(
+            text_delta,
+            reasoning_delta,
+        )
+        events.extend(
+            encoder.feed(
+                Qwen4OutputChunk(
+                    text_delta=filtered_text,
+                    reasoning_delta=filtered_reasoning,
+                    usage=usage,
+                )
+            )
+        )
+        return matched
 
     def abort(self, reservation: object, reason: str) -> None:
         state = self._typed_reservation(reservation)
@@ -6858,6 +6982,10 @@ class _Qwen4ExpTensorRuntime:
                 _is_grammar_constrained(reservation.request)
                 for reservation in reservations
             ),
+            stop_sequence_constrained=any(
+                reservation.output_state.stop_sequence_constrained
+                for reservation in reservations
+            ),
         )
 
     @staticmethod
@@ -6932,6 +7060,7 @@ def _parse_tensor_sampling(
         "draft_sampler",
         "parallel_tool_calls",
         "tool_choice",
+        "stop",
     }
     unsupported = sorted(
         key
@@ -6988,12 +7117,29 @@ def _parse_tensor_sampling(
     seed = sampling.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("Q4-TENSOR-TEXT seed must be an integer")
+    stop_sequences = _parse_stop_sequences(sampling.get("stop"))
     return _TensorSamplingConfig(
         max_output_tokens=max_output_tokens,
         target=target,
         draft=draft,
         seed=seed,
+        stop_sequences=stop_sequences,
     )
+
+
+def _parse_stop_sequences(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        sequences = (value,)
+    elif isinstance(value, Sequence):
+        sequences = tuple(value)
+    else:
+        raise TypeError("Q4-TENSOR-TEXT stop must be a string or sequence of strings")
+    if not sequences:
+        return ()
+    IncrementalStopMatcher(sequences)
+    return sequences
 
 
 def _chat_template_tools(

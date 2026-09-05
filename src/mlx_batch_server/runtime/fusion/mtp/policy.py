@@ -29,6 +29,7 @@ class MtpPolicy:
         decode_enabled: bool,
         verifier_available: bool,
         grammar_constrained: bool = False,
+        stop_sequence_constrained: bool = False,
     ) -> MtpDecision:
         rows = alignment.row_count
         reason = self._disable_reason(
@@ -38,6 +39,7 @@ class MtpPolicy:
             decode_enabled=self.enabled and decode_enabled,
             verifier_available=verifier_available,
             grammar_constrained=grammar_constrained,
+            stop_sequence_constrained=stop_sequence_constrained,
         )
         if reason is not None:
             return MtpDecision(
@@ -69,6 +71,7 @@ class MtpPolicy:
         decode_enabled: bool,
         verifier_available: bool,
         grammar_constrained: bool,
+        stop_sequence_constrained: bool,
     ) -> MtpDisableReason | None:
         if alignment.row_count == 0:
             return MtpDisableReason.EMPTY_COHORT
@@ -82,6 +85,8 @@ class MtpPolicy:
             return MtpDisableReason.VERIFIER_MISSING
         if alignment.pending_prompt_work:
             return MtpDisableReason.PROMPT_MERGE_PENDING
+        if stop_sequence_constrained:
+            return MtpDisableReason.STOP_SEQUENCE_CONSTRAINED
         if grammar_constrained:
             return MtpDisableReason.GRAMMAR_PROCESSOR_UNSUPPORTED
         if alignment.row_count == 1:

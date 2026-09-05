@@ -210,6 +210,27 @@ def test_truncated_tool_call_reports_max_tokens_not_tool_use():
     assert len(_of_type(emitted, "content_block_stop")) == 1
 
 
+def test_exact_stop_sequence_projects_identically_to_stream_and_envelope() -> None:
+    projector = _projector()
+    emitted = _drain(
+        projector,
+        [
+            TurnStarted(response_id="resp_stop", model=PHYSICAL, created_at=1),
+            TurnCompleted(
+                finish_reason="stop_sequence",
+                stop_sequence="Exact END",
+            ),
+        ],
+    )
+
+    delta = _of_type(emitted, "message_delta")[0].delta
+    assert delta.stop_reason is StopReason.STOP_SEQUENCE
+    assert delta.stop_sequence == "Exact END"
+    terminal = projector.terminal_message()
+    assert terminal.stop_reason is StopReason.STOP_SEQUENCE
+    assert terminal.stop_sequence == "Exact END"
+
+
 def test_reasoning_and_text_never_share_a_block():
     """Thinking and output text stay on separate, non-duplicating channels."""
 

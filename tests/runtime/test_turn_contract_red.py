@@ -386,6 +386,17 @@ async def test_replay_payloads_are_deeply_immutable() -> None:
     assert replayed.detail["nested"]["values"] == (1, 2)
 
 
+def test_turn_completed_stop_sequence_invariants_are_typed() -> None:
+    completed = TurnCompleted("stop_sequence", stop_sequence="Exact END")
+
+    assert completed.stop_sequence == "Exact END"
+    assert TurnCompleted("stop_sequence", stop_sequence="  ").stop_sequence == "  "
+    with pytest.raises(ValueError, match="stop_sequence must not be empty"):
+        TurnCompleted("stop_sequence")
+    with pytest.raises(ValueError, match="non-stop completion"):
+        TurnCompleted("stop", stop_sequence="END")
+
+
 @pytest.mark.asyncio
 async def test_late_subscriber_gets_bounded_start_recent_and_terminal_replay() -> None:
     turn = GenerationTurn(max_pending_events=8, replay_events=4)

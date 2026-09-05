@@ -56,6 +56,26 @@ def test_tensor_sampling_accepts_prompt_only_tool_controls() -> None:
     assert sampling.max_output_tokens == 32
 
 
+def test_tensor_sampling_preserves_exact_stop_sequence_order() -> None:
+    request = _request("auto")
+    request = GenerationRequest(
+        response_id=request.response_id,
+        runtime=request.runtime,
+        messages=request.messages,
+        tools=request.tools,
+        sampling={**request.sampling, "stop": ("END", "end", "e\u0301")},
+        reasoning=request.reasoning,
+    )
+
+    sampling = _parse_tensor_sampling(
+        request,
+        context_length=128,
+        prompt_tokens=16,
+    )
+
+    assert sampling.stop_sequences == ("END", "end", "e\u0301")
+
+
 def test_tensor_sampling_defaults_to_discovered_remaining_context() -> None:
     sampling = _parse_tensor_sampling(
         _request("auto", max_output_tokens=None),

@@ -247,6 +247,7 @@ class SchedulerChassis:
                             state,
                             RequestPhase.COMPLETED,
                             decode_result.finish_reason or "completed",
+                            stop_sequence=decode_result.stop_sequence,
                         )
                     )
 
@@ -359,12 +360,19 @@ class SchedulerChassis:
         state: _RequestState,
         phase: RequestPhase,
         reason: str,
+        *,
+        stop_sequence: str | None = None,
     ) -> TerminalRequest:
         request_id = state.request.request_id
         if request_id in self._waiting:
             self._waiting.remove(request_id)
         self._states.pop(request_id, None)
-        terminal = TerminalRequest(request_id=request_id, phase=phase, reason=reason)
+        terminal = TerminalRequest(
+            request_id=request_id,
+            phase=phase,
+            reason=reason,
+            stop_sequence=stop_sequence,
+        )
         self._terminal[request_id] = terminal
         while len(self._terminal) > self._config.terminal_history_size:
             self._terminal.popitem(last=False)

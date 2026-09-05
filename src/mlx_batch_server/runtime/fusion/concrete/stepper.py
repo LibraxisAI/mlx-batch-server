@@ -156,6 +156,7 @@ class LowLevelRowResult:
     emitted_tokens: int = 0
     chunks: tuple[Qwen4OutputChunk, ...] = ()
     final_usage: UsageUpdate | None = None
+    stop_sequence: str | None = None
 
     def __post_init__(self) -> None:
         if not self.request_id:
@@ -173,6 +174,13 @@ class LowLevelRowResult:
             raise ValueError("finished decode row requires a finish_reason")
         if not self.finished and self.finish_reason is not None:
             raise ValueError("unfinished row cannot carry a finish_reason")
+        if self.finished and self.finish_reason == "stop_sequence":
+            if not isinstance(self.stop_sequence, str) or not self.stop_sequence:
+                raise ValueError(
+                    "stop-sequence row requires the exact matched sequence"
+                )
+        elif self.stop_sequence is not None:
+            raise ValueError("non-stop row cannot carry stop_sequence")
         if any(not isinstance(chunk, Qwen4OutputChunk) for chunk in self.chunks):
             raise TypeError("row chunks must be Qwen4OutputChunk values")
         if self.final_usage is not None and not isinstance(
@@ -503,6 +511,7 @@ class OmlxBatchStepper:
                     finished=observed.finished,
                     finish_reason=observed.finish_reason,
                     failed_reason=observed.failed_reason,
+                    stop_sequence=observed.stop_sequence,
                 )
 
         return FusedStepResult(
@@ -536,6 +545,9 @@ class OmlxBatchStepper:
             pending_prompt_work=bool(plan.prefill_rows),
         )
         grammar_constrained = any(_is_grammar_constrained(row.request) for row in rows)
+        stop_sequence_constrained = any(
+            _is_stop_sequence_constrained(row.request) for row in rows
+        )
         return policy.decide(
             alignment=alignment,
             model_supported=self._mtp_facts.model_supported,
@@ -543,6 +555,7 @@ class OmlxBatchStepper:
             decode_enabled=self._mtp_facts.decode_enabled,
             verifier_available=self._mtp_facts.verifier_available,
             grammar_constrained=grammar_constrained,
+            stop_sequence_constrained=stop_sequence_constrained,
         )
 
     @staticmethod
@@ -692,6 +705,10 @@ def _is_grammar_constrained(request: GenerationRequest) -> bool:
         "response_format",
     }
     return any(request.sampling.get(key) is not None for key in grammar_keys)
+
+
+def _is_stop_sequence_constrained(request: GenerationRequest) -> bool:
+    return bool(request.sampling.get("stop"))
 
 
 __all__ = [

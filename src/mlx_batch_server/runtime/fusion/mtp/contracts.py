@@ -26,6 +26,7 @@ class MtpDisableReason(StrEnum):
     VERIFIER_MISSING = "verifier_missing"
     PROMPT_MERGE_PENDING = "prompt_merge_pending"
     GRAMMAR_PROCESSOR_UNSUPPORTED = "grammar_processor_unsupported"
+    STOP_SEQUENCE_CONSTRAINED = "stop_sequence_constrained"
     MULTIROW_NOT_PROVEN = "multirow_not_proven"
     ROWS_UNALIGNED = "rows_unaligned"
     EMPTY_COHORT = "empty_cohort"
