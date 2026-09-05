@@ -21,13 +21,43 @@ from mlx_batch_server.auth.dependency import verify_auth, verify_websocket_auth
 from mlx_batch_server.responses.runtime_router import (
     build_runtime_responses_router,
 )
-from mlx_batch_server.responses.transport import ResponseEventSource
+from mlx_batch_server.responses.transport import (
+    SNAPSHOT_EMBEDDING_EVENT_TYPES,
+    PublishedResponseEvent,
+    ResponseEventSource,
+    ResponseSnapshotBuilder,
+)
 from mlx_batch_server.runtime.events import (
     SequencedTurnEvent,
     TurnCancelled,
     TurnCompleted,
+    TurnEvent,
     TurnStarted,
+    UsageUpdate,
 )
+
+
+def _published(
+    builder: ResponseSnapshotBuilder,
+    sequence_number: int,
+    event: TurnEvent,
+) -> PublishedResponseEvent:
+    """Fold one event exactly as the controller publishes it."""
+
+    builder.observe(event)
+    snapshot = (
+        builder.snapshot(event)
+        if isinstance(event, SNAPSHOT_EMBEDDING_EVENT_TYPES)
+        else None
+    )
+    return PublishedResponseEvent(sequence_number, event, snapshot)
+
+
+async def _publish(*events: TurnEvent) -> AsyncIterator[PublishedResponseEvent]:
+    builder = ResponseSnapshotBuilder()
+    for sequence_number, event in enumerate(events):
+        yield _published(builder, sequence_number, event)
+
 
 OWNER = "resp-owner:v1:api-key:" + "a" * 64
 TERMINAL = {
@@ -49,18 +79,14 @@ TERMINAL = {
 }
 
 
-async def _events() -> AsyncIterator[SequencedTurnEvent]:
-    yield SequencedTurnEvent(
-        sequence_number=0,
-        event=TurnStarted(
+def _events() -> AsyncIterator[PublishedResponseEvent]:
+    return _publish(
+        TurnStarted(
             response_id="resp_runtime_router",
             model="buddy",
             created_at=1,
         ),
-    )
-    yield SequencedTurnEvent(
-        sequence_number=1,
-        event=TurnCompleted(finish_reason="stop"),
+        TurnCompleted(finish_reason="stop"),
     )
 
 
@@ -76,10 +102,9 @@ def _source() -> ResponseEventSource:
     )
 
 
-async def _events_without_terminal() -> AsyncIterator[SequencedTurnEvent]:
-    yield SequencedTurnEvent(
-        sequence_number=0,
-        event=TurnStarted(
+def _events_without_terminal() -> AsyncIterator[PublishedResponseEvent]:
+    return _publish(
+        TurnStarted(
             response_id="resp_runtime_router",
             model="buddy",
             created_at=1,
@@ -436,20 +461,21 @@ async def test_official_openai_sdk_parses_websocket_steering_lifecycle() -> None
     cancelled = asyncio.Event()
     create_calls: list[dict[str, Any]] = []
 
-    async def parent_events() -> AsyncIterator[SequencedTurnEvent]:
-        yield SequencedTurnEvent(
+    async def parent_events() -> AsyncIterator[PublishedResponseEvent]:
+        builder = ResponseSnapshotBuilder()
+        yield _published(
+            builder,
             0,
             TurnStarted(response_id="resp_parent", model="buddy", created_at=1),
         )
         await cancelled.wait()
-        yield SequencedTurnEvent(1, TurnCancelled("steered"))
+        yield _published(builder, 1, TurnCancelled("steered"))
 
-    async def successor_events() -> AsyncIterator[SequencedTurnEvent]:
-        yield SequencedTurnEvent(
-            0,
+    def successor_events() -> AsyncIterator[PublishedResponseEvent]:
+        return _publish(
             TurnStarted(response_id="resp_successor", model="buddy", created_at=2),
+            TurnCompleted("stop"),
         )
-        yield SequencedTurnEvent(1, TurnCompleted("stop"))
 
     async def terminal(response_id: str, status: str) -> Mapping[str, Any]:
         result = dict(TERMINAL)
@@ -532,15 +558,14 @@ def test_pending_steer_waits_for_client_tool_output_and_starts_once() -> None:
     runtime = _Runtime()
     create_calls: list[dict[str, Any]] = []
 
-    async def events(
+    def events(
         response_id: str,
         finish_reason: str,
-    ) -> AsyncIterator[SequencedTurnEvent]:
-        yield SequencedTurnEvent(
-            0,
+    ) -> AsyncIterator[PublishedResponseEvent]:
+        return _publish(
             TurnStarted(response_id=response_id, model="buddy", created_at=1),
+            TurnCompleted(finish_reason),
         )
-        yield SequencedTurnEvent(1, TurnCompleted(finish_reason))
 
     async def terminal(
         response_id: str,
@@ -1405,3 +1430,71 @@ async def test_background_failure_and_shutdown_leave_no_controller_tasks() -> No
         "registry_shutdown"
     ]
     assert not active_runtime.responses_controller._tasks
+
+
+def test_every_sse_in_progress_body_is_a_complete_sdk_response() -> None:
+    """Mutation falsifier: a status/usage-only fake Response must be impossible."""
+
+    import json as _json
+
+    from openai.types.responses import Response
+
+    runtime = _Runtime()
+    runtime.responses_controller.source_factory = lambda: ResponseEventSource(
+        _publish(
+            TurnStarted(
+                response_id="resp_runtime_router",
+                model="buddy",
+                created_at=1,
+            ),
+            UsageUpdate(2, 3, 5),
+            TurnCompleted(finish_reason="stop"),
+        ),
+        cancel=lambda _reason: None,
+        terminal_response=asyncio.create_task(_terminal()),
+    )
+    client = TestClient(_app(runtime))
+
+    stream = client.post(
+        "/v1/responses",
+        json={"model": "buddy", "input": "hej", "stream": True},
+    )
+
+    assert stream.status_code == 200
+    payloads = [
+        _json.loads(line.removeprefix("data: "))
+        for line in stream.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    lifecycle = [
+        item
+        for item in payloads
+        if item["type"]
+        in {"response.created", "response.in_progress", "response.completed"}
+    ]
+    assert [item["type"] for item in lifecycle] == [
+        "response.created",
+        "response.in_progress",
+        "response.completed",
+    ]
+    # The terminal body is the awaited committed envelope (fixture-owned);
+    # the snapshot spine owns the created/in_progress bodies validated here.
+    for item in lifecycle[:2]:
+        body = item["response"]
+        parsed = Response.model_validate(body)
+        assert parsed.id == "resp_runtime_router"
+        assert parsed.model == "buddy"
+    assert lifecycle[2]["response"] == TERMINAL
+    in_progress = lifecycle[1]["response"]
+    assert in_progress["usage"]["total_tokens"] == 5
+    assert set(in_progress) >= {
+        "id",
+        "object",
+        "created_at",
+        "model",
+        "status",
+        "output",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+    }

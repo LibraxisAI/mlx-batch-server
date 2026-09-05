@@ -20,6 +20,10 @@ from mlx_batch_server.responses.registry import (
     ResponseRegistry,
     ResponseRegistryError,
 )
+from mlx_batch_server.responses.transport import (
+    SNAPSHOT_EMBEDDING_EVENT_TYPES,
+    PublishedResponseEvent,
+)
 from mlx_batch_server.runtime.contracts import (
     GenerationRequest,
     RuntimeKey,
@@ -215,11 +219,11 @@ class _CountingTurn(GenerationTurn):
         return super().subscribe(max_pending_events=max_pending_events)
 
 
-async def _collect(source: ResponseEventSource) -> list[SequencedTurnEvent]:
-    async def drain() -> list[SequencedTurnEvent]:
-        observed: list[SequencedTurnEvent] = []
+async def _collect(source: ResponseEventSource) -> list[PublishedResponseEvent]:
+    async def drain() -> list[PublishedResponseEvent]:
+        observed: list[PublishedResponseEvent] = []
         async for event in source.events:
-            assert isinstance(event, SequencedTurnEvent)
+            assert isinstance(event, PublishedResponseEvent)
             observed.append(event)
         return observed
 
@@ -525,3 +529,158 @@ async def test_shutdown_timeout_is_retryable_without_detaching_startup() -> None
     starter.release.set()
     assert isinstance((await _collect(source))[-1].event, TurnCancelled)
     await controller.shutdown(timeout_s=1.0)
+
+
+def _plain(value: Any) -> Any:
+    """Normalize frozen mappings/tuples to plain dict/list for comparison."""
+
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(item) for item in value]
+    return value
+
+
+@pytest.mark.asyncio
+async def test_relay_publishes_one_snapshot_truth_in_original_order() -> None:
+    """Embedding events carry the fold's snapshot; every other event carries none.
+
+    The registry is updated from the same fold before publication, so a GET
+    between events equals exactly what the stream published (three-way truth).
+    """
+
+    from mlx_batch_server.runtime.events import UsageUpdate
+
+    registry = _CountingRegistry()
+    mapper = _Mapper()
+    starter = _Starter()
+    controller = ResponsesController(
+        registry=registry,
+        mapper=mapper,
+        starter=starter,
+        max_pending_events=16,
+    )
+    source = await controller.create(
+        {"model": "buddy", "input": "hello"},
+        owner_id=OWNER_A,
+    )
+    await starter.entered.wait()
+    await asyncio.sleep(0)
+    assert starter.handle is not None
+    starter.handle.sink.emit(UsageUpdate(2, 3, 5))
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    response_id = mapper.response_ids[0]
+    live = registry.get(response_id, owner_id=OWNER_A)
+    assert live["status"] == "in_progress"
+    assert live["usage"]["total_tokens"] == 5
+
+    item_id = f"msg_{response_id}"
+    sink = starter.handle.sink
+    sink.emit(OutputItemStarted("message", 0, item_id))
+    sink.emit(ContentPartStarted("output_text", 0, 0, item_id))
+    sink.emit(TextDelta("beautiful output", item_id, 0, 0))
+    sink.emit(TextCompleted("beautiful output", item_id, 0, 0))
+    sink.emit(ContentPartCompleted("output_text", 0, 0, item_id, "beautiful output"))
+    sink.emit(OutputItemCompleted("message", 0, item_id, text="beautiful output"))
+    sink.emit(TurnCompleted("stop", UsageUpdate(2, 3, 5)))
+    starter.handle.closed.set()
+    observed = await _collect(source)
+
+    assert [item.sequence_number for item in observed] == list(range(len(observed)))
+    for item in observed:
+        if isinstance(item.event, SNAPSHOT_EMBEDDING_EVENT_TYPES):
+            assert item.snapshot is not None, type(item.event).__name__
+        else:
+            assert item.snapshot is None, type(item.event).__name__
+
+    usage_published = next(
+        item for item in observed if isinstance(item.event, UsageUpdate)
+    )
+    assert usage_published.snapshot is not None
+    assert _plain(usage_published.snapshot) == _plain(live)
+    for required in (
+        "id",
+        "object",
+        "created_at",
+        "model",
+        "status",
+        "output",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+    ):
+        assert required in usage_published.snapshot, required
+    assert registry.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_is_committed_before_its_publication() -> None:
+    registry = _CountingRegistry()
+    mapper = _Mapper()
+    starter = _Starter()
+    controller = ResponsesController(
+        registry=registry,
+        mapper=mapper,
+        starter=starter,
+        max_pending_events=16,
+    )
+    source = await controller.create(
+        {"model": "buddy", "input": "hello"},
+        owner_id=OWNER_A,
+    )
+    await starter.entered.wait()
+    await asyncio.sleep(0)
+    starter.complete("done")
+
+    response_id = mapper.response_ids[0]
+    terminal_published: PublishedResponseEvent | None = None
+    async for item in source.events:
+        assert isinstance(item, PublishedResponseEvent)
+        if isinstance(item.event, TurnCompleted):
+            terminal_published = item
+            # The registry commit and terminal_response resolution happened
+            # strictly before this event became observable.
+            assert registry.commit_calls == 1
+            assert registry.get(response_id, owner_id=OWNER_A)["status"] == (
+                "completed"
+            )
+    assert terminal_published is not None
+    assert terminal_published.snapshot is not None
+    assert terminal_published.snapshot["status"] == "completed"
+    assert source.terminal_response is not None
+    assert (await source.terminal_response) == registry.get(
+        response_id, owner_id=OWNER_A
+    )
+
+
+@pytest.mark.asyncio
+async def test_published_snapshots_are_deeply_immutable() -> None:
+    registry = _CountingRegistry()
+    mapper = _Mapper()
+    starter = _Starter()
+    controller = ResponsesController(
+        registry=registry,
+        mapper=mapper,
+        starter=starter,
+        max_pending_events=16,
+    )
+    source = await controller.create(
+        {"model": "buddy", "input": "hello"},
+        owner_id=OWNER_A,
+    )
+    await starter.entered.wait()
+    await asyncio.sleep(0)
+    starter.complete("frozen")
+    observed = await _collect(source)
+
+    started = observed[0]
+    assert isinstance(started.event, TurnStarted)
+    snapshot = started.snapshot
+    assert snapshot is not None
+    with pytest.raises(TypeError):
+        snapshot["status"] = "hacked"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot.pop("id")  # type: ignore[union-attr]
+    assert isinstance(snapshot["output"], tuple)

@@ -15,11 +15,14 @@ from mlx_batch_server.responses.projector import (
     project_event,
 )
 from mlx_batch_server.responses.transport import (
+    SNAPSHOT_EMBEDDING_EVENT_TYPES,
     MultiplexedTransportSession,
+    PublishedResponseEvent,
     QueueCapacityError,
     ResponseCreateCommand,
     ResponseEventSource,
     ResponseInjectCommand,
+    ResponseSnapshotBuilder,
     ResponseSteerCommand,
     StreamCapacityError,
     StreamId,
@@ -29,6 +32,8 @@ from mlx_batch_server.responses.transport import (
     TransportSession,
     UnknownStreamError,
     parse_websocket_command,
+    render_completed_item,
+    render_hosted_call_item,
 )
 from mlx_batch_server.responses.websocket import (
     ResponsesWebSocketSession,
@@ -1718,3 +1723,324 @@ def test_reasoning_and_visible_text_never_cross_channels() -> None:
             assert "chain thought" not in json.dumps(item)
         if item["type"].startswith("response.reasoning_summary_text"):
             assert "final answer" not in json.dumps(item)
+
+
+# --- W3-HR2-3: one published snapshot truth ----------------------------------
+
+_SEALED_SEARCH_ACTION = {
+    "kind": "search",
+    "query": "mlx batch server",
+    "sources": ("https://a.example/one", "https://b.example/two"),
+}
+
+
+def _hosted_completed_event(status: str = "completed") -> OutputItemCompleted:
+    action = dict(_SEALED_SEARCH_ACTION)
+    if status == "failed":
+        action["sources"] = ()
+    return OutputItemCompleted(
+        kind="hosted_call",
+        index=2,
+        item_id="ws_1",
+        call_id="call_ws_1",
+        name="web_search",
+        status=status,
+        action=action,
+    )
+
+
+def test_published_event_presence_law_is_structural() -> None:
+    """A response-embedding event cannot exist without its full snapshot."""
+
+    builder = ResponseSnapshotBuilder()
+    started = TurnStarted("resp_law", _PHYSICAL_MODEL, 1, requested_model=_PUBLIC_ALIAS)
+    builder.observe(started)
+    snapshot = builder.snapshot(started)
+    assert snapshot is not None
+
+    for event in (
+        started,
+        UsageUpdate(1, 1, 2),
+        TurnCompleted("stop"),
+        TurnCancelled("client_cancelled"),
+    ):
+        with pytest.raises(ValueError, match="must carry its snapshot"):
+            PublishedResponseEvent(0, event, None)
+        PublishedResponseEvent(0, event, snapshot)
+
+    delta = TextDelta("hi", "msg_1", 0, 0)
+    with pytest.raises(ValueError, match="cannot carry a snapshot"):
+        PublishedResponseEvent(1, delta, snapshot)
+    assert PublishedResponseEvent(1, delta, None).snapshot is None
+    with pytest.raises(ValueError, match="non-negative"):
+        PublishedResponseEvent(-1, delta, None)
+
+
+def test_published_snapshot_rejects_any_transport_write() -> None:
+    builder = ResponseSnapshotBuilder()
+    started = TurnStarted(
+        "resp_frozen",
+        _PHYSICAL_MODEL,
+        1,
+        requested_model=_PUBLIC_ALIAS,
+        request_settings=_REQUEST_SETTINGS,
+    )
+    builder.observe(started)
+    builder.observe(OutputItemCompleted("message", 0, "msg_1", text="hello"))
+    usage = UsageUpdate(2, 3, 5)
+    builder.observe(usage)
+    published = PublishedResponseEvent(3, usage, builder.snapshot(usage))
+    snapshot = published.snapshot
+    assert snapshot is not None
+
+    with pytest.raises(TypeError):
+        snapshot["status"] = "hacked"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot["usage"]["total_tokens"] = 0
+    with pytest.raises(TypeError):
+        snapshot["output"][0]["content"][0]["text"] = "changed"
+    assert isinstance(snapshot["output"], tuple)
+
+
+def test_hosted_completed_item_renders_exactly_from_the_sealed_action() -> None:
+    from openai.types.responses import ResponseFunctionWebSearch
+
+    rendered = render_completed_item(_hosted_completed_event())
+    assert rendered == {
+        "id": "ws_1",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+            "type": "search",
+            "query": "mlx batch server",
+            "sources": [
+                {"type": "url", "url": "https://a.example/one"},
+                {"type": "url", "url": "https://b.example/two"},
+            ],
+        },
+    }
+    parsed = ResponseFunctionWebSearch.model_validate(rendered)
+    assert [source.url for source in parsed.action.sources] == [
+        "https://a.example/one",
+        "https://b.example/two",
+    ]
+
+    failed = render_completed_item(_hosted_completed_event("failed"))
+    assert failed["status"] == "failed"
+    assert failed["action"]["sources"] == []
+    ResponseFunctionWebSearch.model_validate(failed)
+
+
+def test_hosted_fetch_actions_have_no_responses_item_rendering() -> None:
+    with pytest.raises(ValueError, match="search actions"):
+        render_hosted_call_item("ws_2", "completed", {"kind": "fetch", "url": "u"})
+
+
+def test_transport_lane_holds_no_snapshot_builder_state() -> None:
+    """Restoring a per-lane fold must fail structurally, not just behaviorally."""
+
+    from mlx_batch_server.responses.transport import _ActiveResponse
+
+    assert "snapshot_builder" not in _ActiveResponse.__slots__
+    assert not hasattr(MultiplexedTransportSession, "_observe_snapshot")
+
+
+def _published_stream_events(
+    events: tuple[TurnEvent, ...],
+) -> list[PublishedResponseEvent]:
+    """Fold one canonical turn exactly as the controller publishes it."""
+
+    builder = ResponseSnapshotBuilder()
+    published: list[PublishedResponseEvent] = []
+    for sequence_number, event in enumerate(events):
+        builder.observe(event)
+        snapshot = (
+            builder.snapshot(event)
+            if isinstance(event, SNAPSHOT_EMBEDDING_EVENT_TYPES)
+            else None
+        )
+        published.append(PublishedResponseEvent(sequence_number, event, snapshot))
+    return published
+
+
+def _spine_turn_events() -> tuple[TurnEvent, ...]:
+    """One canonical turn: message, hosted web-search item, usage, terminal."""
+
+    usage = UsageUpdate(11, 13, 24, cached_input_tokens=3, reasoning_output_tokens=5)
+    return (
+        TurnStarted(
+            "resp_spine",
+            _PHYSICAL_MODEL,
+            123,
+            requested_model=_PUBLIC_ALIAS,
+            request_settings=_REQUEST_SETTINGS,
+        ),
+        OutputItemStarted("message", 0, "msg_1"),
+        ContentPartStarted("output_text", 0, 0, "msg_1"),
+        TextDelta("final ", "msg_1", 0, 0),
+        TextDelta("answer", "msg_1", 0, 0),
+        TextCompleted("final answer", "msg_1", 0, 0),
+        ContentPartCompleted("output_text", 0, 0, "msg_1", "final answer"),
+        OutputItemCompleted("message", 0, "msg_1", text="final answer"),
+        OutputItemStarted("function_call", 1, "fc_1", "call_1", "lookup"),
+        ToolDelta(1, "call_1", "fc_1", "lookup", "{}"),
+        ToolCompleted(1, "call_1", "fc_1", "lookup", "{}"),
+        OutputItemCompleted(
+            "function_call",
+            1,
+            "fc_1",
+            call_id="call_1",
+            name="lookup",
+            arguments="{}",
+        ),
+        _hosted_completed_event(),
+        usage,
+        TurnCompleted("tool_calls", usage),
+    )
+
+
+async def _published_source(
+    published: list[PublishedResponseEvent],
+    terminal_body: dict[str, Any],
+) -> ResponseEventSource:
+    async def events() -> AsyncIterator[PublishedResponseEvent]:
+        for item in published:
+            yield item
+
+    async def terminal() -> dict[str, Any]:
+        return terminal_body
+
+    return ResponseEventSource(
+        events(),
+        terminal_response=asyncio.ensure_future(terminal()),
+        response_id="resp_spine",
+    )
+
+
+def _as_plain(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _as_plain(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_as_plain(item) for item in value]
+    return value
+
+
+@pytest.mark.asyncio
+async def test_http_and_websocket_publish_one_byte_equivalent_truth() -> None:
+    """The delivery verifier: one recorded turn, two transports, zero drift."""
+
+    from openai.types.responses import Response
+
+    from mlx_batch_server.responses.runtime_router import _sse_events
+
+    events = _spine_turn_events()
+    published = _published_stream_events(events)
+    terminal_snapshot = published[-1].snapshot
+    assert terminal_snapshot is not None
+    committed = _as_plain(dict(terminal_snapshot))
+
+    http_source = await _published_source(published, committed)
+    sse_payloads: list[dict[str, Any]] = []
+    async for chunk in _sse_events(http_source):
+        text = chunk.decode()
+        if text.startswith("data: [DONE]"):
+            continue
+        data_line = next(
+            line for line in text.splitlines() if line.startswith("data: ")
+        )
+        sse_payloads.append(json.loads(data_line.removeprefix("data: ")))
+
+    ws_source = await _published_source(published, committed)
+    websocket = ResponsesWebSocketSession(
+        _session(),
+        lambda command: ws_source,
+    )
+    await websocket.create(
+        ResponseCreateCommand(
+            response={"model": "buddy", "input": "hej"},
+            stream_id=StreamId("spine"),
+        )
+    )
+    ws_payloads = [await websocket.receive_payload() for _ in range(len(published))]
+
+    assert len(sse_payloads) == len(ws_payloads) == len(published)
+    for sse_payload, ws_payload in zip(sse_payloads, ws_payloads, strict=True):
+        stripped = dict(ws_payload)
+        assert stripped.pop("stream_id") == "spine"
+        # No control events interleaved: wire sequence numbers are identical,
+        # and every response/item payload is byte-equivalent.
+        assert json.dumps(stripped, sort_keys=True) == json.dumps(
+            sse_payload, sort_keys=True
+        )
+
+    lifecycle = [
+        item for item in sse_payloads if item["type"] in _LIFECYCLE_EVENT_TYPES
+    ]
+    assert {item["type"] for item in lifecycle} >= {
+        "response.created",
+        "response.in_progress",
+        "response.completed",
+    }
+    for item in lifecycle:
+        Response.model_validate(item["response"])
+    terminal_payload = sse_payloads[-1]
+    assert terminal_payload["type"] == "response.completed"
+    assert terminal_payload["response"] == committed
+
+    hosted_done = next(
+        item
+        for item in sse_payloads
+        if item["type"] == "response.output_item.done" and item["item"]["id"] == "ws_1"
+    )
+    assert hosted_done["item"] == render_completed_item(_hosted_completed_event())
+    completed_output = {item["id"]: item for item in committed["output"]}
+    assert completed_output["ws_1"] == hosted_done["item"]
+
+
+@pytest.mark.asyncio
+async def test_websocket_lane_forwards_the_exact_published_snapshot_object() -> None:
+    events = _spine_turn_events()
+    published = _published_stream_events(events)
+
+    async def source_events() -> AsyncIterator[PublishedResponseEvent]:
+        for item in published:
+            yield item
+
+    core = MultiplexedTransportSession(_session())
+    await core.open(
+        StreamId("spine"),
+        lambda: ResponseEventSource(source_events(), response_id="resp_spine"),
+    )
+
+    observed: list[TransportEnvelope] = []
+    for _ in range(len(published)):
+        outcome = await core.receive()
+        assert isinstance(outcome, TransportEnvelope)
+        observed.append(outcome)
+
+    for envelope, item in zip(observed, published, strict=True):
+        assert envelope.event is item.event
+        assert envelope.snapshot is item.snapshot
+    await core.close()
+
+
+@pytest.mark.asyncio
+async def test_raw_sources_keep_transport_semantics_without_fabricated_snapshots() -> (
+    None
+):
+    async def raw_events() -> AsyncIterator[TurnEvent]:
+        yield TurnStarted(response_id="resp_raw", model="buddy", created_at=1)
+        yield UsageUpdate(1, 1, 2)
+        yield TurnCompleted("stop")
+
+    core = MultiplexedTransportSession(_session())
+    await core.open(
+        StreamId("raw"),
+        lambda: ResponseEventSource(raw_events(), response_id="resp_raw"),
+    )
+    observed = [await core.receive() for _ in range(3)]
+
+    assert all(isinstance(item, TransportEnvelope) for item in observed)
+    assert [item.sequence_number for item in observed] == [0, 1, 2]
+    assert all(item.snapshot is None for item in observed)
+    await core.close()

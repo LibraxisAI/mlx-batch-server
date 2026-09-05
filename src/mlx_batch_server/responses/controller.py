@@ -21,6 +21,7 @@ from ..runtime.events import (
     TERMINAL_EVENT_TYPES,
     SequencedTurnEvent,
     TurnCancelled,
+    TurnEvent,
     TurnFailed,
     TurnStarted,
 )
@@ -29,6 +30,8 @@ from ..runtime.turn import GenerationTurn, TurnState
 from .registry import ResponseRegistry, ResponseRegistryError
 from .request_contract import LOCAL_FIELD_NAMES
 from .transport import (
+    SNAPSHOT_EMBEDDING_EVENT_TYPES,
+    PublishedResponseEvent,
     ResponseEventSource,
     ResponseSnapshotBuilder,
     ResponseSnapshotIdentity,
@@ -93,7 +96,7 @@ class RuntimeStarter(Protocol):
 
 
 _END = object()
-_MailboxItem = SequencedTurnEvent | BaseException | object
+_MailboxItem = PublishedResponseEvent | BaseException | object
 
 
 class _TerminalResponseAwaitable:
@@ -122,7 +125,7 @@ class _EventMailbox:
     def producer_closed(self) -> bool:
         return self._producer_closed
 
-    def publish(self, item: SequencedTurnEvent) -> bool:
+    def publish(self, item: PublishedResponseEvent) -> bool:
         if self._producer_closed:
             return False
         terminal = isinstance(item.event, TERMINAL_EVENT_TYPES)
@@ -141,13 +144,13 @@ class _EventMailbox:
         self._queue.put_nowait(error)
         self._queue.put_nowait(_END)
 
-    def __aiter__(self) -> AsyncIterator[SequencedTurnEvent]:
+    def __aiter__(self) -> AsyncIterator[PublishedResponseEvent]:
         if self._claimed:
             raise RuntimeError("response event source may only be consumed once")
         self._claimed = True
         return self
 
-    async def __anext__(self) -> SequencedTurnEvent:
+    async def __anext__(self) -> PublishedResponseEvent:
         if self._consumer_closed:
             raise StopAsyncIteration
         item = await self._queue.get()
@@ -157,7 +160,7 @@ class _EventMailbox:
         if isinstance(item, BaseException):
             self._consumer_closed = True
             raise item
-        if not isinstance(item, SequencedTurnEvent):  # pragma: no cover - invariant
+        if not isinstance(item, PublishedResponseEvent):  # pragma: no cover
             raise RuntimeError("invalid controller mailbox item")
         return item
 
@@ -404,10 +407,23 @@ class ResponsesController:
         try:
             async for item in subscription:
                 lifecycle.projection.observe(item)
-                self._update_live_snapshot(lifecycle, item)
+                snapshot = self._fold_snapshot(lifecycle, item.event)
                 if isinstance(item.event, TERMINAL_EVENT_TYPES):
+                    # Registry commit and terminal_response resolve before the
+                    # terminal is published: first-writer truth stays intact.
                     self._commit_terminal(lifecycle)
-                if lifecycle.mailbox.publish(item):
+                elif snapshot is not None:
+                    self._registry.update(
+                        lifecycle.response_id,
+                        snapshot,
+                        owner_id=lifecycle.owner_id,
+                    )
+                published = PublishedResponseEvent(
+                    sequence_number=item.sequence_number,
+                    event=item.event,
+                    snapshot=snapshot,
+                )
+                if lifecycle.mailbox.publish(published):
                     continue
                 if not lifecycle.overflow_cancel_requested:
                     lifecycle.overflow_cancel_requested = True
@@ -532,8 +548,10 @@ class ResponsesController:
 
         terminal_seen = False
         async for item in source.events:
-            if not isinstance(item, SequencedTurnEvent):
-                raise TypeError("controller source must yield sequenced events")
+            if not isinstance(item, PublishedResponseEvent):
+                raise TypeError(
+                    "controller source must yield published response events"
+                )
             if isinstance(item.event, TERMINAL_EVENT_TYPES):
                 terminal_seen = True
         if not terminal_seen:
@@ -542,12 +560,18 @@ class ResponsesController:
             raise RuntimeError("background response is missing its terminal receipt")
         await source.terminal_response
 
-    def _update_live_snapshot(
+    def _fold_snapshot(
         self,
         lifecycle: _ResponseLifecycle,
-        item: SequencedTurnEvent,
-    ) -> None:
-        event = item.event
+        event: TurnEvent,
+    ) -> Mapping[str, Any] | None:
+        """Fold one canonical event into the single per-response builder.
+
+        Returns the complete snapshot for response-embedding events and None
+        otherwise. Registry and stream both consume this one fold, so they can
+        never disagree about the live response truth.
+        """
+
         if isinstance(event, TurnStarted):
             lifecycle.snapshot_builder.observe(
                 TurnStarted(
@@ -560,18 +584,14 @@ class ResponsesController:
             )
         else:
             lifecycle.snapshot_builder.observe(event)
-        if isinstance(event, TERMINAL_EVENT_TYPES):
-            return
+        if not isinstance(event, SNAPSHOT_EMBEDDING_EVENT_TYPES):
+            return None
         snapshot = lifecycle.snapshot_builder.snapshot(event)
-        if snapshot is None:
-            return
+        if snapshot is None:  # pragma: no cover - builder is seeded at start
+            raise RuntimeError("response snapshot requested before its identity")
         if lifecycle.background:
             snapshot["background"] = True
-        self._registry.update(
-            lifecycle.response_id,
-            snapshot,
-            owner_id=lifecycle.owner_id,
-        )
+        return snapshot
 
     @staticmethod
     def _background_setting(prepared: PreparedResponse) -> bool:

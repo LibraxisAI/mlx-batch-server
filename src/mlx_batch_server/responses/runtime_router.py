@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
 from ..auth.dependency import verify_auth, verify_websocket_auth
-from ..runtime.events import TERMINAL_EVENT_TYPES, SequencedTurnEvent
+from ..runtime.events import TERMINAL_EVENT_TYPES
 from .compaction import CompactionError
 from .errors import OpenAIError, render_http_error, render_sse_error
 from .input_items import (
@@ -29,6 +29,7 @@ from .projector import project_event
 from .registry import ResponseRegistry, ResponseRegistryError
 from .request_contract import ResponsesMappingError, capability_profile, local_setting
 from .transport import (
+    PublishedResponseEvent,
     ResponseEventSource,
     TransportEnvelope,
     TransportProtocolError,
@@ -294,8 +295,8 @@ async def _drain_to_terminal(
 ) -> Mapping[str, Any]:
     terminal_seen = False
     async for item in source.events:
-        if not isinstance(item, SequencedTurnEvent):
-            raise TypeError("controller source must yield sequenced events")
+        if not isinstance(item, PublishedResponseEvent):
+            raise TypeError("controller source must yield published response events")
         if isinstance(item.event, TERMINAL_EVENT_TYPES):
             terminal_seen = True
     if not terminal_seen:
@@ -313,8 +314,10 @@ async def _sse_events(source: ResponseEventSource) -> AsyncIterator[bytes]:
     next_sequence_number = 0
     try:
         async for item in source.events:
-            if not isinstance(item, SequencedTurnEvent):
-                raise TypeError("controller source must yield sequenced events")
+            if not isinstance(item, PublishedResponseEvent):
+                raise TypeError(
+                    "controller source must yield published response events"
+                )
             next_sequence_number = item.sequence_number + 1
             terminal = isinstance(item.event, TERMINAL_EVENT_TYPES)
             envelope = TransportEnvelope(
@@ -322,6 +325,7 @@ async def _sse_events(source: ResponseEventSource) -> AsyncIterator[bytes]:
                 sequence_number=item.sequence_number,
                 event=item.event,
                 terminal_response=(source.terminal_response if terminal else None),
+                snapshot=item.snapshot,
             )
             projected = project_event(envelope)
             if terminal:

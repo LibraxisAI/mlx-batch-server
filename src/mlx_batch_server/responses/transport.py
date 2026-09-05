@@ -11,9 +11,11 @@ from dataclasses import dataclass, field
 from typing import Any, TypeAlias, cast
 
 from ..runtime.events import (
+    HOSTED_CALL_ITEM_KIND,
     TERMINAL_EVENT_TYPES,
     OutputItemCompleted,
     OutputItemStarted,
+    ProgressUpdate,
     SequencedTurnEvent,
     TurnCancelled,
     TurnCompleted,
@@ -22,6 +24,7 @@ from ..runtime.events import (
     TurnStarted,
     UsageUpdate,
 )
+from ..runtime.events import _deep_freeze as _deep_freeze_event_payload
 
 _STREAM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
 _DEFAULT_LANE = None
@@ -329,9 +332,44 @@ def render_started_item(event: OutputItemStarted) -> dict[str, Any]:
     }
 
 
+def render_hosted_call_item(
+    item_id: str,
+    status: str,
+    action: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Render the official hosted web-search item from one sealed action.
+
+    This is the single hosted rendering used by the stream projector, the
+    snapshot builder and the terminal runtime projection, so the three
+    surfaces cannot drift. It is a total map over the sealed-action schema:
+    the fetch kind has no Responses item rendering (web_fetch is refused
+    pre-inference on this surface) and stays a named refusal here.
+    """
+
+    kind = action.get("kind")
+    if kind != "search":
+        raise ValueError(
+            "only sealed search actions have a Responses hosted item rendering"
+        )
+    return {
+        "id": item_id,
+        "type": "web_search_call",
+        "status": status,
+        "action": {
+            "type": "search",
+            "query": action["query"],
+            "sources": [{"type": "url", "url": url} for url in action["sources"]],
+        },
+    }
+
+
 def render_completed_item(event: OutputItemCompleted) -> dict[str, Any]:
     """Render one finished output item with its complete official payload."""
 
+    if event.kind == HOSTED_CALL_ITEM_KIND:
+        if event.action is None:  # pragma: no cover - enforced by the event
+            raise ValueError("hosted_call completion is missing its sealed action")
+        return render_hosted_call_item(event.item_id, event.status, event.action)
     if event.kind == "message":
         return {
             "id": event.item_id,
@@ -504,6 +542,53 @@ class ResponseSnapshotBuilder:
         )
 
 
+# Events whose OpenAI projection embeds a full ``response`` body. The ABI
+# below makes a snapshot structurally mandatory for exactly this set.
+SNAPSHOT_EMBEDDING_EVENT_TYPES = (
+    TurnStarted,
+    UsageUpdate,
+    ProgressUpdate,
+    *TERMINAL_EVENT_TYPES,
+)
+
+
+def _freeze_published_snapshot(
+    snapshot: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    if snapshot is None:
+        return None
+    frozen = _deep_freeze_event_payload(snapshot)
+    if not isinstance(frozen, Mapping):  # pragma: no cover - type guard
+        raise TypeError("published snapshot must be a mapping")
+    return frozen
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedResponseEvent:
+    """One controller-published stream element: the canonical event plus the
+    immutable response snapshot valid at this event, built exactly once.
+
+    Responses-only ABI. Every event whose wire projection embeds a ``response``
+    body cannot be constructed without a deep-frozen full snapshot; every other
+    event must carry none. Transports forward the attached snapshot verbatim
+    and may never rebuild or mutate it.
+    """
+
+    sequence_number: int
+    event: TurnEvent
+    snapshot: Mapping[str, Any] | None
+
+    def __post_init__(self) -> None:
+        if self.sequence_number < 0:
+            raise ValueError("sequence_number must be non-negative")
+        needs_snapshot = isinstance(self.event, SNAPSHOT_EMBEDDING_EVENT_TYPES)
+        if needs_snapshot and self.snapshot is None:
+            raise ValueError("a response-embedding event must carry its snapshot")
+        if not needs_snapshot and self.snapshot is not None:
+            raise ValueError("a non-embedding event cannot carry a snapshot")
+        object.__setattr__(self, "snapshot", _freeze_published_snapshot(self.snapshot))
+
+
 @dataclass(frozen=True, slots=True)
 class TransportEnvelope:
     stream_id: StreamId | None
@@ -543,7 +628,9 @@ TransportOutcome: TypeAlias = (
 
 
 CancelCallback: TypeAlias = Callable[[str], Any | Awaitable[Any]]
-ResponseEvents: TypeAlias = AsyncIterable[SequencedTurnEvent | TurnEvent]
+ResponseEvents: TypeAlias = AsyncIterable[
+    PublishedResponseEvent | SequencedTurnEvent | TurnEvent
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,9 +686,6 @@ class _ActiveResponse:
     cancel_invoked: bool = False
     cancel_requested_reason: str | None = None
     steer_pending: bool = False
-    snapshot_builder: ResponseSnapshotBuilder = field(
-        default_factory=ResponseSnapshotBuilder
-    )
     startup_complete: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation_complete: asyncio.Event = field(default_factory=asyncio.Event)
     pump: asyncio.Task[None] | None = None
@@ -1019,7 +1103,15 @@ class MultiplexedTransportSession:
                         return
                     if active.terminal_enqueued:
                         return
-                    if isinstance(item, SequencedTurnEvent):
+                    snapshot: Mapping[str, Any] | None = None
+                    if isinstance(item, PublishedResponseEvent):
+                        item_mode = "sequenced"
+                        sequence_number = item.sequence_number
+                        event = item.event
+                        # Forward the controller-published snapshot verbatim;
+                        # the lane holds no builder state of its own.
+                        snapshot = item.snapshot
+                    elif isinstance(item, SequencedTurnEvent):
                         item_mode = "sequenced"
                         sequence_number = item.sequence_number
                         event = item.event
@@ -1057,7 +1149,7 @@ class MultiplexedTransportSession:
                                 if isinstance(event, TERMINAL_EVENT_TYPES)
                                 else None
                             ),
-                            snapshot=self._observe_snapshot(active, event),
+                            snapshot=snapshot,
                         ),
                     ):
                         self._enqueue_transport_error_locked(
@@ -1117,16 +1209,6 @@ class MultiplexedTransportSession:
                 await self._request_source_cancel(active, "missing_terminal_event")
         finally:
             active.startup_complete.set()
-
-    @staticmethod
-    def _observe_snapshot(
-        active: _ActiveResponse,
-        event: TurnEvent,
-    ) -> Mapping[str, Any] | None:
-        """Fold the event into lane snapshot state and return its snapshot."""
-
-        active.snapshot_builder.observe(event)
-        return active.snapshot_builder.snapshot(event)
 
     def _enqueue_locked(
         self,

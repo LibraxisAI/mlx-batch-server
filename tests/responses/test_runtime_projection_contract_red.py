@@ -447,3 +447,214 @@ def test_tool_arguments_cannot_introduce_or_change_admitted_identity() -> None:
         projection.observe(
             SequencedTurnEvent(10, ToolDelta(0, "call_1", "fc_1", "other", "{}"))
         )
+
+
+# --- W3-HR2-3: hosted lifecycle facts in the terminal projection --------------
+
+from mlx_batch_server.runtime.events import (  # noqa: E402
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallResult,
+    HostedCallStarted,
+)
+
+_SEALED_ACTION = {
+    "kind": "search",
+    "query": "mlx batch server",
+    "sources": ("https://a.example/one",),
+}
+_HOSTED_RESULT = {
+    "kind": "search_results",
+    "digest": "digest-1",
+    "results": ({"url": "https://a.example/one", "title": "One"},),
+}
+
+
+def _hosted_lifecycle_events(
+    *,
+    status: str = "completed",
+    with_result: bool = True,
+) -> tuple[TurnEvent, ...]:
+    action = dict(_SEALED_ACTION)
+    if status == "failed":
+        action["sources"] = ()
+    events: list[TurnEvent] = [
+        TurnStarted("resp_projection", "buddy", 123),
+        OutputItemStarted("hosted_call", 0, "ws_1", "call_ws", "web_search"),
+        HostedCallStarted(0, "ws_1", "call_ws", "web_search", {"query": "mlx"}),
+        HostedCallProgress(0, "ws_1", "call_ws", "searching"),
+    ]
+    if with_result:
+        events.append(
+            HostedCallResult(0, "ws_1", "call_ws", "web_search", _HOSTED_RESULT)
+        )
+    events.extend(
+        (
+            HostedCallCompleted(
+                0,
+                "ws_1",
+                "call_ws",
+                "web_search",
+                status,
+                {"call_id": "call_ws"},
+            ),
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "ws_1",
+                call_id="call_ws",
+                name="web_search",
+                status=status,
+                action=action,
+            ),
+            TurnCompleted("stop"),
+        )
+    )
+    return tuple(events)
+
+
+def test_hosted_terminal_item_renders_exactly_from_the_sealed_action() -> None:
+    from openai.types.responses import Response
+
+    from mlx_batch_server.responses.transport import render_completed_item
+
+    projection = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+    events = _hosted_lifecycle_events()
+    _observe(projection, events)
+    terminal = projection.terminal_envelope()
+
+    completed = next(
+        event for event in events if isinstance(event, OutputItemCompleted)
+    )
+    expected_item = {
+        "id": "ws_1",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+            "type": "search",
+            "query": "mlx batch server",
+            "sources": [{"type": "url", "url": "https://a.example/one"}],
+        },
+    }
+    assert list(terminal["output"]) == [expected_item]
+    # The stream item and the terminal item come from one shared renderer.
+    assert render_completed_item(completed) == expected_item
+    Response.model_validate(dict(terminal))
+
+    failed = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+    _observe(failed, _hosted_lifecycle_events(status="failed", with_result=False))
+    failed_item = failed.terminal_envelope()["output"][0]
+    assert failed_item["status"] == "failed"
+    assert list(failed_item["action"]["sources"]) == []
+
+
+def test_hosted_result_content_never_enters_the_terminal_envelope() -> None:
+    projection = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+    _observe(projection, _hosted_lifecycle_events())
+    published = repr(projection.terminal_envelope())
+    assert "digest-1" not in published
+    assert "title" not in published
+
+
+def test_hosted_lifecycle_identity_and_order_violations_fail_closed() -> None:
+    def start() -> RuntimeResponseProjection:
+        projection = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+        _observe(
+            projection,
+            (
+                TurnStarted("resp_projection", "buddy", 123),
+                OutputItemStarted("hosted_call", 0, "ws_1", "call_ws", "web_search"),
+            ),
+        )
+        return projection
+
+    foreign_call = start()
+    with pytest.raises(RuntimeProjectionError, match="call id"):
+        foreign_call.observe(
+            SequencedTurnEvent(
+                7, HostedCallStarted(0, "ws_1", "call_other", "web_search", {})
+            )
+        )
+
+    wrong_tool = start()
+    with pytest.raises(RuntimeProjectionError, match="tool name"):
+        wrong_tool.observe(
+            SequencedTurnEvent(
+                7, HostedCallStarted(0, "ws_1", "call_ws", "web_fetch", {})
+            )
+        )
+
+    no_receipt = start()
+    with pytest.raises(RuntimeProjectionError, match="receipt event first"):
+        no_receipt.observe(
+            SequencedTurnEvent(
+                7,
+                OutputItemCompleted(
+                    "hosted_call",
+                    0,
+                    "ws_1",
+                    call_id="call_ws",
+                    name="web_search",
+                    status="completed",
+                    action=_SEALED_ACTION,
+                ),
+            )
+        )
+
+    status_mismatch = start()
+    status_mismatch.observe(
+        SequencedTurnEvent(
+            7,
+            HostedCallCompleted(0, "ws_1", "call_ws", "web_search", "failed", {}),
+        )
+    )
+    with pytest.raises(RuntimeProjectionError, match="status does not match"):
+        status_mismatch.observe(
+            SequencedTurnEvent(
+                8,
+                OutputItemCompleted(
+                    "hosted_call",
+                    0,
+                    "ws_1",
+                    call_id="call_ws",
+                    name="web_search",
+                    status="completed",
+                    action=_SEALED_ACTION,
+                ),
+            )
+        )
+
+    duplicate_receipt = start()
+    duplicate_receipt.observe(
+        SequencedTurnEvent(
+            7,
+            HostedCallCompleted(0, "ws_1", "call_ws", "web_search", "completed", {}),
+        )
+    )
+    with pytest.raises(RuntimeProjectionError, match="already recorded"):
+        duplicate_receipt.observe(
+            SequencedTurnEvent(
+                8,
+                HostedCallCompleted(
+                    0, "ws_1", "call_ws", "web_search", "completed", {}
+                ),
+            )
+        )
+
+
+def test_interrupted_hosted_call_is_omitted_rather_than_fabricated() -> None:
+    """A hosted call without its sealed completion has no proven action."""
+
+    projection = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+    _observe(
+        projection,
+        (
+            TurnStarted("resp_projection", "buddy", 123),
+            OutputItemStarted("hosted_call", 0, "ws_1", "call_ws", "web_search"),
+            HostedCallStarted(0, "ws_1", "call_ws", "web_search", {"query": "mlx"}),
+            TurnCancelled("client_cancelled"),
+        ),
+    )
+    terminal = projection.terminal_envelope()
+    assert terminal["status"] == "cancelled"
+    assert list(terminal["output"]) == []
