@@ -37,7 +37,9 @@ from ..runtime.role_manifest import (
 from ..runtime.roles import RoleDirectory
 from ..runtime.service import RuntimeStartService
 from ..vision.input import MediaSourceField, MultimodalInputCapabilities
+from .compaction import LocalCompactionCodec
 from .controller import ResponsesController
+from .operations import LocalResponsesOperations, LocalResponsesTokenCounter
 from .registry import ResponseRegistry
 from .runtime_mapper import CanonicalResponsesMapper
 from .runtime_projection import create_runtime_projection
@@ -67,6 +69,7 @@ class RuntimeCompositionReceipt:
     runtime_resolver: ManifestRuntimeResolver
     responses_mapper: CanonicalResponsesMapper
     responses_controller: ResponsesController
+    responses_operations: LocalResponsesOperations
     build_receipt: BuildReceipt | None = None
     response_store_scope: str = "process_local"
     requires_single_worker: bool = True
@@ -190,14 +193,28 @@ def _compose_responses_runtime(
     starter = RuntimeStartService(manager, default_role=process_spec.name)
     registry = ResponseRegistry()
     resolver = ManifestRuntimeResolver(roles, aliases)
+    compaction_codec = LocalCompactionCodec()
     mapper = CanonicalResponsesMapper(
         resolve_runtime=resolver,
         projection_factory=create_runtime_projection,
+        compaction_codec=compaction_codec,
     )
     controller = ResponsesController(
         registry=registry,
         mapper=mapper,
         starter=starter,
+    )
+    token_counter = LocalResponsesTokenCounter(
+        {
+            spec.requested_model: spec.model_dir
+            for spec in roles.specs()
+            if spec.model_dir is not None
+        }
+    )
+    operations = LocalResponsesOperations(
+        controller=controller,
+        compaction_codec=compaction_codec,
+        token_counter=token_counter,
     )
 
     source_path = manifest.source.path
@@ -219,6 +236,7 @@ def _compose_responses_runtime(
         runtime_resolver=resolver,
         responses_mapper=mapper,
         responses_controller=controller,
+        responses_operations=operations,
         build_receipt=build_receipt,
     )
 
