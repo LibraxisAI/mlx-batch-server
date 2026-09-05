@@ -33,7 +33,9 @@ DEFAULT_TOMBSTONE_ENTRIES = 512
 
 _MESSAGE_ITEM_TYPE = "message"
 _FUNCTION_CALL_ITEM_TYPE = "function_call"
+_FUNCTION_CALL_OUTPUT_ITEM_TYPE = "function_call_output"
 _ITEM_STATUSES = frozenset(("in_progress", "completed", "incomplete"))
+_LIVE_RESPONSE_STATUSES = frozenset(("queued", "in_progress"))
 
 
 class ResponseRegistryError(LookupError):
@@ -72,6 +74,40 @@ class CancelDeliveryRejected(RuntimeError):
 ResponseStoreError = ResponseRegistryError
 
 
+class _FrozenDict(dict[str, Any]):
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("response lifecycle snapshot is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
+class _FrozenList(list[Any]):
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("response lifecycle snapshot is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
 @dataclass(slots=True)
 class _StoredResponse:
     owner_id: str
@@ -80,6 +116,7 @@ class _StoredResponse:
     committed_at: float
     last_access_at: float
     size_bytes: int
+    background: bool | None
 
 
 @dataclass(slots=True)
@@ -91,6 +128,8 @@ class _InFlightResponse:
     cancel: Callable[[str], Any] | None
     started_at: float
     size_bytes: int
+    public_snapshot: dict[str, Any]
+    background: bool | None
     cancel_requested: bool = False
     cancel_reason: str | None = None
     cancel_delivered: bool = False
@@ -132,6 +171,127 @@ def _json_clone(value: Any) -> Any:
             code="response_invalid_state",
             status_code=400,
         ) from exc
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            {str(key): _deep_freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, list | tuple):
+        return _FrozenList(_deep_freeze(item) for item in value)
+    return value
+
+
+def _stable_input_items(
+    response_id: str,
+    values: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    items = _json_clone(list(values))
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ResponseRegistryError(
+            "response input items must be mappings",
+            code="response_invalid_state",
+            status_code=400,
+            param="input",
+        )
+
+    used = {
+        item_id
+        for item in items
+        if isinstance((item_id := item.get("id")), str) and item_id
+    }
+    if len(used) != sum(
+        isinstance(item.get("id"), str) and bool(item["id"]) for item in items
+    ):
+        raise ResponseRegistryError(
+            "response input item IDs must be unique",
+            code="response_invalid_state",
+            status_code=400,
+            param="input",
+        )
+
+    for index, item in enumerate(items):
+        item_id = item.get("id")
+        if isinstance(item_id, str) and item_id:
+            continue
+        digest = sha256(
+            f"response-input-item:v1:{response_id}:{index}".encode()
+        ).hexdigest()
+        base = f"input_{digest[:24]}"
+        candidate = base
+        suffix = 0
+        while candidate in used:
+            suffix += 1
+            candidate = f"{base}_{suffix}"
+        item["id"] = candidate
+        used.add(candidate)
+    return items
+
+
+def _live_snapshot(
+    response_id: str,
+    value: Mapping[str, Any] | None,
+    *,
+    background: bool | None,
+    previous_status: str | None = None,
+) -> tuple[dict[str, Any], bool | None]:
+    if value is None:
+        snapshot: dict[str, Any] = {
+            "id": response_id,
+            "object": "response",
+            "status": "queued" if background is True else "in_progress",
+            "output": [],
+        }
+        if background is not None:
+            snapshot["background"] = background
+    else:
+        snapshot = _json_clone(dict(value))
+
+    if snapshot.get("id") != response_id:
+        raise ResponseRegistryError(
+            "response lifecycle snapshot must preserve response_id",
+            code="response_invalid_state",
+            status_code=400,
+            param="id",
+        )
+    if snapshot.get("object") != "response":
+        raise ResponseRegistryError(
+            "response lifecycle snapshot object must be 'response'",
+            code="response_invalid_state",
+            status_code=400,
+            param="object",
+        )
+    status = snapshot.get("status")
+    if status not in _LIVE_RESPONSE_STATUSES or (
+        previous_status == "in_progress" and status == "queued"
+    ):
+        raise ResponseRegistryError(
+            "response lifecycle snapshot has an invalid live status transition",
+            code="response_invalid_transition",
+            status_code=409,
+            param="status",
+        )
+
+    snapshot_background = snapshot.get("background")
+    if snapshot_background is not None and not isinstance(snapshot_background, bool):
+        raise ResponseRegistryError(
+            "response background must be a boolean",
+            code="response_invalid_state",
+            status_code=400,
+            param="background",
+        )
+    if background is not None:
+        if snapshot_background is not None and snapshot_background is not background:
+            raise ResponseRegistryError(
+                "response lifecycle snapshot cannot change background policy",
+                code="response_invalid_transition",
+                status_code=409,
+                param="background",
+            )
+        snapshot["background"] = background
+        snapshot_background = background
+    return snapshot, snapshot_background
 
 
 def _assistant_message_lineage(item: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -217,6 +377,21 @@ def _output_lineage_messages(envelope: Mapping[str, Any]) -> list[dict[str, Any]
                 messages.append(message)
         elif item_type == _FUNCTION_CALL_ITEM_TYPE:
             messages.append(_function_call_lineage(item))
+    return messages
+
+
+def _materialized_lineage_messages(
+    items: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep resource IDs out of plain messages while preserving tool identity."""
+
+    messages = _json_clone(list(items))
+    for item in messages:
+        if item.get("type") not in {
+            _FUNCTION_CALL_ITEM_TYPE,
+            _FUNCTION_CALL_OUTPUT_ITEM_TYPE,
+        }:
+            item.pop("id", None)
     return messages
 
 
@@ -409,12 +584,21 @@ class ResponseRegistry:
         store: bool,
         materialized_messages: Sequence[Mapping[str, Any]],
         cancel: Callable[[str], Any] | None = None,
-    ) -> None:
+        background: bool | None = None,
+        public_snapshot: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         owner = _owner_id(owner_id)
         if cancel is not None and not callable(cancel):
             raise TypeError("cancel must be callable")
-        messages = _json_clone(list(materialized_messages))
-        size_bytes = _json_size(messages)
+        if background is not None and not isinstance(background, bool):
+            raise TypeError("background must be a boolean or None")
+        messages = _stable_input_items(response_id, materialized_messages)
+        snapshot, effective_background = _live_snapshot(
+            response_id,
+            public_snapshot,
+            background=background,
+        )
+        size_bytes = _json_size(messages, snapshot)
         now = self._clock()
         self._prune(now)
 
@@ -453,8 +637,60 @@ class ResponseRegistry:
                 cancel=cancel,
                 started_at=now,
                 size_bytes=size_bytes,
+                public_snapshot=snapshot,
+                background=effective_background,
             )
             self._in_flight_bytes += size_bytes
+            return _deep_freeze(_json_clone(snapshot))
+
+    def update(
+        self,
+        response_id: str,
+        public_snapshot: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> Mapping[str, Any]:
+        """Advance one owned live response snapshot without committing terminal state."""
+
+        owner = _owner_id(owner_id)
+        self._prune()
+        with self._lock:
+            inflight = self._owned_in_flight_locked(response_id, owner)
+            if inflight is None:
+                if self._owned_stored_locked(response_id, owner) is not None:
+                    raise ResponseRegistryError(
+                        f"response {response_id!r} is already terminal",
+                        code="response_not_updatable",
+                        status_code=409,
+                        param="status",
+                    )
+                self._raise_lookup_locked(response_id, owner, param="status")
+
+            snapshot, effective_background = _live_snapshot(
+                response_id,
+                public_snapshot,
+                background=inflight.background,
+                previous_status=str(inflight.public_snapshot["status"]),
+            )
+            size_bytes = _json_size(inflight.materialized_messages, snapshot)
+            if size_bytes > self.max_entry_bytes or size_bytes > self.max_bytes:
+                raise ResponseRegistryError(
+                    "response lifecycle snapshot exceeds the local byte limit",
+                    code="response_too_large",
+                    status_code=413,
+                )
+            projected_bytes = self._in_flight_bytes - inflight.size_bytes + size_bytes
+            if projected_bytes > self.max_bytes:
+                raise ResponseRegistryError(
+                    "response registry has reached its in-flight byte limit",
+                    code="response_store_capacity",
+                    status_code=429,
+                )
+            self._in_flight_bytes = projected_bytes
+            inflight.size_bytes = size_bytes
+            inflight.public_snapshot = snapshot
+            inflight.background = effective_background
+            return _deep_freeze(_json_clone(snapshot))
 
     def bind_cancel(
         self,
@@ -512,7 +748,7 @@ class ResponseRegistry:
         owner = _owner_id(owner_id)
         terminal = _json_clone(dict(envelope))
         terminal_digest = _json_digest(terminal)
-        messages = _json_clone(list(materialized_messages))
+        messages = _stable_input_items(response_id, materialized_messages)
         now = self._clock()
         self._prune(now)
 
@@ -521,6 +757,13 @@ class ResponseRegistry:
             if inflight is None:
                 stored = self._owned_stored_locked(response_id, owner)
                 if stored is not None:
+                    if _json_digest(stored.envelope) != terminal_digest:
+                        raise ResponseRegistryError(
+                            f"response {response_id!r} already has a different "
+                            "terminal envelope",
+                            code="response_terminal_conflict",
+                            status_code=409,
+                        )
                     return _json_clone(stored.envelope)
                 tombstone = self._owned_tombstone_locked(response_id, owner)
                 if tombstone is not None:
@@ -591,6 +834,7 @@ class ResponseRegistry:
                 committed_at=now,
                 last_access_at=now,
                 size_bytes=size_bytes,
+                background=inflight.background,
             )
             self._bytes += size_bytes
             self._counters["committed_total"] += 1
@@ -607,6 +851,9 @@ class ResponseRegistry:
                 stored.last_access_at = now
                 self._stored.move_to_end(response_id)
                 return _json_clone(stored.envelope)
+            inflight = self._owned_in_flight_locked(response_id, owner)
+            if inflight is not None and not inflight.deleted:
+                return _deep_freeze(_json_clone(inflight.public_snapshot))
             self._raise_lookup_locked(response_id, owner)
         raise AssertionError("unreachable")
 
@@ -621,7 +868,7 @@ class ResponseRegistry:
             if stored is not None:
                 stored.last_access_at = now
                 self._stored.move_to_end(response_id)
-                messages = _json_clone(stored.materialized_messages)
+                messages = _materialized_lineage_messages(stored.materialized_messages)
                 messages.extend(_output_lineage_messages(stored.envelope))
                 return messages
             self._raise_lookup_locked(
@@ -645,8 +892,16 @@ class ResponseRegistry:
                 stored.last_access_at = now
                 self._stored.move_to_end(response_id)
                 return _json_clone(stored.materialized_messages)
+            inflight = self._owned_in_flight_locked(response_id, owner)
+            if inflight is not None and inflight.store and not inflight.deleted:
+                return _json_clone(inflight.materialized_messages)
             self._raise_lookup_locked(response_id, owner)
         raise AssertionError("unreachable")
+
+    def input_items(self, response_id: str, *, owner_id: str) -> list[dict[str, Any]]:
+        """Return the canonical stored input-item sequence with stable IDs."""
+
+        return self.input_messages(response_id, owner_id=owner_id)
 
     def request_cancel(
         self,
@@ -666,6 +921,12 @@ class ResponseRegistry:
             inflight = self._owned_in_flight_locked(response_id, owner)
             if inflight is None:
                 stored = self._owned_stored_locked(response_id, owner)
+                if stored is not None and stored.background is False:
+                    raise ResponseRegistryError(
+                        f"response {response_id!r} was not created in background mode",
+                        code="response_not_cancellable",
+                        status_code=409,
+                    )
                 if stored is not None and self._is_cancelled(stored.envelope):
                     return self._terminal_waiter_from_stored(response_id, stored)
                 if stored is not None:
@@ -675,6 +936,13 @@ class ResponseRegistry:
                         status_code=409,
                     )
                 self._raise_lookup_locked(response_id, owner)
+
+            if inflight.background is False:
+                raise ResponseRegistryError(
+                    f"response {response_id!r} was not created in background mode",
+                    code="response_not_cancellable",
+                    status_code=409,
+                )
 
             if inflight.deleted:
                 self._raise_lookup_locked(response_id, owner)
@@ -1177,6 +1445,8 @@ class ResponseRegistry:
             cancel=None,
             started_at=stored.committed_at,
             size_bytes=0,
+            public_snapshot=_json_clone(stored.envelope),
+            background=stored.background,
             cancel_requested=True,
             cancel_reason=reason,
             cancel_delivered=True,

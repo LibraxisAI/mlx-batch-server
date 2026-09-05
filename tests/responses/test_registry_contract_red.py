@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Mapping
 
 import pytest
 
@@ -40,6 +41,24 @@ def _commit(registry: ResponseRegistry, response_id: str, owner_id: str) -> None
             {"role": "assistant", "content": "ok"},
         ],
     )
+
+
+def _without_ids(items: list[dict]) -> list[dict]:
+    return [
+        {key: value for key, value in item.items() if key != "id"} for item in items
+    ]
+
+
+def _live_snapshot(response_id: str, status: str) -> dict:
+    return {
+        "id": response_id,
+        "object": "response",
+        "status": status,
+        "background": True,
+        "model": "flash-next",
+        "output": [],
+        "metadata": {"phase": status},
+    }
 
 
 def test_registry_isolates_every_response_operation_by_owner() -> None:
@@ -99,7 +118,8 @@ def test_parent_lineage_adds_assistant_output_without_changing_input_items() -> 
         materialized_messages=inputs,
     )
 
-    assert registry.input_messages("resp_lineage", owner_id=OWNER_A) == inputs
+    stored_inputs = registry.input_messages("resp_lineage", owner_id=OWNER_A)
+    assert _without_ids(stored_inputs) == inputs
     assert registry.parent_messages("resp_lineage", owner_id=OWNER_A) == [
         *inputs,
         {
@@ -426,8 +446,8 @@ def test_registry_bounds_aggregate_in_flight_bytes() -> None:
     registry = ResponseRegistry(
         max_entries=4,
         max_in_flight=4,
-        max_bytes=64,
-        max_entry_bytes=64,
+        max_bytes=256,
+        max_entry_bytes=256,
     )
     messages = [{"content": "x" * 20}]
 
@@ -595,7 +615,8 @@ def test_parent_lineage_materializes_the_complete_output_item_sequence() -> None
         materialized_messages=inputs,
     )
 
-    assert registry.input_messages("resp_tool", owner_id=OWNER_A) == inputs
+    stored_inputs = registry.input_messages("resp_tool", owner_id=OWNER_A)
+    assert _without_ids(stored_inputs) == inputs
     assert registry.parent_messages("resp_tool", owner_id=OWNER_A) == [
         *inputs,
         {
@@ -646,7 +667,10 @@ def test_unusable_stored_function_call_cannot_anchor_a_continuation() -> None:
     assert error.value.param == "previous_response_id"
     # The stored response itself stays readable and owner-isolated.
     assert registry.get("resp_partial", owner_id=OWNER_A)["status"] == "incomplete"
-    assert registry.input_messages("resp_partial", owner_id=OWNER_A) == inputs
+    assert (
+        _without_ids(registry.input_messages("resp_partial", owner_id=OWNER_A))
+        == inputs
+    )
 
 
 def test_store_false_lineage_is_not_retained_for_tool_continuations() -> None:
@@ -682,3 +706,195 @@ def test_store_false_lineage_is_not_retained_for_tool_continuations() -> None:
         registry.parent_messages("resp_nostore", owner_id=OWNER_A)
     assert error.value.param == "previous_response_id"
     assert error.value.code != "response_invalid_lineage"
+
+
+def test_begin_update_and_get_expose_deep_immutable_live_snapshots() -> None:
+    registry = ResponseRegistry()
+    queued = _live_snapshot("resp_background", "queued")
+
+    begun = registry.begin(
+        "resp_background",
+        owner_id=OWNER_A,
+        store=True,
+        background=True,
+        public_snapshot=queued,
+        materialized_messages=[{"role": "user", "content": "hello"}],
+    )
+    queued["status"] = "failed"
+    queued["metadata"]["phase"] = "corrupted"
+
+    assert isinstance(begun, Mapping)
+    assert begun["status"] == "queued"
+    assert registry.get("resp_background", owner_id=OWNER_A) == begun
+    with pytest.raises(TypeError, match="immutable"):
+        begun["status"] = "failed"  # type: ignore[index]
+    with pytest.raises(TypeError, match="immutable"):
+        begun["output"].append({"type": "message"})
+    with pytest.raises(TypeError, match="immutable"):
+        begun["metadata"]["phase"] = "failed"
+
+    in_progress = _live_snapshot("resp_background", "in_progress")
+    in_progress["output"] = [
+        {
+            "id": "msg_live",
+            "type": "message",
+            "status": "in_progress",
+            "content": [],
+        }
+    ]
+    updated = registry.update(
+        "resp_background",
+        in_progress,
+        owner_id=OWNER_A,
+    )
+    in_progress["output"][0]["status"] = "failed"
+
+    assert updated["status"] == "in_progress"
+    assert updated["output"][0]["status"] == "in_progress"
+    assert registry.get("resp_background", owner_id=OWNER_A) == updated
+
+    with pytest.raises(ResponseRegistryError) as foreign:
+        registry.get("resp_background", owner_id=OWNER_B)
+    assert foreign.value.code == "response_not_found"
+
+
+def test_live_snapshot_transitions_cannot_replace_terminal_commit_authority() -> None:
+    registry = ResponseRegistry()
+    registry.begin(
+        "resp_transitions",
+        owner_id=OWNER_A,
+        store=True,
+        background=True,
+        public_snapshot=_live_snapshot("resp_transitions", "queued"),
+        materialized_messages=[],
+    )
+    registry.update(
+        "resp_transitions",
+        _live_snapshot("resp_transitions", "in_progress"),
+        owner_id=OWNER_A,
+    )
+
+    for illegal_status in ("queued", "completed", "failed", "cancelled"):
+        with pytest.raises(ResponseRegistryError) as illegal:
+            registry.update(
+                "resp_transitions",
+                _live_snapshot("resp_transitions", illegal_status),
+                owner_id=OWNER_A,
+            )
+        assert illegal.value.param == "status"
+
+    terminal = _envelope("resp_transitions")
+    assert (
+        registry.commit(
+            "resp_transitions",
+            terminal,
+            owner_id=OWNER_A,
+            materialized_messages=[],
+        )
+        == terminal
+    )
+    assert (
+        registry.commit(
+            "resp_transitions",
+            dict(terminal),
+            owner_id=OWNER_A,
+            materialized_messages=[],
+        )
+        == terminal
+    )
+    with pytest.raises(ResponseRegistryError) as conflict:
+        registry.commit(
+            "resp_transitions",
+            {**terminal, "status": "failed"},
+            owner_id=OWNER_A,
+            materialized_messages=[],
+        )
+    assert conflict.value.code == "response_terminal_conflict"
+
+    with pytest.raises(ResponseRegistryError) as terminal_update:
+        registry.update(
+            "resp_transitions",
+            _live_snapshot("resp_transitions", "in_progress"),
+            owner_id=OWNER_A,
+        )
+    assert terminal_update.value.code == "response_not_updatable"
+
+
+def test_explicit_non_background_response_cannot_be_publicly_cancelled() -> None:
+    registry = ResponseRegistry()
+    registry.begin(
+        "resp_foreground",
+        owner_id=OWNER_A,
+        store=True,
+        background=False,
+        public_snapshot={
+            **_live_snapshot("resp_foreground", "in_progress"),
+            "background": False,
+        },
+        materialized_messages=[],
+    )
+
+    with pytest.raises(ResponseRegistryError) as not_cancellable:
+        registry.request_cancel(
+            "resp_foreground",
+            "client_cancelled",
+            owner_id=OWNER_A,
+        )
+    assert not_cancellable.value.code == "response_not_cancellable"
+    assert registry.stats()["cancel_requests_total"] == 0
+    assert registry.get("resp_foreground", owner_id=OWNER_A)["status"] == "in_progress"
+
+
+def test_stable_input_item_ids_are_persisted_and_included_in_byte_accounting() -> None:
+    registry = ResponseRegistry(max_bytes=4096, max_entry_bytes=4096)
+    raw_items = [
+        {"role": "user", "content": "hello"},
+        {
+            "type": "function_call",
+            "role": "assistant",
+            "id": "fc_official",
+            "call_id": "call_1",
+            "name": "lookup",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "role": "tool",
+            "call_id": "call_1",
+            "output": "ok",
+        },
+    ]
+    raw_size = len(
+        json.dumps(
+            raw_items,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    registry.begin(
+        "resp_stable_items",
+        owner_id=OWNER_A,
+        store=True,
+        materialized_messages=raw_items,
+    )
+
+    first = registry.input_items("resp_stable_items", owner_id=OWNER_A)
+    second = registry.input_messages("resp_stable_items", owner_id=OWNER_A)
+    assert first == second
+    assert [item["id"] for item in first] == [
+        first[0]["id"],
+        "fc_official",
+        first[2]["id"],
+    ]
+    assert first[0]["id"].startswith("input_")
+    assert first[2]["id"].startswith("input_")
+    assert len({item["id"] for item in first}) == len(first)
+    assert registry.stats()["in_flight_bytes"] > raw_size
+
+    first[0]["content"] = "changed"
+    assert (
+        registry.input_items("resp_stable_items", owner_id=OWNER_A)[0]["content"]
+        == "hello"
+    )
