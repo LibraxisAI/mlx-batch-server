@@ -165,8 +165,38 @@ The local `mlx-vlm` dependency already understands `qwen3.6-vl` and `qwen3.6-vl-
 
 | Endpoint | Description | Status |
 |----------|-------------|--------|
-| `POST /anthropic/v1/messages` | Messages with tools, streaming, thinking | Stable |
+| `POST /anthropic/v1/messages` | Bounded Messages profile: text/tools, SSE, admitted rich inputs | Stable |
 | `GET /anthropic/v1/models` | Model listing with pagination | Stable |
+
+The admitted client oracle is exactly `anthropic==0.96.0`, exercised through
+sync and async non-stream plus sync and async SSE clients. Raw HTTP covers the
+extended request-field matrix. This local runtime accepts service tiers `auto`
+and `standard_only` and reports the actual delivered tier as `standard`.
+
+Supported rich content includes admitted image and document source forms plus
+caller-supplied `search_result` blocks. Hosted web/search execution, containers,
+prompt caching, citations, structured output, priority tier, enabled extended
+thinking, prior-thinking continuation, and redacted-thinking continuation are
+explicitly refused with HTTP 400 before streaming or inference starts. See the
+[exact compatibility and refusal matrix](docs/anthropic-api.md).
+
+Run the public admission verifier against a separately started final candidate
+on a caller-selected non-production port (for example `10241`):
+
+```bash
+uv run --with 'anthropic==0.96.0' \
+  python scripts/quality/verify_live_mlx_batch_api.py \
+  --base-url http://127.0.0.1:10241 \
+  --model "$MLX_BATCH_ADMISSION_MODEL" \
+  --api-key-env MLX_BATCH_ADMISSION_KEY \
+  --anthropic-api-key-env MLX_BATCH_ADMISSION_KEY \
+  --public-url "$MLX_BATCH_PUBLIC_FIXTURE_URL" \
+  --private-redirect-url "$MLX_BATCH_PRIVATE_REDIRECT_URL" \
+  --receipt artifacts/anthropic-public-admission.json
+```
+
+Never use this admission run to replace or mutate the services on `8100` or
+`10240`.
 
 ---
 

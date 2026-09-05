@@ -98,6 +98,44 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     modules = _imported_modules(trees)
     constants = _string_constants(trees)
     strict_request = any(_has_strict_model_config(tree) for tree in trees)
+    capabilities_path = directory / "capabilities.py"
+    router_path = directory / "router.py"
+    engine_path = directory / "messages_engine.py"
+    mapper_path = directory / "request_mapper.py"
+    content_mapper_path = directory / "content_mapper.py"
+    projector_path = directory / "projector.py"
+    capabilities_tree = _parse_or_none(capabilities_path)
+    router_tree = _parse_or_none(router_path)
+    mapper_tree = _parse_or_none(mapper_path)
+    create_message = _function_or_none(router_tree, "create_message")
+    enforce_line = _first_call_line(create_message, "enforce_capabilities")
+    mapping_line = _first_call_line(create_message, "build_turn")
+    stream_line = _first_call_line(create_message, "StreamingResponse")
+    engine_source = _read_or_empty(engine_path)
+    mapper_source = _read_or_empty(mapper_path)
+    content_mapper_source = _read_or_empty(content_mapper_path)
+    projector_source = _read_or_empty(projector_path)
+    unsupported_keys = _classification_keys(capabilities_tree, "_unsupported")
+    explicit_refusals = {
+        "cache_control",
+        "citations",
+        "container",
+        "inference_geo",
+        "output_config",
+        "output_config.format",
+        "output_config.effort",
+        "effort",
+        "content.server_tool_use",
+        "content.web_search_tool_result",
+        "content.container_upload",
+    }
+    represented_blocks = {
+        "RequestServerToolUseBlock",
+        "RequestWebSearchToolResultBlock",
+        "RequestContainerUploadBlock",
+        "RequestThinkingBlock",
+        "RequestRedactedThinkingBlock",
+    }
     return (
         SourceCheck(
             "shared-runtime-owner",
@@ -119,6 +157,66 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
             "typed-error-request-id",
             "request_id" in constants and "error" in constants,
             "Anthropic error projection has no request_id-bearing error contract",
+        ),
+        SourceCheck(
+            "single-capability-owner",
+            _top_level_definition_count(trees, "enforce_capabilities") == 1
+            and _class_or_none(capabilities_tree, "AnthropicCapabilityProfile")
+            is not None
+            and _function_or_none(capabilities_tree, "enforce_capabilities")
+            is not None,
+            "Anthropic capability admission is not owned exactly once by capabilities.py",
+        ),
+        SourceCheck(
+            "pre-sse-capability-rejection",
+            enforce_line is not None
+            and mapping_line is not None
+            and stream_line is not None
+            and enforce_line < mapping_line < stream_line
+            and _call_count(create_message, "enforce_capabilities") == 1,
+            "Anthropic capability admission is not completed before mapping and StreamingResponse creation",
+        ),
+        SourceCheck(
+            "thinking-signature-gate",
+            {
+                "thinking.enabled",
+                "content.thinking",
+                "content.redacted_thinking",
+            }
+            <= unsupported_keys
+            and "ThinkingProjection.refused()" in engine_source
+            and "ThinkingProjection.signed_by(owner)" in engine_source
+            and "thinking_signature_owner" in engine_source
+            and "signature_delta" in projector_source,
+            "Anthropic thinking can reach the wire without explicit request and signature ownership gates",
+        ),
+        SourceCheck(
+            "ordered-rich-content-mapping",
+            _call_count(
+                _function_or_none(mapper_tree, "_map_user_content"),
+                "map_anthropic_content",
+            )
+            == 1
+            and all(
+                marker in content_mapper_source
+                for marker in (
+                    "RequestImageBlock",
+                    "RequestDocumentBlock",
+                    "RequestSearchResultBlock",
+                    "content_index",
+                    "CALLER-SUPPLIED UNTRUSTED SEARCH RESULT",
+                )
+            )
+            and "media.extend(canonical.media)" in mapper_source,
+            "Anthropic rich blocks are not mapped once in caller order onto the canonical content/media ABI",
+        ),
+        SourceCheck(
+            "explicit-no-silent-ignore",
+            strict_request
+            and explicit_refusals <= unsupported_keys
+            and represented_blocks <= _imported_names(capabilities_tree)
+            and represented_blocks <= set(_mapping_key_names(capabilities_tree)),
+            "Anthropic official fields or content discriminators can bypass an explicit fail-closed classification",
         ),
     )
 
@@ -563,6 +661,78 @@ def _function_or_none(
             and node.name == name
         ),
         None,
+    )
+
+
+def _top_level_definition_count(trees: Iterable[ast.Module], name: str) -> int:
+    return sum(
+        1
+        for tree in trees
+        for node in tree.body
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name == name
+    )
+
+
+def _call_count(
+    node: ast.AST | None,
+    name: str,
+) -> int:
+    if node is None:
+        return 0
+    return sum(
+        1
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and _call_name(child) == name
+    )
+
+
+def _first_call_line(node: ast.AST | None, name: str) -> int | None:
+    if node is None:
+        return None
+    return min(
+        (
+            child.lineno
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call) and _call_name(child) == name
+        ),
+        default=None,
+    )
+
+
+def _classification_keys(tree: ast.Module | None, helper: str) -> set[str]:
+    if tree is None:
+        return set()
+    return {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _call_name(node) == helper
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+
+
+def _imported_names(tree: ast.Module | None) -> set[str]:
+    if tree is None:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom | ast.Import):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _mapping_key_names(tree: ast.Module | None) -> tuple[str, ...]:
+    if tree is None:
+        return ()
+    return tuple(
+        key.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Name)
     )
 
 

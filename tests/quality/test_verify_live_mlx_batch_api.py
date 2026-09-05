@@ -6,6 +6,7 @@ import json
 import socket
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,15 @@ import uvicorn
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from scripts.quality.verify_live_mlx_batch_api import (
+    ANTHROPIC_SDK_VERSION,
     DEFAULT_PROMPT,
     ReceivedEvent,
     VerificationConfig,
     VerificationError,
     _parser,
+    _receipt_integrity_errors,
+    _redact_receipt,
+    _require_anthropic_sdk_version,
     _run_cli,
     _run_probe,
     _safe_url,
@@ -156,20 +161,35 @@ def _openai_events(mode: str, *, stream_id: str | None = None) -> list[dict[str,
     return events
 
 
-def _anthropic_message(*, content: list[dict[str, Any]]) -> dict[str, Any]:
+def _anthropic_message(
+    *,
+    content: list[dict[str, Any]],
+    stop_reason: str | None = None,
+    stop_sequence: str | None = None,
+) -> dict[str, Any]:
     return {
         "id": "msg_anthropic_live",
         "type": "message",
         "role": "assistant",
         "content": content,
         "model": MODEL,
-        "stop_reason": "end_turn" if content else None,
-        "stop_sequence": None,
-        "usage": {"input_tokens": 2, "output_tokens": 2 if content else 0},
+        "stop_reason": stop_reason or ("end_turn" if content else None),
+        "stop_sequence": stop_sequence,
+        "usage": {
+            "input_tokens": 2,
+            "output_tokens": 2 if content else 0,
+            "service_tier": "standard",
+        },
     }
 
 
-def _anthropic_events() -> list[dict[str, Any]]:
+def _anthropic_events(
+    *,
+    text: str = TEXT,
+    stop_reason: str = "end_turn",
+    stop_sequence: str | None = None,
+) -> list[dict[str, Any]]:
+    midpoint = max(1, len(text) // 2)
     return [
         {"type": "message_start", "message": _anthropic_message(content=[])},
         {
@@ -180,17 +200,17 @@ def _anthropic_events() -> list[dict[str, Any]]:
         {
             "type": "content_block_delta",
             "index": 0,
-            "delta": {"type": "text_delta", "text": "alpha "},
+            "delta": {"type": "text_delta", "text": text[:midpoint]},
         },
         {
             "type": "content_block_delta",
             "index": 0,
-            "delta": {"type": "text_delta", "text": "beta"},
+            "delta": {"type": "text_delta", "text": text[midpoint:]},
         },
         {"type": "content_block_stop", "index": 0},
         {
             "type": "message_delta",
-            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "delta": {"stop_reason": stop_reason, "stop_sequence": stop_sequence},
             "usage": {"input_tokens": 2, "output_tokens": 2},
         },
         {"type": "message_stop"},
@@ -208,8 +228,117 @@ def _mode(prompt: Any) -> str:
     return "success"
 
 
-def _fake_app() -> FastAPI:
+def _unsupported_field(body: dict[str, Any]) -> str | None:
+    unsupported = next(
+        (
+            field
+            for field in ("cache_control", "container", "inference_geo", "effort")
+            if field in body
+        ),
+        None,
+    )
+    output_config = body.get("output_config")
+    if (
+        unsupported is None
+        and isinstance(output_config, dict)
+        and output_config.get("format") is not None
+    ):
+        unsupported = "output_config.format"
+    thinking = body.get("thinking")
+    if (
+        unsupported is None
+        and isinstance(thinking, dict)
+        and thinking.get("type") == "enabled"
+    ):
+        unsupported = "thinking.type"
+    tools = body.get("tools")
+    if (
+        unsupported is None
+        and isinstance(tools, list)
+        and any(
+            isinstance(tool, dict) and tool.get("type") not in (None, "custom")
+            for tool in tools
+        )
+    ):
+        unsupported = "tools.0.type"
+    messages = body.get("messages")
+    if unsupported is None and isinstance(messages, list):
+        for message_index, message in enumerate(messages):
+            if not isinstance(message, dict) or not isinstance(
+                message.get("content"), list
+            ):
+                continue
+            for block_index, block in enumerate(message["content"]):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("cache_control") is not None:
+                    unsupported = (
+                        f"messages.{message_index}.content.{block_index}.cache_control"
+                    )
+                    break
+                block_type = block.get("type")
+                if block_type in {
+                    "server_tool_use",
+                    "web_search_tool_result",
+                    "container_upload",
+                    "thinking",
+                    "redacted_thinking",
+                }:
+                    unsupported = f"messages.{message_index}.content.{block_index}.type"
+                    break
+                citations = block.get("citations")
+                if isinstance(citations, dict) and citations.get("enabled") is True:
+                    unsupported = f"messages.{message_index}.content.{block_index}.citations.enabled"
+                    break
+            if unsupported is not None:
+                break
+    return unsupported
+
+
+def _validate_supported_fixture(body: dict[str, Any]) -> None:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(
+            message.get("content"), list
+        ):
+            continue
+        content = message["content"]
+        types = [block.get("type") for block in content if isinstance(block, dict)]
+        if "search_result" in types:
+            assert types == [
+                "text",
+                "image",
+                "text",
+                "document",
+                "search_result",
+                "text",
+            ]
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            assert block["tool_use_id"] == "toolu_admission_1"
+            assert block["is_error"] is False
+            assert [item["type"] for item in block["content"]] == ["text", "image"]
+
+
+def _fake_app(*, refusal_mode: str = "strict") -> FastAPI:
     app = FastAPI()
+    app.state.inference_starts = 0
+
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        return {
+            "role_runtime": {
+                "runtime_stats": {
+                    "executor": {
+                        "active_requests": 0,
+                        "tombstones": app.state.inference_starts,
+                    }
+                }
+            }
+        }
 
     @app.post("/v1/responses", response_model=None)
     async def responses(body: dict[str, Any]) -> JSONResponse | StreamingResponse:
@@ -240,13 +369,60 @@ def _fake_app() -> FastAPI:
 
     @app.post("/anthropic/v1/messages", response_model=None)
     async def messages(body: dict[str, Any]) -> JSONResponse | StreamingResponse:
+        unsupported = _unsupported_field(body)
+        request_id = "req_fixture_admission"
+        if unsupported is not None and refusal_mode in {"strict", "started_400"}:
+            if refusal_mode == "started_400":
+                app.state.inference_starts += 1
+            return JSONResponse(
+                status_code=400,
+                headers={"request-id": request_id},
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": f"{unsupported} is not supported",
+                    },
+                    "request_id": request_id,
+                },
+            )
+        if unsupported is not None and refusal_mode == "late_sse":
+            app.state.inference_starts += 1
+
+            async def late_error() -> AsyncIterator[bytes]:
+                yield _sse(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": f"{unsupported} is not supported",
+                        },
+                        "request_id": request_id,
+                    }
+                )
+
+            return StreamingResponse(late_error(), media_type="text/event-stream")
+
+        _validate_supported_fixture(body)
+        app.state.inference_starts += 1
+        stop_sequence = " delta" if body.get("stop_sequences") == [" delta"] else None
+        stop_reason = "stop_sequence" if stop_sequence else "end_turn"
+        text = "alpha beta gamma" if stop_sequence else TEXT
         if not body.get("stream"):
             return JSONResponse(
-                _anthropic_message(content=[{"type": "text", "text": TEXT}])
+                _anthropic_message(
+                    content=[{"type": "text", "text": text}],
+                    stop_reason=stop_reason,
+                    stop_sequence=stop_sequence,
+                )
             )
 
         async def generate() -> AsyncIterator[bytes]:
-            for event in _anthropic_events():
+            for event in _anthropic_events(
+                text=text,
+                stop_reason=stop_reason,
+                stop_sequence=stop_sequence,
+            ):
                 yield _sse(event)
                 await asyncio.sleep(0.001)
 
@@ -332,25 +508,121 @@ async def test_full_fake_http_sse_websocket_success_writes_receipt(
     tmp_path: Path,
 ) -> None:
     receipt_path = tmp_path / "receipt.json"
+    config: VerificationConfig
     async with _serve(_fake_app()) as base_url:
+        config = _config(base_url, receipt_path)
         receipt = await run_verification(
-            _config(base_url, receipt_path),
+            config,
             safe_fetcher=_FakeSafeFetcher(),
         )
 
     assert receipt["overall"] is True
     assert receipt["finalized"] is True
-    assert len(receipt["probes"]) == 7
+    assert receipt["integrity"]["ok"] is True
+    assert len(receipt["probes"]) == 11
     assert all(probe["ok"] for probe in receipt["probes"].values())
     assert receipt["probes"]["openai_sse"]["details"]["text_delta_count"] == 2
     assert receipt["probes"]["openai_sse"]["details"]["text_delta_receive_count"] >= 2
     assert receipt["probes"]["openai_websocket"]["details"]["socket_count"] == 1
-    assert receipt["probes"]["anthropic_sse"]["details"]["text_delta_count"] == 2
+    assert (
+        receipt["probes"]["anthropic_sdk_async_sse"]["details"]["text_delta_count"] == 2
+    )
+    for probe_id in (
+        "anthropic_sdk_sync_non_stream",
+        "anthropic_sdk_async_non_stream",
+        "anthropic_sdk_sync_sse",
+        "anthropic_sdk_async_sse",
+    ):
+        assert (
+            receipt["probes"][probe_id]["details"]["sdk_version"]
+            == ANTHROPIC_SDK_VERSION
+        )
+    supported = receipt["probes"]["anthropic_supported_matrix"]["details"]
+    refused = receipt["probes"]["anthropic_refusal_matrix"]["details"]
+    assert len(supported["cells"]) == 12
+    assert len(refused["cells"]) == 30
+    assert {cell["cell_id"] for cell in supported["cells"]} == set(
+        supported["required_cell_ids"]
+    )
+    assert {cell["cell_id"] for cell in refused["cells"]} == set(
+        refused["required_cell_ids"]
+    )
+    assert all(cell["http_status"] == 400 for cell in refused["cells"])
+    assert all(cell["sse_event_bytes"] == 0 for cell in refused["cells"])
+    assert all(cell["inference_start_count"] == 0 for cell in refused["cells"])
     assert json.loads(receipt_path.read_text()) == receipt
     assert "do-not-record" not in receipt_path.read_text()
     assert "secret" not in receipt_path.read_text()
     assert "test-openai-key" not in receipt_path.read_text()
     assert "test-anthropic-key" not in receipt_path.read_text()
+
+    missing_probe = deepcopy(receipt["probes"])
+    missing_probe.pop("anthropic_sdk_sync_sse")
+    assert any(
+        "missing required probes" in error
+        for error in _receipt_integrity_errors(missing_probe, config)
+    )
+
+    missing_cell = deepcopy(receipt["probes"])
+    missing_cell["anthropic_refusal_matrix"]["details"]["cells"].pop()
+    assert any(
+        "missing required cells" in error
+        for error in _receipt_integrity_errors(missing_cell, config)
+    )
+
+    duplicate_cell = deepcopy(receipt["probes"])
+    duplicate_cell["anthropic_supported_matrix"]["details"]["cells"].append(
+        duplicate_cell["anthropic_supported_matrix"]["details"]["cells"][0]
+    )
+    assert any(
+        "duplicate matrix cells" in error
+        for error in _receipt_integrity_errors(duplicate_cell, config)
+    )
+
+    assert any(
+        "duplicate probe ids" in error
+        for error in _receipt_integrity_errors(
+            receipt["probes"],
+            config,
+            declared_probe_ids=[*receipt["probes"], "openai_non_stream"],
+        )
+    )
+
+    skipped_probe = deepcopy(receipt["probes"])
+    skipped_probe["anthropic_sdk_sync_sse"] = {
+        "ok": True,
+        "status": "skipped",
+        "details": {},
+    }
+    assert any(
+        "required probes were skipped" in error
+        for error in _receipt_integrity_errors(skipped_probe, config)
+    )
+
+
+def test_anthropic_sdk_version_is_an_exact_admission_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.quality.verify_live_mlx_batch_api.anthropic.__version__", "0.95.0"
+    )
+    with pytest.raises(VerificationError, match=r"must be 0\.96\.0, found 0\.95\.0"):
+        _require_anthropic_sdk_version()
+
+
+def test_receipt_redaction_removes_credentials_from_nested_failures() -> None:
+    redacted = _redact_receipt(
+        {
+            "error": "server echoed sk-openai-secret",
+            "nested": [{"error": "sk-anthropic-secret"}],
+        },
+        ("sk-openai-secret", "sk-anthropic-secret"),
+    )
+
+    serialized = json.dumps(redacted)
+    assert "sk-openai-secret" not in serialized
+    assert "sk-anthropic-secret" not in serialized
+    assert serialized.count("[redacted]") == 2
 
 
 @pytest.mark.asyncio
@@ -426,6 +698,34 @@ async def test_failure_still_writes_finalized_receipt(tmp_path: Path) -> None:
     assert persisted["finalized"] is True
     assert persisted["probes"]["openai_sse"]["status"] == "failed"
     assert persisted["probes"]["openai_websocket"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("refusal_mode", "error"),
+    (
+        ("silent", "expected HTTP 400"),
+        ("late_sse", "expected HTTP 400"),
+        ("started_400", "crossed the inference boundary"),
+    ),
+)
+async def test_refusal_matrix_falsifies_silent_late_and_started_requests(
+    tmp_path: Path,
+    refusal_mode: str,
+    error: str,
+) -> None:
+    receipt_path = tmp_path / f"{refusal_mode}.json"
+    async with _serve(_fake_app(refusal_mode=refusal_mode)) as base_url:
+        receipt = await run_verification(
+            _config(base_url, receipt_path),
+            safe_fetcher=_FakeSafeFetcher(),
+        )
+
+    persisted = json.loads(receipt_path.read_text())
+    assert receipt["overall"] is False
+    assert persisted["finalized"] is True
+    assert persisted["probes"]["anthropic_refusal_matrix"]["status"] == "failed"
+    assert error in persisted["probes"]["anthropic_refusal_matrix"]["error"]
 
 
 @pytest.mark.asyncio
