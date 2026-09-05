@@ -132,6 +132,15 @@ class _Registry:
         self._owner(owner_id)
         return [{"type": "message", "role": "user", "content": "hej"}]
 
+    def input_messages(
+        self,
+        _response_id: str,
+        *,
+        owner_id: str,
+    ) -> list[dict[str, Any]]:
+        self._owner(owner_id)
+        return [{"type": "message", "role": "user", "content": "hej"}]
+
     def wait_terminal(
         self,
         _response_id: str,

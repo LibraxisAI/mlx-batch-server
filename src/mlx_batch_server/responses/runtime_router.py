@@ -159,7 +159,7 @@ def build_runtime_responses_router(
         auth_info: dict[str, Any] = Depends(verify_auth),
     ) -> JSONResponse:
         try:
-            messages = registry.parent_messages(
+            messages = registry.input_messages(
                 response_id,
                 owner_id=_response_owner_id(auth_info),
             )

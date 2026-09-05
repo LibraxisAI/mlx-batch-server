@@ -278,6 +278,50 @@ async def test_create_uses_stable_owner_one_turn_subscription_and_one_commit() -
 
 
 @pytest.mark.asyncio
+async def test_completed_assistant_output_is_inherited_by_the_next_turn() -> None:
+    registry = _CountingRegistry()
+    mapper = _Mapper()
+    starter = _Starter()
+    controller = ResponsesController(
+        registry=registry,
+        mapper=mapper,
+        starter=starter,
+        max_pending_events=16,
+    )
+
+    root = await controller.create(
+        {"model": "buddy", "input": "Reply with ROOT_OK"},
+        owner_id=OWNER_A,
+    )
+    await starter.entered.wait()
+    await asyncio.sleep(0)
+    starter.complete("ROOT_OK")
+    await _collect(root)
+
+    root_id = mapper.response_ids[0]
+    child = await controller.create(
+        {
+            "model": "buddy",
+            "previous_response_id": root_id,
+            "input": "Reply with CHAIN_OK",
+        },
+        owner_id=OWNER_A,
+    )
+    await asyncio.sleep(0)
+
+    assert mapper.parent_messages[-1] == [
+        {"role": "user", "content": "Reply with ROOT_OK"},
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "ROOT_OK"}],
+        },
+    ]
+
+    starter.complete("CHAIN_OK")
+    await _collect(child)
+
+
+@pytest.mark.asyncio
 async def test_cancel_during_runtime_start_reaches_bridge_and_commits_terminal() -> (
     None
 ):
