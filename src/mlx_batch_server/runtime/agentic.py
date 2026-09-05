@@ -30,7 +30,14 @@ from ..tools.agent_loop import (
     ToolExecutionResult,
     hosted_agent_loop_policy,
 )
-from ..tools.hosted import HostedToolCatalog, HostedToolExecutor, failure_result
+from ..tools.hosted import (
+    HostedExecutionScope,
+    HostedToolCatalog,
+    HostedToolExecutor,
+    failure_result,
+    reset_execution_scope,
+    set_execution_scope,
+)
 from ..tools.parser import ParsedToolCall
 from .events import (
     HOSTED_CALL_ITEM_KIND,
@@ -75,6 +82,19 @@ NO_WEB_PREPARATION = (
 
 class HostedRuntimeIntegrityError(RuntimeError):
     """A server-integrity fault (F12): outer TurnFailed 500, never a receipt."""
+
+
+class HostedTerminalDeliveryError(RuntimeError):
+    """The outer terminal could not be delivered to the sink.
+
+    Never silently suppressed into apparent success: it escapes the turn task
+    so the backend facade (``wait_closed``) reports the delivery fault.
+    """
+
+
+# Fixed audit-safe F12 text: an arbitrary exception's message may carry
+# internals or secrets and never reaches the outer TurnFailed verbatim.
+INTERNAL_FAILURE_MESSAGE = "hosted runtime encountered an internal error"
 
 
 class HostedAgenticRuntimeStarter(RuntimeStartService):
@@ -252,26 +272,44 @@ class _HostedAgenticTurn:
         )
 
     async def _run(self) -> None:
+        # One absolute deadline instant on the loop clock covers every child
+        # generation round and all hosted work; the immutable scope propagates
+        # it (plus this request's cancel token) via a context variable, so
+        # concurrent requests can never inherit each other's context.
+        deadline: float | None = None
+        if self._starter._deadline_s is not None:
+            deadline = self._loop.time() + self._starter._deadline_s
+        scope_token = set_execution_scope(
+            HostedExecutionScope(deadline=deadline, cancel=self._token)
+        )
         try:
-            if self._starter._deadline_s is None:
+            if deadline is None:
                 await self._run_rounds()
                 return
             try:
-                async with asyncio.timeout(self._starter._deadline_s):
+                async with asyncio.timeout_at(deadline):
                     await self._run_rounds()
             except TimeoutError:
                 # F11c: the absolute deadline stops work; zero continuation.
+                # The current child was cancelled and drained during unwind
+                # (_run_child_round) before this terminal is emitted.
                 self._token.cancel("deadline_exceeded")
                 self._emit_failed(
                     "hosted turn exceeded its absolute deadline",
                     code="deadline_exceeded",
                     status_code=504,
                 )
+        except HostedTerminalDeliveryError:
+            raise  # the facade, not a swallowed success, reports the fault
         except asyncio.CancelledError:
             # F11a/F11b: immediate stop, no continuation, outer TurnCancelled.
             self._emit_cancelled(self._token.reason or "client_cancelled")
-        except Exception as error:  # F12: the owner of last resort
-            self._emit_failed(str(error) or type(error).__name__)
+        except HostedRuntimeIntegrityError as error:  # F12, authored text
+            self._emit_failed(str(error) or INTERNAL_FAILURE_MESSAGE)
+        except Exception:  # F12: the owner of last resort, fixed text only
+            self._emit_failed(INTERNAL_FAILURE_MESSAGE)
+        finally:
+            reset_execution_scope(scope_token)
 
     async def _run_rounds(self) -> None:
         request = self._request
@@ -407,6 +445,15 @@ class _HostedAgenticTurn:
         try:
             terminal = await collector.wait_terminal()
             await handle.wait_closed()
+        except asyncio.CancelledError:
+            # F11a/b/c: actively stop the child backend (a backend may ignore
+            # the shared token until its own cancel() is invoked) and observe
+            # its closure before the outer terminal can be considered closed.
+            with contextlib.suppress(Exception):
+                handle.cancel(self._token.reason or "hosted_turn_stopped")
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(handle.wait_closed())
+            raise
         finally:
             self._current_child = None
         child_usage = collector.last_child_usage
@@ -498,11 +545,29 @@ class _HostedAgenticTurn:
         status = "completed" if result.ok else "failed"
         metadata = result.metadata or {}
         raw_receipt = metadata.get("receipt")
-        receipt = dict(raw_receipt) if isinstance(raw_receipt, Mapping) else {}
+        if not isinstance(raw_receipt, Mapping):
+            raise HostedRuntimeIntegrityError(
+                "hosted execution result carried no typed receipt"
+            )
+        receipt = dict(raw_receipt)
         scoped = receipt.get("call_id")
         if scoped is not None and scoped != call.call_id:
             receipt["scoped_call_id"] = scoped
         receipt["call_id"] = call.call_id
+        # Receipt/event consistency (§3.4): a receipt disagreeing with the
+        # events it closes is a server fault, never a terminal success.
+        if receipt.get("tool_name") != call.name:
+            raise HostedRuntimeIntegrityError(
+                "hosted receipt tool_name disagrees with the closing events"
+            )
+        if receipt.get("status") != status:
+            raise HostedRuntimeIntegrityError(
+                "hosted receipt status disagrees with the closing events"
+            )
+        if ("error" in receipt) != (status == "failed"):
+            raise HostedRuntimeIntegrityError(
+                "hosted receipt error presence disagrees with its status"
+            )
         self._forward(
             HostedCallCompleted(
                 index=item.index,
@@ -563,8 +628,14 @@ class _HostedAgenticTurn:
             if self._terminal_emitted:
                 return
             self._terminal_emitted = True
-        with contextlib.suppress(Exception):
+        try:
             self._forward(event)
+        except BaseException as error:
+            # Never suppressed into apparent success: the fault escapes the
+            # turn task so wait_closed() observably reports it.
+            raise HostedTerminalDeliveryError(
+                "outer terminal event could not be delivered to the sink"
+            ) from error
 
     def _raise_if_cancelled(self) -> None:
         if self._token.cancelled:
@@ -720,9 +791,26 @@ class _ChildSink:
 
 
 def _unique_calls(calls: Sequence[ParsedToolCall]) -> tuple[ParsedToolCall, ...]:
+    """Collapse identical duplicates; a conflicting call_id reuse is F12.
+
+    Silent first-wins deduplication would hide from ``AgentLoop`` claim
+    validation a call_id claimed twice with different payloads; the conflict
+    fails the outer turn before any hosted execution or receipt instead.
+    """
+
     unique: dict[str, ParsedToolCall] = {}
     for call in calls:
-        unique.setdefault(call.call_id, call)
+        previous = unique.get(call.call_id)
+        if previous is None:
+            unique[call.call_id] = call
+        elif (previous.index, previous.name, previous.arguments) != (
+            call.index,
+            call.name,
+            call.arguments,
+        ):
+            raise HostedRuntimeIntegrityError(
+                f"tool call_id {call.call_id} was reused with a conflicting payload"
+            )
     return tuple(unique.values())
 
 
@@ -799,7 +887,9 @@ def _add_usage(base: UsageUpdate | None, child: UsageUpdate) -> UsageUpdate:
 
 __all__ = [
     "FAILURE_CONTINUATION_PREPARATION",
+    "INTERNAL_FAILURE_MESSAGE",
     "NO_WEB_PREPARATION",
     "HostedAgenticRuntimeStarter",
     "HostedRuntimeIntegrityError",
+    "HostedTerminalDeliveryError",
 ]

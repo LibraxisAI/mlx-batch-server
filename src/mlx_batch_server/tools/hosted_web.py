@@ -15,7 +15,12 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from ..utils.safe_public_fetch import SafePublicFetch, SafePublicFetchError
-from .hosted import FETCH_CODE_PREFIX, HostedToolError, HostedToolSuccess
+from .hosted import (
+    FETCH_CODE_PREFIX,
+    HostedToolError,
+    HostedToolSuccess,
+    current_execution_scope,
+)
 
 SearchProvider = Callable[[str], Awaitable[Sequence[Mapping[str, Any]]]]
 
@@ -114,11 +119,17 @@ class HostedWebFetchTool:
                 "provider_unavailable",
                 "web fetch is not enabled for this runtime",
             )
+        # The request-scoped scope carries the one absolute deadline and the
+        # request's own cancel token into the sole transport; SafePublicFetch
+        # fails closed (url_fetch_timeout) on an exhausted budget.
+        scope = current_execution_scope()
         try:
             resource = await self._fetch.fetch(
                 url,
                 accepted_media_types=self._accepted_media_types,
                 max_bytes=self._max_bytes,
+                cancel=scope.cancel,
+                deadline_s=scope.remaining_s(),
             )
         except SafePublicFetchError as error:
             raise HostedToolError(

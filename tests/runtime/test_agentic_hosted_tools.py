@@ -60,6 +60,7 @@ class _Round:
     tool_calls: tuple[tuple[str, str, str], ...] = ()  # (call_id, name, args)
     usage: tuple[int, int] = (10, 5)
     hold: asyncio.Event | None = None
+    repeat_last_tool_call: bool = False  # stream-level identical duplicate
 
 
 class _FakeBackendTurn:
@@ -153,6 +154,10 @@ class _FakeBackendTurn:
                 )
             )
             index += 1
+        if step.repeat_last_tool_call and step.tool_calls:
+            call_id, name, arguments = step.tool_calls[-1]
+            item_id = f"fc_r{rnd}_{call_id}"
+            sink.emit(ToolCompleted(index - 1, call_id, item_id, name, arguments))
         input_tokens, output_tokens = step.usage
         usage = UsageUpdate(
             input_tokens=input_tokens,
@@ -172,6 +177,7 @@ class _FakeInner(RuntimeStartService):
         self.script = script
         self.requests: list[GenerationRequest] = []
         self.sinks: list[TurnSink] = []
+        self.turns: list[_FakeBackendTurn] = []
 
     async def start(
         self,
@@ -185,7 +191,9 @@ class _FakeInner(RuntimeStartService):
         self.sinks.append(sink)
         if round_index >= len(self.script):
             raise AssertionError(f"fake backend has no script for round {round_index}")
-        return _FakeBackendTurn(request, sink, self.script[round_index], round_index)
+        turn = _FakeBackendTurn(request, sink, self.script[round_index], round_index)
+        self.turns.append(turn)
+        return turn
 
 
 @dataclass(slots=True)
@@ -631,6 +639,301 @@ async def test_client_function_tools_pass_through_unexecuted() -> None:
     assert "function_call" in kinds  # forwarded to the client, not consumed
     assert not _of(events, HostedCallStarted)
     assert _of(events, TurnCompleted)
+
+
+# -- W3-HA2b integrity-recovery falsifiers ----------------------------------
+
+_SECRET_SENTINEL = "sk-SENTINEL-LEAK-XYZ"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_text_never_reaches_any_surface() -> None:
+    """HA2b-1: a secret living only in an exception string stays inside."""
+
+    async def leaking_crash(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        raise RuntimeError(f"Authorization: Bearer {_SECRET_SENTINEL}")
+
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),
+            _Round(text="The tool crashed; answering without it."),
+        )
+    )
+    tool = _CountingTool("web_search", leaking_crash)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1
+    error = receipts[0].receipt["error"]
+    assert error["code"] == "tool_execution_failed"
+    assert error["message"] == "hosted tool execution failed unexpectedly"
+    # The sentinel is absent from every emitted event and every message the
+    # continuation model round receives.
+    assert _SECRET_SENTINEL not in repr(events)
+    import json as _json
+
+    assert _SECRET_SENTINEL not in _json.dumps(
+        [dict(m) for m in inner.requests[1].messages], default=str
+    )
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "receipt_fields",
+    (
+        {"debug": {"authorization": _SECRET_SENTINEL}},  # unknown nested payload
+        {"status": "completed"},  # core-field override
+        {"call_id": "call_forged"},  # call identity override
+        {"result_count": "12"},  # wrong type
+        {"final_url": object()},  # non-serializable value
+    ),
+)
+async def test_success_receipt_extras_are_a_closed_schema(
+    receipt_fields: Mapping[str, Any],
+) -> None:
+    """HA2b-2: arbitrary receipt extras fail closed as invalid_tool_result."""
+
+    async def decorated(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        return HostedToolSuccess(payload={"ok": True}, receipt_fields=receipt_fields)
+
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),
+            _Round(text="The tool result was invalid; continuing without it."),
+        )
+    )
+    tool = _CountingTool("web_search", decorated)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1
+    assert receipts[0].status == "failed"
+    assert receipts[0].receipt["error"]["code"] == "invalid_tool_result"
+    for key in receipt_fields:
+        if key not in {"call_id", "status"}:
+            assert key not in receipts[0].receipt
+    assert _SECRET_SENTINEL not in repr(events)
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+
+def test_error_receipts_carry_no_url_or_citation_authority() -> None:
+    """HA2b-2b: build_receipt rejects extras on any error receipt."""
+
+    from mlx_batch_server.tools.hosted import build_receipt
+
+    with pytest.raises(ValueError):
+        build_receipt(
+            call_id="call_a",
+            tool_name="web_fetch",
+            status="failed",
+            duration_ms=1,
+            error={"code": "tool_execution_failed", "message": "x"},
+            extra={"final_url": "https://forged.example"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_conflicting_duplicate_call_ids_are_an_outer_f12() -> None:
+    """HA2b-3: same call_id with different payloads fails the turn first."""
+
+    inner = _FakeInner(
+        (
+            _Round(
+                tool_calls=(
+                    ("call_a", "web_search", '{"query":"a"}'),
+                    ("call_a", "web_search", '{"query":"b"}'),
+                )
+            ),
+            _Round(text="unreachable continuation"),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1
+    assert failed[0].status_code == 500
+    assert tool.invocations == 0  # no hosted execution
+    assert not _of(events, HostedCallStarted)  # no receipt surface at all
+    assert not _of(events, HostedCallCompleted)
+    assert len(inner.requests) == 1  # no continuation
+    assert not _of(events, TurnCompleted)
+
+
+@pytest.mark.asyncio
+async def test_identical_duplicate_call_ids_execute_once() -> None:
+    """HA2b-3b: a verbatim stream duplicate is collapsed, not failed."""
+
+    inner = _FakeInner(
+        (
+            _Round(
+                tool_calls=(("call_a", "web_search", '{"query":"a"}'),),
+                repeat_last_tool_call=True,
+            ),
+            _Round(text="One search was enough."),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    assert len(_of(events, HostedCallCompleted)) == 1
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_deadline_actively_cancels_and_drains_the_child_backend() -> None:
+    """HA2b-4: F11c must stop a child that ignores the shared token."""
+
+    inner = _FakeInner(
+        # The hold is never set from the outside: this fake backend ignores
+        # the shared cancel token and only stops when its cancel() is called.
+        (_Round(hold=asyncio.Event()),),
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,), deadline_s=0.2)
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1
+    assert failed[0].code == "deadline_exceeded"
+    assert failed[0].status_code == 504
+    assert not _of(events, TurnCompleted)
+    assert len(inner.requests) == 1  # zero continuation
+    # The child was explicitly cancelled and observably drained before the
+    # hosted facade closed.
+    child = inner.turns[0]
+    assert child._cancelled is not None
+    assert child._task.done()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_have_isolated_execution_scopes() -> None:
+    """HA2b-5: no request inherits another's deadline or cancel token."""
+
+    from mlx_batch_server.tools.hosted import (
+        HostedExecutionScope,
+        current_execution_scope,
+    )
+
+    scopes: dict[str, HostedExecutionScope] = {}
+    both_entered = asyncio.Event()
+
+    async def probe(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        scopes[arguments["query"]] = current_execution_scope()
+        if len(scopes) == 2:
+            both_entered.set()
+        await asyncio.wait_for(both_entered.wait(), timeout=2.0)
+        return HostedToolSuccess(payload={"ok": True})
+
+    def build(inner: _FakeInner, deadline_s: float, query: str):
+        rounds = (
+            _Round(tool_calls=(("call_a", "web_search", f'{{"query":"{query}"}}'),)),
+            _Round(text="done"),
+        )
+        inner.script = rounds
+        tool = _CountingTool("web_search", probe)
+        return _starter(inner, (tool,), deadline_s=deadline_s)[0]
+
+    inner_a, inner_b = _FakeInner(()), _FakeInner(())
+    starter_a = build(inner_a, 5.0, "a")
+    starter_b = build(inner_b, 9.0, "b")
+    token_a, token_b = FirstWriterCancelToken(), FirstWriterCancelToken()
+
+    async def drive(starter, request, token):
+        outer = GenerationTurn(max_pending_events=512)
+        handle = await starter.start(request, outer, cancel=token)
+        await handle.wait_closed()
+
+    req_a = _request(({"type": "web_search"},))
+    req_b = GenerationRequest(
+        response_id="resp_hosted_b",
+        runtime=RuntimeKey(model_id="model-x"),
+        messages=({"role": "user", "content": "b"},),
+        tools=({"type": "web_search"},),
+    )
+    await asyncio.gather(
+        drive(starter_a, req_a, token_a),
+        drive(starter_b, req_b, token_b),
+    )
+
+    scope_a, scope_b = scopes["a"], scopes["b"]
+    assert scope_a.cancel is token_a
+    assert scope_b.cancel is token_b
+    assert scope_a.deadline is not None and scope_b.deadline is not None
+    # The two overlapping requests observed their own absolute budgets.
+    assert 3.0 < (scope_b.deadline - scope_a.deadline) < 5.0
+
+
+@pytest.mark.asyncio
+async def test_terminal_sink_rejection_is_reported_not_swallowed() -> None:
+    """HA2b-6: a refused terminal is a visible fault, never quiet success."""
+
+    from mlx_batch_server.runtime.agentic import HostedTerminalDeliveryError
+
+    class _RejectingSink:
+        def __init__(self) -> None:
+            self.events: list[Any] = []
+
+        def emit(self, event: Any) -> None:
+            if isinstance(event, TurnCompleted):
+                raise RuntimeError("sink refused the terminal")
+            self.events.append(event)
+
+    inner = _FakeInner((_Round(text="plain answer"),))
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    sink = _RejectingSink()
+    handle = await starter.start(
+        _request(({"type": "web_search"},)),
+        sink,
+        cancel=FirstWriterCancelToken(),
+    )
+    with pytest.raises(HostedTerminalDeliveryError):
+        await handle.wait_closed()
+    assert not any(isinstance(event, TurnCompleted) for event in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_inconsistent_success_receipt_is_a_server_fault_500() -> None:
+    """HA2b-7: a receipt disagreeing with its closing events is F12."""
+
+    from mlx_batch_server.tools.agent_loop import ToolExecutionResult
+
+    class _InconsistentExecutor(HostedToolExecutor):
+        async def execute(self, call: Any) -> ToolExecutionResult:
+            result = await super().execute(call)
+            metadata = dict(result.metadata or {})
+            receipt = dict(metadata["receipt"])
+            receipt["tool_name"] = "someone_else"
+            metadata["receipt"] = receipt
+            return ToolExecutionResult(
+                call_id=result.call_id,
+                output=result.output,
+                metadata=metadata,
+            )
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),),
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_InconsistentExecutor(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1
+    assert failed[0].status_code == 500
+    assert not _of(events, TurnCompleted)
 
 
 @pytest.mark.asyncio
