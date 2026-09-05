@@ -458,9 +458,7 @@ def test_sdk_parses_unary_and_streamed_success_with_the_same_blocks() -> None:
         document_citations = result.content.content.citations
         assert document_citations is not None
         assert document_citations.model_dump() == {"enabled": True}
-        assert streamed.content[1].content["content"]["citations"] == {
-            "enabled": True
-        }
+        assert streamed.content[1].content["content"]["citations"] == {"enabled": True}
         assert text.citations[0].start_char_index == _SOURCE_START
         assert text.citations[0].end_char_index == _SOURCE_START + len("grounded")
         assert unary.usage.input_tokens == 7
