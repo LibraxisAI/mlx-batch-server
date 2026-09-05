@@ -7,7 +7,9 @@ from typing import Any
 import pytest
 
 from mlx_batch_server.chat.anthropic import router as anthropic_router
+from mlx_batch_server.chat.anthropic.anthropic_schema import MessagesRequest
 from mlx_batch_server.chat.anthropic.errors import AnthropicAPIError
+from mlx_batch_server.chat.anthropic.request_mapper import build_turn
 from mlx_batch_server.chat.anthropic.runtime_source import RuntimeAnthropicTurnSource
 from mlx_batch_server.chat.anthropic.turn_source import AnthropicTurn
 from mlx_batch_server.runtime.contracts import (
@@ -183,6 +185,56 @@ async def test_runtime_source_copies_canonical_tool_result_media() -> None:
     await _collect(source, turn)
 
     assert starter.requests[0].media == media
+
+
+@pytest.mark.asyncio
+async def test_runtime_source_preserves_rich_content_without_json_conversion() -> None:
+    starter = _Starter()
+    source = RuntimeAnthropicTurnSource(
+        starter=starter,
+        resolve_model=lambda alias: (RUNTIME, "main"),
+    )
+    turn = build_turn(
+        MessagesRequest.model_validate(
+            {
+                "model": "buddy",
+                "max_tokens": 32,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "inspect"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "file",
+                                    "file_id": "file_scan",
+                                },
+                            },
+                            {
+                                "type": "search_result",
+                                "source": "https://search.example/result",
+                                "title": "Caller result",
+                                "content": [{"type": "text", "text": "passage"}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+
+    await _collect(source, turn)
+
+    request = starter.requests[0]
+    assert request.messages == turn.messages
+    assert request.media == turn.media
+    assert request.media[0]["_anthropic_source"] == {
+        "media_type": None,
+        "type": "file",
+    }
+    assert isinstance(request.messages[0]["content"], tuple)
+    assert isinstance(request.messages[0]["content"][1]["text"], str)
 
 
 @pytest.mark.asyncio
