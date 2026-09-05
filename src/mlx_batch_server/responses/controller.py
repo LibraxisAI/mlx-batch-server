@@ -205,20 +205,8 @@ class ResponsesController:
         if self._closing or self._closed:
             raise RuntimeError("responses controller is shutting down")
         owner = self._require_owner_id(owner_id)
-        if not isinstance(payload, Mapping):
-            raise TypeError("response payload must be a mapping")
-        request_payload = dict(payload)
-        parent_messages = self._parent_messages(request_payload, owner)
-        response_id = self._registry.allocate_id()
-        prepared = self._normalize_prepared(
-            self._mapper.prepare(
-                request_payload,
-                response_id=response_id,
-                owner_id=owner,
-                parent_messages=parent_messages,
-            ),
-            response_id,
-        )
+        prepared = self.inspect(payload, owner_id=owner)
+        response_id = prepared.request.response_id
         projection = self._mapper.start_projection(prepared)
         turn = (
             self._turn_factory()
@@ -259,6 +247,32 @@ class ResponsesController:
             cancel=cancel,
             cancel_on_disconnect=prepared.cancel_on_disconnect,
             terminal_response=_TerminalResponseAwaitable(lifecycle.terminal_response),
+        )
+
+    def inspect(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> PreparedResponse:
+        """Map an owned request without registering or starting a generation turn."""
+
+        if self._closing or self._closed:
+            raise RuntimeError("responses controller is shutting down")
+        owner = self._require_owner_id(owner_id)
+        if not isinstance(payload, Mapping):
+            raise TypeError("response payload must be a mapping")
+        request_payload = dict(payload)
+        parent_messages = self._parent_messages(request_payload, owner)
+        response_id = self._registry.allocate_id()
+        return self._normalize_prepared(
+            self._mapper.prepare(
+                request_payload,
+                response_id=response_id,
+                owner_id=owner,
+                parent_messages=parent_messages,
+            ),
+            response_id,
         )
 
     def cancel(self, response_id: str, *, owner_id: str, reason: str) -> None:

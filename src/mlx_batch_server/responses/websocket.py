@@ -6,6 +6,7 @@ import inspect
 import json
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 from .projector import project_event
@@ -20,6 +21,7 @@ from .transport import (
     StreamId,
     TransportControlOutcome,
     TransportErrorOutcome,
+    TransportEnvelope,
     TransportOutcome,
     TransportProtocolError,
     TransportSession,
@@ -36,6 +38,21 @@ ResponseSteerer: TypeAlias = Callable[
     [ResponseSteerCommand],
     Any | Awaitable[Any],
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class _ClientOwnedStop:
+    command: ResponseCreateCommand
+    stream_id: StreamId | None
+    required_call_ids: frozenset[str]
+    next_sequence_number: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingSteer:
+    stop: _ClientOwnedStop
+    command: ResponseSteerCommand
+    steer_id: str
 
 
 class ResponsesWebSocketSession:
@@ -56,6 +73,8 @@ class ResponsesWebSocketSession:
         self._start_response = start_response
         self._steer_response = steer_response
         self._commands_by_response_id: dict[str, ResponseCreateCommand] = {}
+        self._client_owned_stops: dict[str, _ClientOwnedStop] = {}
+        self._pending_steers: dict[str, _PendingSteer] = {}
 
     @property
     def session(self) -> TransportSession:
@@ -75,10 +94,24 @@ class ResponsesWebSocketSession:
                 "response starter is not configured",
                 stream_id=command.stream_id,
             )
-        await self._core.open(
-            command.stream_id,
-            lambda: self._resolve_source(command),
+        pending = self._pending_steer_for(command)
+        successor = (
+            command if pending is None else _merge_pending_steer(command, pending)
         )
+        if pending is not None:
+            self._pending_steers.pop(pending.command.previous_response_id, None)
+            self._client_owned_stops.pop(pending.command.previous_response_id, None)
+        try:
+            await self._core.open(
+                successor.stream_id,
+                lambda: self._resolve_source(successor),
+            )
+        except Exception:
+            if pending is not None:
+                response_id = pending.command.previous_response_id
+                self._pending_steers[response_id] = pending
+                self._client_owned_stops[response_id] = pending.stop
+            raise
 
     async def _resolve_source(
         self,
@@ -117,6 +150,41 @@ class ResponsesWebSocketSession:
                 code="response_not_found",
                 message="the target response is not active on this connection",
             )
+        stopped = self._client_owned_stops.get(command.previous_response_id)
+        if stopped is not None:
+            if command.previous_response_id in self._pending_steers:
+                return render_steer_failed(
+                    command,
+                    code="too_many_pending_steers",
+                    message="the target response already has pending steering input",
+                )
+            steer_id = f"steer_{uuid.uuid4().hex}"
+            pending = _PendingSteer(
+                stop=stopped,
+                command=command,
+                steer_id=steer_id,
+            )
+            self._pending_steers[command.previous_response_id] = pending
+            accepted = _render_pending_steer_control(
+                pending,
+                event_type="response.steer.accepted",
+                sequence_number=stopped.next_sequence_number,
+            )
+            waiting = _render_pending_steer_control(
+                pending,
+                event_type="response.steer.pending",
+                sequence_number=stopped.next_sequence_number + 1,
+            )
+            waiting = {**waiting, "type": "response.steer.pending"}
+            try:
+                await self._core.publish_controls(
+                    stopped.stream_id,
+                    (accepted, waiting),
+                )
+            except Exception:
+                self._pending_steers.pop(command.previous_response_id, None)
+                raise
+            return None
         successor_body = dict(original.response)
         successor_body["previous_response_id"] = command.previous_response_id
         successor_body["input"] = command.input
@@ -188,6 +256,7 @@ class ResponsesWebSocketSession:
             if not isinstance(terminal_response, Mapping):
                 raise TypeError("terminal_response must resolve to a response mapping")
             projected["response"] = dict(terminal_response)
+            self._remember_client_owned_stop(outcome, terminal_response)
         return projected
 
     async def receive_encoded(self) -> str:
@@ -198,7 +267,45 @@ class ResponsesWebSocketSession:
         )
 
     async def close(self, reason: str = "transport_disconnected") -> None:
+        self._client_owned_stops.clear()
+        self._pending_steers.clear()
         await self._core.close(reason)
+
+    def _remember_client_owned_stop(
+        self,
+        outcome: TransportEnvelope,
+        terminal_response: Mapping[str, Any],
+    ) -> None:
+        response_id = terminal_response.get("id")
+        if not isinstance(response_id, str):
+            return
+        original = self._commands_by_response_id.get(response_id)
+        if original is None:
+            return
+        required = frozenset(
+            call_id
+            for item in terminal_response.get("output", ())
+            if isinstance(item, Mapping) and item.get("type") == "function_call"
+            if isinstance((call_id := item.get("call_id")), str) and call_id
+        )
+        if not required:
+            self._client_owned_stops.pop(response_id, None)
+            return
+        self._client_owned_stops[response_id] = _ClientOwnedStop(
+            command=original,
+            stream_id=outcome.stream_id,
+            required_call_ids=required,
+            next_sequence_number=outcome.sequence_number + 1,
+        )
+
+    def _pending_steer_for(
+        self,
+        command: ResponseCreateCommand,
+    ) -> _PendingSteer | None:
+        previous_response_id = command.response.get("previous_response_id")
+        if not isinstance(previous_response_id, str):
+            return None
+        return self._pending_steers.get(previous_response_id)
 
     def __aiter__(self) -> ResponsesWebSocketSession:
         return self
@@ -251,3 +358,69 @@ def render_steer_failed(
         "input": command.input,
         "error": {"code": code, "message": message},
     }
+
+
+def _render_pending_steer_control(
+    pending: _PendingSteer,
+    *,
+    event_type: str,
+    sequence_number: int,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": event_type,
+        "sequence_number": sequence_number,
+        "steer": {
+            "id": pending.steer_id,
+            "previous_response_id": pending.command.previous_response_id,
+        },
+        "input": pending.command.input,
+    }
+    if pending.stop.stream_id is not None:
+        payload["stream_id"] = pending.stop.stream_id.value
+    return payload
+
+
+def _merge_pending_steer(
+    command: ResponseCreateCommand,
+    pending: _PendingSteer,
+) -> ResponseCreateCommand:
+    if command.stream_id != pending.stop.stream_id:
+        raise TransportProtocolError(
+            "tool output must resume the stream that owns pending steering",
+            stream_id=command.stream_id,
+            param="stream_id",
+        )
+    current = command.response.get("input")
+    if isinstance(current, Mapping):
+        current_items: list[Any] = [dict(current)]
+    elif isinstance(current, list | tuple):
+        current_items = [
+            dict(item) if isinstance(item, Mapping) else item for item in current
+        ]
+    else:
+        raise TransportProtocolError(
+            "pending steering requires client-owned tool output input",
+            stream_id=command.stream_id,
+            param="input",
+        )
+    supplied = {
+        call_id
+        for item in current_items
+        if isinstance(item, Mapping) and item.get("type") == "function_call_output"
+        if isinstance((call_id := item.get("call_id")), str)
+    }
+    missing = pending.stop.required_call_ids - supplied
+    if missing:
+        raise TransportProtocolError(
+            "pending steering requires output for every client-owned function call",
+            stream_id=command.stream_id,
+            param="input",
+        )
+    steer_input = pending.command.input
+    if isinstance(steer_input, str):
+        current_items.append(steer_input)
+    else:
+        current_items.extend(dict(item) for item in steer_input)
+    body = dict(command.response)
+    body["input"] = current_items
+    return ResponseCreateCommand(response=body, stream_id=command.stream_id)

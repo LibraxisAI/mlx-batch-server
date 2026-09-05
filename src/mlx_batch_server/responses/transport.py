@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import re
 from collections import deque
-from collections.abc import AsyncIterable, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias, cast
 
@@ -496,6 +496,39 @@ class MultiplexedTransportSession:
             await self._invoke_cancel(active, "steered")
         finally:
             active.cancellation_complete.set()
+
+    async def publish_controls(
+        self,
+        stream_id: StreamId | None,
+        payloads: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Publish ordered connection-owned controls after a terminal stop."""
+
+        controls = tuple(dict(payload) for payload in payloads)
+        if not controls:
+            raise ValueError("at least one control payload is required")
+        async with self._lock:
+            if self._closed:
+                raise SessionClosedError("transport session is closed")
+            lane = self._lanes.get(stream_id)
+            if lane is None:
+                lane = _Lane(
+                    stream_id=stream_id,
+                    queue=asyncio.Queue(
+                        maxsize=self.session.max_pending_events_per_stream + 1
+                    ),
+                )
+                self._lanes[stream_id] = lane
+            if lane.queue.qsize() + len(controls) > lane.queue.maxsize:
+                raise QueueCapacityError(
+                    "transport stream cannot accept control events",
+                    stream_id=stream_id,
+                )
+            if stream_id is not None:
+                self._named_stream_ids.add(stream_id)
+            for payload in controls:
+                lane.queue.put_nowait(_QueuedControl(payload))
+            self._events_ready.set()
 
     async def receive(self) -> TransportOutcome:
         """Return the next available event with round-robin lane fairness."""

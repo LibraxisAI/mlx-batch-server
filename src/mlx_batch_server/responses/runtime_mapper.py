@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..runtime.contracts import GenerationRequest, RuntimeKey
+from .compaction import LocalCompactionCodec, expand_compaction_input
 from .controller import PreparedResponse, ResponseProjection
 from .normalizer import normalise_responses_payload
 
@@ -122,6 +123,7 @@ class CanonicalResponsesMapper:
         *,
         resolve_runtime: RuntimeKeyResolver,
         projection_factory: ProjectionFactory,
+        compaction_codec: LocalCompactionCodec | None = None,
     ) -> None:
         if not callable(resolve_runtime):
             raise TypeError("resolve_runtime must be callable")
@@ -129,6 +131,7 @@ class CanonicalResponsesMapper:
             raise TypeError("projection_factory must be callable")
         self._resolve_runtime = resolve_runtime
         self._projection_factory = projection_factory
+        self._compaction_codec = compaction_codec
 
     def prepare(
         self,
@@ -144,6 +147,11 @@ class CanonicalResponsesMapper:
         owner = _required_string(owner_id, "owner_id")
         raw = _mutable_mapping(payload, "payload")
         _validate_ownership_claims(raw, response_id=response, owner_id=owner)
+        raw["input"] = expand_compaction_input(
+            raw.get("input"),
+            owner_id=owner,
+            codec=self._compaction_codec,
+        )
         _validate_supported_fields(raw)
         _validate_raw_input(raw.get("input"))
 
@@ -705,6 +713,39 @@ def _tools(value: Any) -> tuple[Mapping[str, Any], ...]:
     for index, tool in enumerate(value):
         if not isinstance(tool, Mapping) or not tool:
             raise _invalid("each tool must be a non-empty mapping", f"tools[{index}]")
+        param = f"tools[{index}]"
+        tool_type = tool.get("type")
+        if tool_type != "function":
+            raise ResponsesMappingError(
+                "only client-owned function tools are supported locally",
+                code="unsupported_tool",
+                param=f"{param}.type",
+            )
+        unknown = set(tool) - {
+            "type",
+            "name",
+            "description",
+            "parameters",
+            "strict",
+        }
+        if unknown:
+            raise ResponsesMappingError(
+                "function tool contains unsupported fields",
+                code="unsupported_parameter",
+                param=f"{param}.{sorted(unknown)[0]}",
+            )
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise _invalid("function tool name must be non-blank", f"{param}.name")
+        parameters = tool.get("parameters")
+        if parameters is not None and not isinstance(parameters, Mapping):
+            raise _invalid(
+                "function tool parameters must be a mapping",
+                f"{param}.parameters",
+            )
+        strict = tool.get("strict")
+        if strict is not None and not isinstance(strict, bool):
+            raise _invalid("function tool strict must be a boolean", f"{param}.strict")
         tools.append(_freeze_mapping(tool))
     return tuple(tools)
 
@@ -770,6 +811,35 @@ def _sampling(payload: Mapping[str, Any], *, has_tools: bool) -> Mapping[str, An
     if tool_choice is not None:
         if not isinstance(tool_choice, str | Mapping):
             raise _invalid("tool_choice must be text or a mapping", "tool_choice")
+        if isinstance(tool_choice, str) and tool_choice not in {
+            "auto",
+            "none",
+            "required",
+        }:
+            raise ResponsesMappingError(
+                "only auto, none, required, or function tool_choice is supported",
+                code="unsupported_tool_choice",
+                param="tool_choice",
+            )
+        if isinstance(tool_choice, Mapping):
+            if set(tool_choice) - {"type", "name"}:
+                raise ResponsesMappingError(
+                    "function tool_choice contains unsupported fields",
+                    code="unsupported_parameter",
+                    param="tool_choice",
+                )
+            if tool_choice.get("type") != "function":
+                raise ResponsesMappingError(
+                    "only function tool_choice is supported locally",
+                    code="unsupported_tool_choice",
+                    param="tool_choice.type",
+                )
+            name = tool_choice.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise _invalid(
+                    "function tool_choice name must be non-blank",
+                    "tool_choice.name",
+                )
         if not has_tools and tool_choice != "none":
             raise _invalid("tool_choice requires tools", "tool_choice")
         sampling["tool_choice"] = _freeze(tool_choice)

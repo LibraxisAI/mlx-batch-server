@@ -17,6 +17,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from ..auth.dependency import verify_auth, verify_websocket_auth
 from ..runtime.events import TERMINAL_EVENT_TYPES, SequencedTurnEvent
+from .compaction import CompactionError
+from .operations import ResponsesOperationError
 from .projector import project_event
 from .registry import ResponseRegistry, ResponseRegistryError
 from .transport import (
@@ -53,6 +55,7 @@ def build_runtime_responses_router(
 
     controller = runtime.responses_controller
     registry = runtime.response_registry
+    operations = getattr(runtime, "responses_operations", None)
     router = APIRouter()
 
     @router.post("/v1/responses", response_model=None)
@@ -102,6 +105,78 @@ def build_runtime_responses_router(
         except Exception as error:
             return _server_error(str(error) or type(error).__name__)
         return JSONResponse(content=dict(terminal))
+
+    @router.post("/v1/responses/compact", response_model=None)
+    async def compact_response(
+        body: dict[str, Any] = Body(...),
+        auth_info: dict[str, Any] = Depends(verify_auth),
+    ) -> JSONResponse:
+        if operations is None:
+            return _server_error(
+                "local Responses compaction is not configured",
+                status_code=503,
+                code="responses_compaction_unavailable",
+            )
+        try:
+            compacted = await operations.compact(
+                body,
+                owner_id=_response_owner_id(auth_info),
+            )
+        except ResponseRegistryError as error:
+            return _registry_error(error)
+        except (CompactionError, ResponsesOperationError) as error:
+            return _operation_error(error)
+        except TypeError as error:
+            return _request_error(str(error) or type(error).__name__)
+        except ValueError as error:
+            return _request_error(
+                str(error) or type(error).__name__,
+                code=str(getattr(error, "code", "invalid_request")),
+                param=getattr(error, "param", None),
+            )
+        except RuntimeError as error:
+            return _server_error(
+                str(error) or type(error).__name__,
+                status_code=503,
+                code="responses_compaction_unavailable",
+            )
+        return JSONResponse(content=dict(compacted))
+
+    @router.post("/v1/responses/input_tokens", response_model=None)
+    async def count_response_input_tokens(
+        body: dict[str, Any] = Body(...),
+        auth_info: dict[str, Any] = Depends(verify_auth),
+    ) -> JSONResponse:
+        if operations is None:
+            return _server_error(
+                "local Responses input-token counting is not configured",
+                status_code=503,
+                code="responses_input_tokens_unavailable",
+            )
+        try:
+            result = await operations.count_input_tokens(
+                body,
+                owner_id=_response_owner_id(auth_info),
+            )
+        except ResponseRegistryError as error:
+            return _registry_error(error)
+        except (CompactionError, ResponsesOperationError) as error:
+            return _operation_error(error)
+        except TypeError as error:
+            return _request_error(str(error) or type(error).__name__)
+        except ValueError as error:
+            return _request_error(
+                str(error) or type(error).__name__,
+                code=str(getattr(error, "code", "invalid_request")),
+                param=getattr(error, "param", None),
+            )
+        except RuntimeError as error:
+            return _server_error(
+                str(error) or type(error).__name__,
+                status_code=503,
+                code="responses_input_tokens_unavailable",
+            )
+        return JSONResponse(content=dict(result))
 
     @router.get("/v1/responses/{response_id}")
     async def get_response(
@@ -386,6 +461,26 @@ def _request_error(
             }
         },
         status_code=400,
+    )
+
+
+def _operation_error(
+    error: CompactionError | ResponsesOperationError,
+) -> JSONResponse:
+    status_code = int(getattr(error, "status_code", 400))
+    error_type = (
+        "server_error" if status_code >= 500 else "invalid_request_error"
+    )
+    return JSONResponse(
+        content={
+            "error": {
+                "message": str(error) or type(error).__name__,
+                "type": error_type,
+                "param": getattr(error, "param", None),
+                "code": str(getattr(error, "code", "invalid_request")),
+            }
+        },
+        status_code=status_code,
     )
 
 

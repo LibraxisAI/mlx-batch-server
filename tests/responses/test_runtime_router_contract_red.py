@@ -159,10 +159,53 @@ class _Registry:
         return dict(TERMINAL)
 
 
+class _Operations:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any], str]] = []
+
+    async def count_input_tokens(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> Mapping[str, Any]:
+        self.calls.append(("input_tokens", dict(payload), owner_id))
+        return {"object": "response.input_tokens", "input_tokens": 17}
+
+    async def compact(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> Mapping[str, Any]:
+        self.calls.append(("compact", dict(payload), owner_id))
+        return {
+            "id": "resp_compact_test",
+            "created_at": 1,
+            "object": "response.compaction",
+            "output": [
+                {
+                    "id": "cmp_test",
+                    "type": "compaction",
+                    "encrypted_content": "mlxbr1.test",
+                    "created_by": "mlx-batch-server",
+                }
+            ],
+            "usage": {
+                "input_tokens": 17,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 17,
+            },
+        }
+
+
 class _Runtime:
     def __init__(self) -> None:
         self.responses_controller = _Controller()
         self.response_registry = _Registry()
+        self.responses_operations = _Operations()
 
 
 def _app(runtime: _Runtime) -> FastAPI:
@@ -253,6 +296,43 @@ async def test_official_openai_sdk_parses_http_and_sse_contracts() -> None:
     assert response.status == "completed"
     assert response.output_text == "hej"
     assert event_types == ["response.created", "response.completed"]
+
+
+@pytest.mark.asyncio
+async def test_official_openai_sdk_parses_lifecycle_and_local_operations() -> None:
+    runtime = _Runtime()
+    transport = httpx.ASGITransport(app=_app(runtime))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+        )
+        retrieved = await client.responses.retrieve("resp_runtime_router")
+        cancelled = await client.responses.cancel("resp_runtime_router")
+        input_items = await client.responses.input_items.list("resp_runtime_router")
+        deleted = await client.responses.delete("resp_runtime_router")
+        counted = await client.responses.input_tokens.count(
+            model="buddy",
+            input="hej",
+        )
+        compacted = await client.responses.compact(model="buddy", input="hej")
+
+    assert retrieved.id == "resp_runtime_router"
+    assert cancelled.status == "completed"
+    assert input_items.data[0].role == "user"
+    assert deleted.deleted is True
+    assert counted.object == "response.input_tokens"
+    assert counted.input_tokens == 17
+    assert compacted.object == "response.compaction"
+    assert compacted.output[-1].type == "compaction"
+    assert runtime.responses_operations.calls == [
+        ("input_tokens", {"model": "buddy", "input": "hej"}, OWNER),
+        ("compact", {"model": "buddy", "input": "hej"}, OWNER),
+    ]
 
 
 @pytest.mark.asyncio
@@ -391,6 +471,118 @@ async def test_official_openai_sdk_parses_websocket_steering_lifecycle() -> None
         "instructions": "Buddy policy",
         "previous_response_id": "resp_parent",
     }
+
+
+def test_pending_steer_waits_for_client_tool_output_and_starts_once() -> None:
+    runtime = _Runtime()
+    create_calls: list[dict[str, Any]] = []
+
+    async def events(
+        response_id: str,
+        finish_reason: str,
+    ) -> AsyncIterator[SequencedTurnEvent]:
+        yield SequencedTurnEvent(
+            0,
+            TurnStarted(response_id=response_id, model="buddy", created_at=1),
+        )
+        yield SequencedTurnEvent(1, TurnCompleted(finish_reason))
+
+    async def terminal(
+        response_id: str,
+        output: list[dict[str, Any]],
+    ) -> Mapping[str, Any]:
+        result = dict(TERMINAL)
+        result["id"] = response_id
+        result["output"] = output
+        return result
+
+    async def create(
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> ResponseEventSource:
+        assert owner_id == OWNER
+        create_calls.append(dict(payload))
+        if len(create_calls) == 1:
+            output = [
+                {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup_case",
+                    "arguments": "{}",
+                    "status": "completed",
+                }
+            ]
+            return ResponseEventSource(
+                events("resp_tool_stop", "tool_calls"),
+                terminal_response=asyncio.create_task(
+                    terminal("resp_tool_stop", output)
+                ),
+                response_id="resp_tool_stop",
+            )
+        return ResponseEventSource(
+            events("resp_after_tool", "stop"),
+            terminal_response=asyncio.create_task(
+                terminal("resp_after_tool", [])
+            ),
+            response_id="resp_after_tool",
+        )
+
+    runtime.responses_controller.create = create  # type: ignore[method-assign]
+    client = TestClient(_app(runtime))
+    with client.websocket_connect("/v1/responses") as websocket:
+        websocket.send_json(
+            {
+                "type": "response.create",
+                "stream_id": "studio",
+                "model": "buddy",
+                "input": "find the case",
+            }
+        )
+        assert websocket.receive_json()["type"] == "response.created"
+        stopped = websocket.receive_json()
+        assert stopped["type"] == "response.completed"
+
+        websocket.send_json(
+            {
+                "type": "response.steer",
+                "previous_response_id": "resp_tool_stop",
+                "input": "then summarize it",
+            }
+        )
+        accepted = websocket.receive_json()
+        pending = websocket.receive_json()
+        assert accepted["type"] == "response.steer.accepted"
+        assert pending["type"] == "response.steer.pending"
+        assert pending["sequence_number"] == accepted["sequence_number"] + 1
+        assert len(create_calls) == 1
+
+        websocket.send_json(
+            {
+                "type": "response.create",
+                "stream_id": "studio",
+                "model": "buddy",
+                "previous_response_id": "resp_tool_stop",
+                "input": {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "case data",
+                },
+            }
+        )
+        assert websocket.receive_json()["type"] == "response.created"
+        assert websocket.receive_json()["type"] == "response.completed"
+
+    assert len(create_calls) == 2
+    assert create_calls[1]["input"] == [
+        {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "case data",
+        },
+        "then summarize it",
+    ]
 
 
 def test_lifecycle_routes_use_one_verified_owner_and_terminal_writer() -> None:

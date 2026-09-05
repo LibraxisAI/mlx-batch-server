@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from mlx_batch_server.responses.compaction import (
+    LocalCompactionCodec,
+    compacted_user_messages,
+)
 from mlx_batch_server.responses.runtime_mapper import (
     CanonicalResponsesMapper,
     ResolvedRuntime,
@@ -690,6 +694,68 @@ def test_unsupported_reasoning_fields_fail_closed() -> None:
 
     assert error.value.code == "unsupported_parameter"
     assert error.value.param == "reasoning.generate_summary"
+
+
+def test_owner_bound_compaction_restores_context_before_new_input() -> None:
+    codec = LocalCompactionCodec(key=b"c" * 32)
+    prior = (
+        {
+            "role": "user",
+            "content": ({"type": "input_text", "text": "first"},),
+        },
+        {
+            "role": "assistant",
+            "content": ({"type": "input_text", "text": "remembered"},),
+        },
+    )
+    capsule = codec.seal(prior, owner_id="principal:owner")
+    mapper = CanonicalResponsesMapper(
+        resolve_runtime=_Resolver(),
+        projection_factory=lambda _prepared: _Projection(),
+        compaction_codec=codec,
+    )
+
+    prepared = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": [
+                *compacted_user_messages(prior),
+                {
+                    "id": "cmp_1",
+                    "type": "compaction",
+                    "encrypted_content": capsule,
+                    "created_by": "mlx-batch-server",
+                },
+                {"role": "user", "content": "new"},
+            ],
+        },
+    )
+
+    assert [message["role"] for message in prepared.materialized_messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert prepared.materialized_messages[-1]["content"][0]["text"] == "new"
+
+
+@pytest.mark.parametrize("tool_type", ["web_search", "file_search", "computer"])
+def test_hosted_tools_fail_closed_with_stable_error(tool_type: str) -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "tools": [{"type": tool_type}],
+            },
+        )
+
+    assert error.value.code == "unsupported_tool"
+    assert error.value.param == "tools[0].type"
 
 
 def test_unpreserved_reasoning_summary_style_fails_closed() -> None:
