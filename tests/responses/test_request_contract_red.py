@@ -23,6 +23,8 @@ from mlx_batch_server.responses.request_contract import (
     FieldSupport,
     ResponsesMappingError,
     capability_profile,
+    local_setting,
+    local_settings,
     official_sdk_fields,
     sdk_version,
 )
@@ -142,9 +144,9 @@ _ACCEPTED_FIXTURES: Mapping[str, tuple[Mapping[str, Any], Any, Any]] = {
     "top_p": ({"top_p": 0.8}, lambda p: p.request.sampling["top_p"], 0.8),
     # official, locally interpreted
     "background": (
-        {"background": False},
+        {"background": True},
         lambda p: p.request.metadata["background"],
-        False,
+        True,
     ),
     "include": ({"include": []}, lambda p: p.request.metadata["include"], ()),
     "service_tier": (
@@ -320,6 +322,7 @@ def test_every_installed_sdk_field_is_classified_exactly_once() -> None:
 
 def test_capability_profile_is_versioned_stable_and_partitioned() -> None:
     profile = capability_profile()
+    background = FIELD_CONTRACTS["background"]
 
     assert profile["version"] == CAPABILITY_PROFILE_VERSION
     assert profile["sdk"] == {
@@ -356,6 +359,10 @@ def test_capability_profile_is_versioned_stable_and_partitioned() -> None:
         "tool_choice_requires_declared_tool",
         "aliases_must_agree",
     ]
+    assert background.support is FieldSupport.LOCAL
+    assert background.accepted == (False, True)
+    assert "ResponsesController" in (background.destination or "")
+    assert "deferred-run owner implemented by W4-O" in (background.reason or "")
 
 
 def test_every_unsupported_field_states_a_reason_and_no_destination() -> None:
@@ -365,6 +372,28 @@ def test_every_unsupported_field_states_a_reason_and_no_destination() -> None:
             assert contract.destination is None
         else:
             assert contract.destination
+
+
+@pytest.mark.parametrize("value", [False, True])
+def test_background_local_settings_preserve_the_exact_boolean(value: bool) -> None:
+    assert local_setting("background", value) is value
+    assert local_settings({"background": value})["background"] is value
+
+
+def test_background_local_settings_reject_non_booleans_exactly() -> None:
+    with pytest.raises(ResponsesMappingError) as direct_error:
+        local_setting("background", 1)
+
+    assert direct_error.value.code == "invalid_responses_request"
+    assert direct_error.value.param == "background"
+    assert str(direct_error.value) == "background must be a boolean"
+
+    with pytest.raises(ResponsesMappingError) as aggregate_error:
+        local_settings({"background": "true"})
+
+    assert aggregate_error.value.code == "invalid_responses_request"
+    assert aggregate_error.value.param == "background"
+    assert str(aggregate_error.value) == "background must be a boolean"
 
 
 def test_the_fixture_table_covers_the_whole_classified_universe() -> None:
