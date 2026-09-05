@@ -130,6 +130,36 @@ def _json_clone(value: Any) -> Any:
         ) from exc
 
 
+def _assistant_output_messages(envelope: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Materialize assistant text output for the next response in a chain."""
+
+    output = envelope.get("output")
+    if not isinstance(output, list):
+        return []
+
+    messages: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, Mapping) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            parts = [{"type": "input_text", "text": content}] if content else []
+        elif isinstance(content, list):
+            parts = [
+                {"type": "input_text", "text": part["text"]}
+                for part in content
+                if isinstance(part, Mapping)
+                and part.get("type") in {"text", "input_text", "output_text"}
+                and isinstance(part.get("text"), str)
+                and part["text"]
+            ]
+        else:
+            parts = []
+        if parts:
+            messages.append({"role": "assistant", "content": parts})
+    return messages
+
+
 def _json_size(*values: Any) -> int:
     try:
         return sum(
@@ -531,12 +561,31 @@ class ResponseRegistry:
             if stored is not None:
                 stored.last_access_at = now
                 self._stored.move_to_end(response_id)
-                return _json_clone(stored.materialized_messages)
+                messages = _json_clone(stored.materialized_messages)
+                messages.extend(_assistant_output_messages(stored.envelope))
+                return messages
             self._raise_lookup_locked(
                 response_id,
                 owner,
                 param="previous_response_id",
             )
+        raise AssertionError("unreachable")
+
+    def input_messages(
+        self, response_id: str, *, owner_id: str
+    ) -> list[dict[str, Any]]:
+        """Return model inputs without adding this response's output."""
+
+        owner = _owner_id(owner_id)
+        now = self._clock()
+        self._prune(now)
+        with self._lock:
+            stored = self._owned_stored_locked(response_id, owner)
+            if stored is not None:
+                stored.last_access_at = now
+                self._stored.move_to_end(response_id)
+                return _json_clone(stored.materialized_messages)
+            self._raise_lookup_locked(response_id, owner)
         raise AssertionError("unreachable")
 
     def request_cancel(

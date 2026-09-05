@@ -72,6 +72,43 @@ def test_registry_isolates_every_response_operation_by_owner() -> None:
     assert registry.get("resp_owned", owner_id=OWNER_A)["status"] == "completed"
 
 
+def test_parent_lineage_adds_assistant_output_without_changing_input_items() -> None:
+    registry = ResponseRegistry()
+    inputs = [{"role": "user", "content": "Reply with ROOT_OK"}]
+    registry.begin(
+        "resp_lineage",
+        owner_id=OWNER_A,
+        store=True,
+        materialized_messages=inputs,
+    )
+    registry.commit(
+        "resp_lineage",
+        {
+            "id": "resp_lineage",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ROOT_OK"}],
+                }
+            ],
+        },
+        owner_id=OWNER_A,
+        materialized_messages=inputs,
+    )
+
+    assert registry.input_messages("resp_lineage", owner_id=OWNER_A) == inputs
+    assert registry.parent_messages("resp_lineage", owner_id=OWNER_A) == [
+        *inputs,
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "ROOT_OK"}],
+        },
+    ]
+
+
 def test_cancel_before_bind_delivers_first_reason_once_and_waits_terminal() -> None:
     registry = ResponseRegistry()
     delivered: list[str] = []
