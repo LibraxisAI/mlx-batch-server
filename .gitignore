@@ -183,5 +183,6 @@ mlx-batch-server.log
 /*.md
 !/README.md
 !/CHANGELOG.md
-/.vibecrafted
+/.vibecrafted/*
+!/.vibecrafted/embargo.toml
 /reports

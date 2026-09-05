@@ -1,0 +1,4 @@
+schema = "mlx-batch-compile-embargo.v2"
+plan_id = "mlx-batch-api-conformance-v1"
+phase = "W1_SOURCE_SHAPE"
+deferred_gates = ["mypy", "ruff", "ruff-format"]

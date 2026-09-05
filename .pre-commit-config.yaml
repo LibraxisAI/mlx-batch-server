@@ -1,22 +1,22 @@
 # .pre-commit-config.yaml
 # Extended by LibraxisAI with ruff, semgrep, mypy, and loctree
 repos:
-  # Compile Embargo is an explicit W1 source-shape policy. The marker validator
-  # fails closed before any deferrable hook, and the pre-push guard prevents an
-  # embargo environment from weakening ref-boundary verification.
+  # Compile Embargo state has one tracked owner: .vibecrafted/embargo.toml.
+  # Pre-commit requires byte-identical index/worktree state before any
+  # deferrable hook. Pre-push reads committed HEAD, never local state.
   - repo: local
     hooks:
-      - id: compile-embargo-marker-policy
-        name: Validate MLX Batch Compile Embargo marker
-        entry: python3 scripts/quality/phase_gate.py --validate-marker
+      - id: compile-embargo-state-policy
+        name: Validate tracked MLX Batch Compile Embargo state
+        entry: python3 scripts/quality/phase_gate.py --validate-state
         language: system
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
 
       - id: compile-embargo-ref-guard
-        name: Reject Compile Embargo at the pre-push ref boundary
-        entry: python3 scripts/quality/phase_gate.py --forbid-marker --surface pre-push
+        name: Require W2 structural closure at the pre-push ref boundary
+        entry: python3 scripts/quality/phase_gate.py --forbid-open --surface pre-push
         language: system
         pass_filenames: false
         always_run: true
