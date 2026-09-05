@@ -14,9 +14,11 @@ schema has no field for provider keys, resolved addresses, or request bodies.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -71,6 +73,78 @@ HOSTED_ERROR_CODES: frozenset[str] = frozenset(
     }
     | {f"{FETCH_CODE_PREFIX}{code}" for code in _FETCH_CODES}  # F6-F7
 )
+
+
+# The one fixed model/audit-visible sentence for an unexpected (untyped)
+# executor/provider crash. Raw exception text may carry secrets and never
+# crosses this boundary (design §3.4 "structurally secret-free").
+UNEXPECTED_EXECUTION_FAILURE_MESSAGE = "hosted tool execution failed unexpectedly"
+
+# Closed success-receipt extra schema (§3.4): only explicitly designed,
+# scalar, JSON-serializable audit fields. ``bool`` is rejected everywhere.
+RECEIPT_EXTRA_FIELDS: Mapping[str, type] = MappingProxyType(
+    {
+        "final_url": str,
+        "mime": str,
+        "http_status": int,
+        "redirect_count": int,
+        "result_digest": str,
+        "result_count": int,
+    }
+)
+
+
+@runtime_checkable
+class ExecutionCancelCheck(Protocol):
+    """Cooperative cancellation surface shared with the fetch transport."""
+
+    @property
+    def cancelled(self) -> bool: ...
+
+    @property
+    def reason(self) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class HostedExecutionScope:
+    """Request-scoped immutable deadline/cancel context for hosted work.
+
+    ``deadline`` is an absolute instant on the running event loop's clock
+    (``loop.time()``), set once by the runtime starter per request. The scope
+    travels via a context variable, so concurrent requests each observe their
+    own snapshot and no request can inherit another's budget or cancel token.
+    """
+
+    deadline: float | None = None
+    cancel: ExecutionCancelCheck | None = None
+
+    def remaining_s(self) -> float | None:
+        if self.deadline is None:
+            return None
+        return self.deadline - asyncio.get_running_loop().time()
+
+
+_NO_SCOPE = HostedExecutionScope()
+_EXECUTION_SCOPE: contextvars.ContextVar[HostedExecutionScope] = contextvars.ContextVar(
+    "hosted_execution_scope",
+    default=_NO_SCOPE,
+)
+
+
+def current_execution_scope() -> HostedExecutionScope:
+    return _EXECUTION_SCOPE.get()
+
+
+def set_execution_scope(
+    scope: HostedExecutionScope,
+) -> contextvars.Token[HostedExecutionScope]:
+    if not isinstance(scope, HostedExecutionScope):
+        raise TypeError("scope must be a HostedExecutionScope")
+    return _EXECUTION_SCOPE.set(scope)
+
+
+def reset_execution_scope(token: contextvars.Token[HostedExecutionScope]) -> None:
+    _EXECUTION_SCOPE.reset(token)
 
 
 class HostedToolError(Exception):
@@ -219,6 +293,9 @@ class HostedToolExecutor:
         arguments: dict[str, Any],
         started: float,
     ) -> ToolExecutionResult:
+        scope = current_execution_scope()
+        if scope.cancel is not None and scope.cancel.cancelled:
+            raise asyncio.CancelledError(scope.cancel.reason or "cancelled")
         try:
             async with asyncio.timeout(self._per_call_timeout_s):
                 success = await tool.invoke(arguments)
@@ -233,11 +310,13 @@ class HostedToolExecutor:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as error:
+        except Exception:
+            # An untyped crash may carry provider internals or secrets in its
+            # text; only the fixed audit-safe sentence crosses this boundary.
             return self._failure(
                 call,
                 "tool_execution_failed",
-                str(error) or type(error).__name__,
+                UNEXPECTED_EXECUTION_FAILURE_MESSAGE,
                 started,
             )
         return self._success(call, success, started)
@@ -264,13 +343,23 @@ class HostedToolExecutor:
                 "hosted tool payload is not JSON-compatible",
                 started,
             )
-        receipt = build_receipt(
-            call_id=call.call_id,
-            tool_name=call.name,
-            status="completed",
-            duration_ms=_duration_ms(started),
-            extra=success.receipt_fields,
-        )
+        try:
+            receipt = build_receipt(
+                call_id=call.call_id,
+                tool_name=call.name,
+                status="completed",
+                duration_ms=_duration_ms(started),
+                extra=success.receipt_fields,
+            )
+        except ValueError:
+            # Unknown keys, overrides, nested payloads, or wrong types fail
+            # closed; the offending field values never enter any surface.
+            return self._failure(
+                call,
+                "invalid_tool_result",
+                "hosted tool produced an invalid success receipt",
+                started,
+            )
         return ToolExecutionResult(
             call_id=call.call_id,
             output=output,
@@ -311,11 +400,21 @@ def build_receipt(
         "duration_ms": duration_ms,
         "attempt": 1,
     }
+    extras = dict(extra or {})
     if error is not None:
+        if extras:
+            # Error receipts carry no URL/citation authority (§3.4).
+            raise ValueError("error receipts may not carry extra receipt fields")
         receipt["error"] = dict(error)
-    for key, value in dict(extra or {}).items():
+        return receipt
+    for key, value in extras.items():
         if key in receipt:
             raise ValueError(f"receipt field {key!r} may not be overridden")
+        expected = RECEIPT_EXTRA_FIELDS.get(key)
+        if expected is None:
+            raise ValueError(f"receipt field {key!r} is outside the closed schema")
+        if isinstance(value, bool) or not isinstance(value, expected):
+            raise ValueError(f"receipt field {key!r} has an invalid type")
         receipt[key] = value
     return receipt
 
@@ -373,11 +472,18 @@ def _encode_json(value: Any) -> str:
 __all__ = [
     "FETCH_CODE_PREFIX",
     "HOSTED_ERROR_CODES",
+    "RECEIPT_EXTRA_FIELDS",
+    "UNEXPECTED_EXECUTION_FAILURE_MESSAGE",
+    "ExecutionCancelCheck",
+    "HostedExecutionScope",
     "HostedTool",
     "HostedToolCatalog",
     "HostedToolError",
     "HostedToolExecutor",
     "HostedToolSuccess",
     "build_receipt",
+    "current_execution_scope",
     "failure_result",
+    "reset_execution_scope",
+    "set_execution_scope",
 ]
