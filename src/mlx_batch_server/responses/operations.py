@@ -301,9 +301,7 @@ def _chat_tools(
     choice: Any,
 ) -> list[Mapping[str, Any]] | None:
     rendered = list(tools)
-    if choice is None or (
-        isinstance(choice, str) and choice in {"auto", "required"}
-    ):
+    if choice is None or (isinstance(choice, str) and choice in {"auto", "required"}):
         return rendered or None
     if choice == "none":
         return None
