@@ -12,10 +12,10 @@ import asyncio
 import threading
 import weakref
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import Future
 from enum import StrEnum
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from .events import (
     HOSTED_CALL_ITEM_KIND,
@@ -27,7 +27,9 @@ from .events import (
     ContentPartStarted,
     HostedCallCompleted,
     HostedCallProgress,
+    HostedCallResult,
     HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -68,6 +70,10 @@ class TurnProducerOverflow(RuntimeError):
 
 _QueueItem: TypeAlias = SequencedTurnEvent | BaseException | None
 
+MAX_CITATIONS_PER_ITEM = 64
+
+_HOSTED_TOOL_ACTION_KINDS = {"web_search": "search", "web_fetch": "fetch"}
+
 
 class _ContentLifecycle:
     def __init__(self, kind: str) -> None:
@@ -75,9 +81,16 @@ class _ContentLifecycle:
         self.text = ""
         self.flow_completed = False
         self.completed = False
+        self.citation_end_max = 0
 
 
 class _ItemLifecycle:
+    """Bounded lifecycle bookkeeping: identities, digest and booleans only.
+
+    Fetched content, snippets and result arrays never enter this object; the
+    event stream is the sole carrier of hosted payloads (memory-lifetime law).
+    """
+
     def __init__(self, kind: str, item_id: str) -> None:
         self.kind = kind
         self.item_id = item_id
@@ -87,7 +100,12 @@ class _ItemLifecycle:
         self.tool_arguments = ""
         self.tool_completed = False
         self.hosted_started = False
+        self.hosted_action: Mapping[str, Any] | None = None
         self.hosted_status: str | None = None
+        self.hosted_result_seen = False
+        self.hosted_result_digest: str | None = None
+        self.hosted_result_identities: tuple[str, ...] = ()
+        self.citation_count = 0
         self.completed = False
 
 
@@ -131,6 +149,8 @@ class GenerationTurn:
         self._items: dict[int, _ItemLifecycle] = {}
         self._item_ids: set[str] = set()
         self._usage: UsageUpdate | None = None
+        # call_id -> proven URL identities; O(#calls) identity ledger, no content.
+        self._hosted_success_identities: dict[str, tuple[str, ...]] = {}
 
         self._thread_bridge_slots = threading.BoundedSemaphore(bridge_limit)
         self._thread_bridge_lock = threading.Lock()
@@ -340,6 +360,10 @@ class GenerationTurn:
             self._start_hosted_call(event)
         elif isinstance(event, HostedCallProgress):
             self._progress_hosted_call(event)
+        elif isinstance(event, HostedCallResult):
+            self._result_hosted_call(event)
+        elif isinstance(event, HostedCitation):
+            self._cite(event)
         elif isinstance(event, HostedCallCompleted):
             self._complete_hosted_call(event)
         elif isinstance(event, UsageUpdate):
@@ -382,6 +406,7 @@ class GenerationTurn:
                 raise RuntimeError(
                     "hosted_call output item status must match its receipt"
                 )
+            self._verify_hosted_action(item, event)
             item.completed = True
             return
         if item.kind in {"message", "reasoning"}:
@@ -462,6 +487,8 @@ class GenerationTurn:
             raise RuntimeError("content text done event already emitted")
         if text != content.text:
             raise RuntimeError("content done text does not match emitted deltas")
+        if content.citation_end_max > len(text):
+            raise RuntimeError("hosted citation output range exceeds its final text")
         content.flow_completed = True
 
     def _append_tool(self, event: ToolDelta) -> None:
@@ -515,6 +542,80 @@ class GenerationTurn:
         if item.hosted_started:
             raise RuntimeError("hosted call already started")
         item.hosted_started = True
+        item.hosted_action = event.action
+
+    def _verify_hosted_action(
+        self,
+        item: _ItemLifecycle,
+        event: OutputItemCompleted,
+    ) -> None:
+        action = event.action
+        if action is None:  # pragma: no cover - the event layer already refuses
+            raise RuntimeError("hosted_call output item completion carries no action")
+        kind = action["kind"]
+        expected_kind = _HOSTED_TOOL_ACTION_KINDS.get(item.tool_name or "")
+        if expected_kind is not None and kind != expected_kind:
+            raise RuntimeError("hosted completion action kind does not match its tool")
+        started: Mapping[str, Any] = item.hosted_action or {}
+        if kind == "search":
+            started_query = started.get("query")
+            if started_query is not None and action["query"] != started_query:
+                raise RuntimeError(
+                    "hosted completion action contradicts its started query"
+                )
+            sources = action["sources"]
+            if sources and not set(sources) <= set(item.hosted_result_identities):
+                raise RuntimeError(
+                    "hosted completion sources are not proven by its result"
+                )
+            return
+        started_url = started.get("url")
+        if started_url is not None and action["url"] != started_url:
+            raise RuntimeError("hosted completion action contradicts its started url")
+
+    def _result_hosted_call(self, event: HostedCallResult) -> None:
+        item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+        if event.tool_name != item.tool_name:
+            raise RuntimeError("hosted result tool name does not match its output item")
+        if not item.hosted_started:
+            raise RuntimeError("hosted result requires a started hosted call")
+        if item.hosted_status is not None:
+            raise RuntimeError("hosted result cannot follow its receipt")
+        if item.hosted_result_seen:
+            raise RuntimeError("hosted result already emitted")
+        item.hosted_result_seen = True
+        item.hosted_result_digest = event.result["digest"]
+        item.hosted_result_identities = event.identities
+        self._hosted_success_identities[event.call_id] = event.identities
+
+    def _cite(self, event: HostedCitation) -> None:
+        item = self._require_open_item(event.output_index, event.item_id)
+        if item.kind != "message":
+            raise RuntimeError("hosted citation requires a message output item")
+        content = item.contents.get(event.content_index)
+        if content is None:
+            raise RuntimeError(
+                f"content part {event.content_index} has not been started"
+            )
+        if content.kind != TEXT_CONTENT_KIND:
+            raise RuntimeError("hosted citation requires an output_text content part")
+        if content.completed:
+            raise RuntimeError("hosted citation cannot follow its content completion")
+        identities = self._hosted_success_identities.get(event.source_call_id)
+        if identities is None:
+            raise RuntimeError("hosted citation references an unknown hosted result")
+        if event.source_url not in identities:
+            raise RuntimeError("hosted citation url is not proven by its result")
+        if item.citation_count >= MAX_CITATIONS_PER_ITEM:
+            raise RuntimeError("hosted citation count exceeds its item bound")
+        if content.flow_completed:
+            if event.output_end > len(content.text):
+                raise RuntimeError(
+                    "hosted citation output range exceeds its final text"
+                )
+        else:
+            content.citation_end_max = max(content.citation_end_max, event.output_end)
+        item.citation_count += 1
 
     def _progress_hosted_call(self, event: HostedCallProgress) -> None:
         item = self._require_hosted_item(event.index, event.item_id, event.call_id)
@@ -534,6 +635,21 @@ class GenerationTurn:
         receipt_call_id = event.receipt.get("call_id")
         if receipt_call_id is not None and receipt_call_id != event.call_id:
             raise RuntimeError("hosted call receipt does not match its call id")
+        if event.status == "completed" and not item.hosted_result_seen:
+            raise RuntimeError(
+                "hosted call completed receipt requires its result event"
+            )
+        if event.status == "failed" and item.hosted_result_seen:
+            raise RuntimeError(
+                "hosted call failed receipt cannot follow a result event"
+            )
+        receipt_digest = event.receipt.get("result_digest")
+        if (
+            item.hosted_result_seen
+            and receipt_digest is not None
+            and receipt_digest != item.hosted_result_digest
+        ):
+            raise RuntimeError("hosted call receipt digest does not match its result")
         item.hosted_status = event.status
 
     def _accept_usage(self, event: UsageUpdate) -> None:

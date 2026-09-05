@@ -15,7 +15,9 @@ from mlx_batch_server.runtime.events import (
     ContentPartStarted,
     HostedCallCompleted,
     HostedCallProgress,
+    HostedCallResult,
     HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -33,6 +35,7 @@ from mlx_batch_server.runtime.events import (
     UsageUpdate,
 )
 from mlx_batch_server.runtime.turn import (
+    MAX_CITATIONS_PER_ITEM,
     GenerationTurn,
     TurnProducerOverflow,
     TurnState,
@@ -525,12 +528,62 @@ def _open_hosted_item(
     turn.emit(HostedCallStarted(index, item_id, call_id, name, {"query": "q"}))
 
 
+_RESULT_URL = "https://example.com/result"
+_RESULT_DIGEST = "sha256:feedface"
+
+
+def _search_result(
+    *,
+    index: int = 0,
+    item_id: str = "hosted_0",
+    call_id: str = "call_0",
+    tool_name: str = "web_search",
+    url: str = _RESULT_URL,
+    snippet: str = "snippet",
+    digest: str = _RESULT_DIGEST,
+) -> HostedCallResult:
+    return HostedCallResult(
+        index,
+        item_id,
+        call_id,
+        tool_name,
+        {
+            "kind": "search_results",
+            "query": "q",
+            "results": [{"title": "t", "url": url, "snippet": snippet}],
+            "digest": digest,
+        },
+    )
+
+
+def _search_action(
+    *,
+    query: str = "q",
+    sources: tuple[str, ...] = (_RESULT_URL,),
+) -> dict[str, Any]:
+    return {"kind": "search", "query": query, "sources": list(sources)}
+
+
+def _hosted_receipt(
+    status: str = "completed",
+    **extras: Any,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "call_id": "call_0",
+        "status": status,
+        "attempt": 1,
+    }
+    receipt.update(extras)
+    return receipt
+
+
 @pytest.mark.asyncio
 async def test_hosted_call_lifecycle_opens_progresses_and_closes_once() -> None:
     turn = GenerationTurn(max_pending_events=32)
     _start(turn)
     _open_hosted_item(turn)
     turn.emit(HostedCallProgress(0, "hosted_0", "call_0", "executing"))
+    turn.emit(_search_result())
     turn.emit(
         HostedCallCompleted(
             0,
@@ -538,7 +591,7 @@ async def test_hosted_call_lifecycle_opens_progresses_and_closes_once() -> None:
             "call_0",
             "web_search",
             "completed",
-            {"call_id": "call_0", "status": "completed", "attempt": 1},
+            _hosted_receipt(result_digest=_RESULT_DIGEST),
         )
     )
     turn.emit(
@@ -549,6 +602,7 @@ async def test_hosted_call_lifecycle_opens_progresses_and_closes_once() -> None:
             call_id="call_0",
             name="web_search",
             status="completed",
+            action=_search_action(),
         )
     )
     turn.complete(TurnCompleted("stop"))
@@ -611,6 +665,7 @@ async def test_hosted_call_item_completion_requires_matching_receipt_status() ->
                 call_id="call_0",
                 name="web_search",
                 status="completed",
+                action=_search_action(sources=()),
             )
         )
 
@@ -629,6 +684,7 @@ async def test_hosted_call_item_completion_requires_a_receipt() -> None:
                 call_id="call_0",
                 name="web_search",
                 status="completed",
+                action=_search_action(sources=()),
             )
         )
 
@@ -658,3 +714,422 @@ async def test_hosted_call_events_require_a_hosted_call_item() -> None:
     turn.emit(OutputItemStarted("message", 0, "msg_0"))
     with pytest.raises(RuntimeError, match="hosted_call output item"):
         turn.emit(HostedCallStarted(0, "msg_0", "call_0", "web_search"))
+
+
+def _complete_hosted_success(
+    turn: GenerationTurn,
+    *,
+    sources: tuple[str, ...] = (_RESULT_URL,),
+) -> None:
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_search",
+            "completed",
+            _hosted_receipt(),
+        )
+    )
+    turn.emit(
+        OutputItemCompleted(
+            "hosted_call",
+            0,
+            "hosted_0",
+            call_id="call_0",
+            name="web_search",
+            status="completed",
+            action=_search_action(sources=sources),
+        )
+    )
+
+
+def _citation(**overrides: Any) -> HostedCitation:
+    payload: dict[str, Any] = {
+        "output_index": 1,
+        "item_id": "message_1",
+        "content_index": 0,
+        "source_call_id": "call_0",
+        "source_url": _RESULT_URL,
+        "cited_text": "cite",
+        "source_start": 0,
+        "source_end": 4,
+        "output_start": 0,
+        "output_end": 4,
+    }
+    payload.update(overrides)
+    return HostedCitation(**payload)
+
+
+@pytest.mark.asyncio
+async def test_hosted_result_is_legal_exactly_once() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    with pytest.raises(RuntimeError, match="hosted result already emitted"):
+        turn.emit(_search_result())
+
+
+@pytest.mark.asyncio
+async def test_hosted_result_requires_a_started_call_and_exact_identity() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    turn.emit(
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "hosted_0",
+            call_id="call_0",
+            name="web_search",
+        )
+    )
+    with pytest.raises(RuntimeError, match="requires a started hosted call"):
+        turn.emit(_search_result())
+    turn.emit(HostedCallStarted(0, "hosted_0", "call_0", "web_search", {"query": "q"}))
+    with pytest.raises(RuntimeError, match="does not match its output item"):
+        turn.emit(_search_result(call_id="call_other"))
+    with pytest.raises(
+        RuntimeError, match="result tool name does not match its output item"
+    ):
+        turn.emit(_search_result(tool_name="web_fetch"))
+
+
+@pytest.mark.asyncio
+async def test_completed_receipt_without_result_is_rejected() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    with pytest.raises(RuntimeError, match="requires its result event"):
+        turn.emit(
+            HostedCallCompleted(
+                0,
+                "hosted_0",
+                "call_0",
+                "web_search",
+                "completed",
+                _hosted_receipt(),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_failed_receipt_with_result_is_rejected() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    with pytest.raises(RuntimeError, match="cannot follow a result event"):
+        turn.emit(
+            HostedCallCompleted(
+                0,
+                "hosted_0",
+                "call_0",
+                "web_search",
+                "failed",
+                _hosted_receipt("failed", error={"code": "tool_timeout"}),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_result_after_its_receipt_is_rejected() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_search",
+            "completed",
+            _hosted_receipt(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="cannot follow its receipt"):
+        turn.emit(_search_result(digest="sha256:other"))
+
+
+@pytest.mark.asyncio
+async def test_hosted_result_after_terminal_is_rejected() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _complete_hosted_success(turn)
+    turn.complete(TurnCompleted("stop"))
+    with pytest.raises(RuntimeError, match="requires started state"):
+        turn.emit(_search_result(digest="sha256:late"))
+
+
+@pytest.mark.asyncio
+async def test_receipt_digest_must_agree_with_the_result_digest() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    with pytest.raises(RuntimeError, match="digest does not match its result"):
+        turn.emit(
+            HostedCallCompleted(
+                0,
+                "hosted_0",
+                "call_0",
+                "web_search",
+                "completed",
+                _hosted_receipt(result_digest="sha256:disagrees"),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_completion_action_cannot_contradict_its_start() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_search",
+            "completed",
+            _hosted_receipt(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="contradicts its started query"):
+        turn.emit(
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "hosted_0",
+                call_id="call_0",
+                name="web_search",
+                status="completed",
+                action=_search_action(query="different"),
+            )
+        )
+    with pytest.raises(RuntimeError, match="action kind does not match its tool"):
+        turn.emit(
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "hosted_0",
+                call_id="call_0",
+                name="web_search",
+                status="completed",
+                action={"kind": "fetch", "url": "https://example.com"},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_completion_action_cannot_contradict_its_started_url() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    turn.emit(
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "hosted_0",
+            call_id="call_0",
+            name="web_fetch",
+        )
+    )
+    turn.emit(
+        HostedCallStarted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_fetch",
+            {"url": "https://example.com/doc"},
+        )
+    )
+    turn.emit(
+        HostedCallResult(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_fetch",
+            {
+                "kind": "document",
+                "url": "https://example.com/doc",
+                "digest": _RESULT_DIGEST,
+            },
+        )
+    )
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_fetch",
+            "completed",
+            _hosted_receipt(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="contradicts its started url"):
+        turn.emit(
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "hosted_0",
+                call_id="call_0",
+                name="web_fetch",
+                status="completed",
+                action={"kind": "fetch", "url": "https://example.com/other"},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_completion_sources_must_be_proven_by_the_result() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result())
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_search",
+            "completed",
+            _hosted_receipt(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="not proven by its result"):
+        turn.emit(
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "hosted_0",
+                call_id="call_0",
+                name="web_search",
+                status="completed",
+                action=_search_action(
+                    sources=(_RESULT_URL, "https://unproven.example"),
+                ),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_item_lifecycle_retains_identities_but_never_result_payload() -> None:
+    sentinel_snippet = "FETCHED-PAYLOAD-SENTINEL-BYTES"
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(_search_result(snippet=sentinel_snippet))
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_search",
+            "completed",
+            _hosted_receipt(),
+        )
+    )
+
+    lifecycle = turn._items[0]  # the retention law is the contract under test
+    assert lifecycle.hosted_result_seen is True
+    assert lifecycle.hosted_result_digest == _RESULT_DIGEST
+    assert lifecycle.hosted_result_identities == (_RESULT_URL,)
+    retained = repr(vars(lifecycle))
+    assert sentinel_snippet not in retained
+    assert "search_results" not in retained
+
+
+def _open_cited_message(turn: GenerationTurn, text: str = "cite and more") -> None:
+    turn.emit(OutputItemStarted("message", 1, "message_1"))
+    turn.emit(ContentPartStarted("output_text", 1, 0, "message_1"))
+    turn.emit(TextDelta(text, "message_1", 1, 0))
+
+
+@pytest.mark.asyncio
+async def test_citation_requires_a_proven_result_identity() -> None:
+    turn = GenerationTurn(max_pending_events=64)
+    _start(turn)
+    _complete_hosted_success(turn)
+    _open_cited_message(turn)
+
+    with pytest.raises(RuntimeError, match="unknown hosted result"):
+        turn.emit(_citation(source_call_id="call_unknown"))
+    with pytest.raises(RuntimeError, match="url is not proven by its result"):
+        turn.emit(_citation(source_url="https://unproven.example"))
+    turn.emit(_citation())
+
+
+@pytest.mark.asyncio
+async def test_citation_requires_an_open_message_text_part() -> None:
+    turn = GenerationTurn(max_pending_events=64)
+    _start(turn)
+    _complete_hosted_success(turn)
+
+    turn.emit(OutputItemStarted("reasoning", 1, "reasoning_1"))
+    turn.emit(ContentPartStarted("reasoning_summary_text", 1, 0, "reasoning_1"))
+    with pytest.raises(RuntimeError, match="requires a message output item"):
+        turn.emit(_citation(item_id="reasoning_1"))
+    turn.emit(ReasoningCompleted("", "reasoning_1", 1, 0))
+    turn.emit(ContentPartCompleted("reasoning_summary_text", 1, 0, "reasoning_1", ""))
+    turn.emit(OutputItemCompleted("reasoning", 1, "reasoning_1", text=""))
+
+    turn.emit(OutputItemStarted("message", 2, "message_2"))
+    with pytest.raises(RuntimeError, match="has not been started"):
+        turn.emit(_citation(output_index=2, item_id="message_2"))
+
+
+@pytest.mark.asyncio
+async def test_citation_cannot_follow_content_completion_or_item_done() -> None:
+    turn = GenerationTurn(max_pending_events=64)
+    _start(turn)
+    _complete_hosted_success(turn)
+    _open_cited_message(turn)
+    turn.emit(TextCompleted("cite and more", "message_1", 1, 0))
+    turn.emit(ContentPartCompleted("output_text", 1, 0, "message_1", "cite and more"))
+    with pytest.raises(RuntimeError, match="cannot follow its content completion"):
+        turn.emit(_citation())
+    turn.emit(OutputItemCompleted("message", 1, "message_1", text="cite and more"))
+    with pytest.raises(RuntimeError, match="already done"):
+        turn.emit(_citation())
+
+
+@pytest.mark.asyncio
+async def test_citation_output_ranges_must_fit_the_final_text() -> None:
+    turn = GenerationTurn(max_pending_events=64)
+    _start(turn)
+    _complete_hosted_success(turn)
+    _open_cited_message(turn, text="cite")
+
+    # Accepted while streaming, falsified at TextCompleted reconciliation.
+    turn.emit(_citation(output_start=90, output_end=94))
+    with pytest.raises(RuntimeError, match="exceeds its final text"):
+        turn.emit(TextCompleted("cite", "message_1", 1, 0))
+
+
+@pytest.mark.asyncio
+async def test_citation_after_text_done_is_checked_immediately() -> None:
+    turn = GenerationTurn(max_pending_events=64)
+    _start(turn)
+    _complete_hosted_success(turn)
+    _open_cited_message(turn, text="cite")
+    turn.emit(TextCompleted("cite", "message_1", 1, 0))
+
+    turn.emit(_citation())
+    with pytest.raises(RuntimeError, match="exceeds its final text"):
+        turn.emit(_citation(output_start=90, output_end=94))
+
+
+@pytest.mark.asyncio
+async def test_citations_per_item_are_bounded() -> None:
+    turn = GenerationTurn(max_pending_events=256)
+    _start(turn)
+    _complete_hosted_success(turn)
+    _open_cited_message(turn)
+    for _ in range(MAX_CITATIONS_PER_ITEM):
+        turn.emit(_citation())
+    with pytest.raises(RuntimeError, match="exceeds its item bound"):
+        turn.emit(_citation())

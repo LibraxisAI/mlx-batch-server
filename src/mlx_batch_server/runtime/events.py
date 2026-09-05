@@ -21,6 +21,9 @@ OUTPUT_ITEM_KINDS = frozenset(
     ("message", "reasoning", "function_call", HOSTED_CALL_ITEM_KIND)
 )
 HOSTED_CALL_STATUSES = frozenset(("completed", "failed"))
+HOSTED_ACTION_KINDS = frozenset(("search", "fetch"))
+HOSTED_RESULT_KINDS = frozenset(("document", "search_results"))
+MAX_CITED_TEXT_CHARS = 2048
 
 
 class _FrozenDict(dict[str, Any]):
@@ -76,6 +79,66 @@ def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     frozen = _deep_freeze(value)
     if not isinstance(frozen, Mapping):  # pragma: no cover - type guard
         raise TypeError("event payload must be a mapping")
+    return frozen
+
+
+def _freeze_hosted_action(
+    action: Mapping[str, Any],
+    status: str,
+) -> Mapping[str, Any]:
+    """Freeze and validate the closed sealed-action schema (design D-B §2.1)."""
+
+    if not isinstance(action, Mapping):
+        raise TypeError("hosted action must be a mapping")
+    frozen = _freeze_mapping(action)
+    kind = frozen.get("kind")
+    if kind not in HOSTED_ACTION_KINDS:
+        raise ValueError("hosted action kind must be search or fetch")
+    if kind == "search":
+        if set(frozen) != {"kind", "query", "sources"}:
+            raise ValueError("search action carries exactly kind, query and sources")
+        _require_identity("action query", frozen["query"])
+        sources = frozen["sources"]
+        if not isinstance(sources, tuple):
+            raise ValueError("search action sources must be a sequence")
+        for source in sources:
+            _require_identity("action source", source)
+        if len(set(sources)) != len(sources):
+            raise ValueError("search action sources must be unique")
+        if status == "failed" and sources:
+            raise ValueError("failed hosted action cannot carry success sources")
+        return frozen
+    if set(frozen) != {"kind", "url"}:
+        raise ValueError("fetch action carries exactly kind and url")
+    _require_identity("action url", frozen["url"])
+    return frozen
+
+
+def _freeze_hosted_result(result: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Freeze a hosted result and validate the identities the turn relies on.
+
+    Full payload-schema validation is the producer's job
+    (``tools/hosted.py``); the event layer proves only the closed kind, the
+    digest, and the URL identities that later action/citation checks consume.
+    """
+
+    if not isinstance(result, Mapping):
+        raise TypeError("hosted result must be a mapping")
+    frozen = _freeze_mapping(result)
+    kind = frozen.get("kind")
+    if kind not in HOSTED_RESULT_KINDS:
+        raise ValueError("hosted result kind must be document or search_results")
+    _require_identity("result digest", frozen.get("digest", ""))
+    if kind == "document":
+        _require_identity("result url", frozen.get("url", ""))
+        return frozen
+    results = frozen.get("results")
+    if not isinstance(results, tuple):
+        raise ValueError("search_results result requires a results sequence")
+    for entry in results:
+        if not isinstance(entry, Mapping):
+            raise ValueError("search_results entries must be mappings")
+        _require_identity("search result url", entry.get("url", ""))
     return frozen
 
 
@@ -153,6 +216,7 @@ class OutputItemCompleted:
     name: str | None = None
     arguments: str | None = None
     status: str = "completed"
+    action: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in OUTPUT_ITEM_KINDS:
@@ -160,19 +224,10 @@ class OutputItemCompleted:
         _require_index("index", self.index)
         _require_identity("item_id", self.item_id)
         if self.kind == HOSTED_CALL_ITEM_KIND:
-            if self.status not in HOSTED_CALL_STATUSES:
-                raise ValueError(
-                    "hosted_call output item status must be completed or failed"
-                )
-            if self.text is not None or self.arguments is not None:
-                raise ValueError(
-                    "hosted_call completion cannot carry text or arguments"
-                )
-            if self.call_id is None or self.name is None:
-                raise ValueError("hosted_call completion requires call_id and name")
-            _require_identity("call_id", self.call_id)
-            _require_identity("name", self.name)
+            self._validate_hosted_completion()
             return
+        if self.action is not None:
+            raise ValueError(f"{self.kind} completion cannot carry a hosted action")
         if self.status not in {"completed", "incomplete"}:
             raise ValueError("output item status must be completed or incomplete")
         if self.kind in {"message", "reasoning"}:
@@ -195,6 +250,23 @@ class OutputItemCompleted:
         _require_identity("call_id", self.call_id)
         _require_identity("name", self.name)
         _require_text("arguments", self.arguments)
+
+    def _validate_hosted_completion(self) -> None:
+        if self.status not in HOSTED_CALL_STATUSES:
+            raise ValueError(
+                "hosted_call output item status must be completed or failed"
+            )
+        if self.text is not None or self.arguments is not None:
+            raise ValueError("hosted_call completion cannot carry text or arguments")
+        if self.call_id is None or self.name is None:
+            raise ValueError("hosted_call completion requires call_id and name")
+        _require_identity("call_id", self.call_id)
+        _require_identity("name", self.name)
+        if self.action is None:
+            raise ValueError("hosted_call completion requires its sealed action")
+        object.__setattr__(
+            self, "action", _freeze_hosted_action(self.action, self.status)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +423,75 @@ class HostedCallProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class HostedCallResult:
+    """The one public, bounded, model-visible success payload of a hosted call.
+
+    Success-only. Exactly one per completed hosted call, emitted between
+    HostedCallProgress and HostedCallCompleted. Never present for a failed,
+    cancelled, or deadline-stopped call.
+    """
+
+    index: int
+    item_id: str
+    call_id: str
+    tool_name: str
+    result: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        _require_index("index", self.index)
+        _require_identity("item_id", self.item_id)
+        _require_identity("call_id", self.call_id)
+        _require_identity("tool_name", self.tool_name)
+        object.__setattr__(self, "result", _freeze_hosted_result(self.result))
+
+    @property
+    def identities(self) -> tuple[str, ...]:
+        """The proven URL identities this result establishes for the turn."""
+
+        if self.result["kind"] == "document":
+            return (self.result["url"],)
+        return tuple(entry["url"] for entry in self.result["results"])
+
+
+@dataclass(frozen=True, slots=True)
+class HostedCitation:
+    """One proven verbatim-quote citation bound to a successful hosted result."""
+
+    output_index: int
+    item_id: str
+    content_index: int
+    source_call_id: str
+    source_url: str
+    cited_text: str
+    source_start: int
+    source_end: int
+    output_start: int
+    output_end: int
+
+    def __post_init__(self) -> None:
+        _require_index("output_index", self.output_index)
+        _require_index("content_index", self.content_index)
+        _require_identity("item_id", self.item_id)
+        _require_identity("source_call_id", self.source_call_id)
+        _require_identity("source_url", self.source_url)
+        _require_text("cited_text", self.cited_text)
+        if not self.cited_text:
+            raise ValueError("cited_text must not be empty")
+        if len(self.cited_text) > MAX_CITED_TEXT_CHARS:
+            raise ValueError(
+                f"cited_text cannot exceed {MAX_CITED_TEXT_CHARS} characters"
+            )
+        _require_index("source_start", self.source_start)
+        _require_index("source_end", self.source_end)
+        _require_index("output_start", self.output_start)
+        _require_index("output_end", self.output_end)
+        if self.source_end <= self.source_start:
+            raise ValueError("source_end must exceed source_start")
+        if self.output_end <= self.output_start:
+            raise ValueError("output_end must exceed output_start")
+
+
+@dataclass(frozen=True, slots=True)
 class HostedCallCompleted:
     """The one immutable receipt event closing a hosted call, success or failure."""
 
@@ -469,6 +610,8 @@ TurnEvent: TypeAlias = (
     | ToolCompleted
     | HostedCallStarted
     | HostedCallProgress
+    | HostedCallResult
+    | HostedCitation
     | HostedCallCompleted
     | UsageUpdate
     | ProgressUpdate
@@ -490,6 +633,8 @@ TURN_EVENT_TYPES = (
     ToolCompleted,
     HostedCallStarted,
     HostedCallProgress,
+    HostedCallResult,
+    HostedCitation,
     HostedCallCompleted,
     UsageUpdate,
     ProgressUpdate,
