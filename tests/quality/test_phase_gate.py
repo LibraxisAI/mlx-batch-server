@@ -18,6 +18,7 @@ def _state(
     plan_id: str = phase_gate.PLAN_ID,
     phase: str = phase_gate.W1_PHASE,
     deferred: tuple[str, ...] = phase_gate.DEFERRED_GATES,
+    recovery_ref: str = phase_gate.RECOVERY_REF,
     extra: str = "",
 ) -> str:
     values = ", ".join(f'"{item}"' for item in deferred)
@@ -26,6 +27,7 @@ def _state(
         f'plan_id = "{plan_id}"\n'
         f'phase = "{phase}"\n'
         f"deferred_gates = [{values}]\n"
+        f'recovery_ref = "{recovery_ref}"\n'
         f"{extra}"
     )
 
@@ -72,6 +74,7 @@ def test_w2_structural_close_releases_every_gate() -> None:
         "not-toml",
         _state(schema="another-schema"),
         _state(plan_id="another-plan"),
+        _state(recovery_ref="0" * 40),
         _state(phase="UNKNOWN"),
         _state(deferred=()),
         _state(deferred=(*phase_gate.DEFERRED_GATES, "bandit")),

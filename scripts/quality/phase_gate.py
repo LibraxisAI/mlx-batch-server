@@ -19,12 +19,15 @@ STATE_PATH = REPO_ROOT / STATE_RELATIVE_PATH
 
 STATE_SCHEMA = "mlx-batch-compile-embargo.v2"
 PLAN_ID = "mlx-batch-api-conformance-v1"
+RECOVERY_REF = "46067ca70b5282142c0071d742c0e5c701117ea4"
 W1_PHASE = "W1_SOURCE_SHAPE"
 W2_PHASE = "W2_INTEGRATION"
 RELEASE_PHASE = "W2_STRUCTURALLY_CLOSED"
 OPEN_PHASES = frozenset({W1_PHASE, W2_PHASE})
 DEFERRED_GATES = ("mypy", "ruff", "ruff-format")
-STATE_KEYS = frozenset({"schema", "plan_id", "phase", "deferred_gates"})
+STATE_KEYS = frozenset(
+    {"schema", "plan_id", "phase", "deferred_gates", "recovery_ref"}
+)
 
 GATE_COMMAND_PREFIXES = {
     "ruff": ("ruff", "check"),
@@ -64,6 +67,7 @@ class CompileEmbargoState:
     plan_id: str
     phase: str
     deferred_gates: tuple[str, ...]
+    recovery_ref: str
 
     @property
     def is_open(self) -> bool:
@@ -87,6 +91,7 @@ def parse_state_text(raw: str) -> CompileEmbargoState:
     schema = _required_string(payload, "schema")
     plan_id = _required_string(payload, "plan_id")
     phase = _required_string(payload, "phase")
+    recovery_ref = _required_string(payload, "recovery_ref")
     deferred_raw = payload["deferred_gates"]
     if not isinstance(deferred_raw, list) or any(
         not isinstance(item, str) for item in deferred_raw
@@ -100,6 +105,8 @@ def parse_state_text(raw: str) -> CompileEmbargoState:
         raise PhaseGateError(f"schema must equal {STATE_SCHEMA!r}")
     if plan_id != PLAN_ID:
         raise PhaseGateError(f"plan_id must equal {PLAN_ID!r}")
+    if recovery_ref != RECOVERY_REF:
+        raise PhaseGateError(f"recovery_ref must equal {RECOVERY_REF!r}")
     if phase not in {*OPEN_PHASES, RELEASE_PHASE}:
         raise PhaseGateError(f"unsupported embargo phase {phase!r}")
     expected_deferred = DEFERRED_GATES if phase in OPEN_PHASES else ()
@@ -107,7 +114,7 @@ def parse_state_text(raw: str) -> CompileEmbargoState:
         raise PhaseGateError(
             f"phase {phase!r} requires deferred_gates={list(expected_deferred)!r}"
         )
-    return CompileEmbargoState(schema, plan_id, phase, deferred)
+    return CompileEmbargoState(schema, plan_id, phase, deferred, recovery_ref)
 
 
 def decide_gate(gate: str, state: CompileEmbargoState) -> GateDecision:
@@ -235,6 +242,7 @@ def _self_probe() -> int:
         f'plan_id = "{PLAN_ID}"\n'
         f'phase = "{RELEASE_PHASE}"\n'
         "deferred_gates = []\n"
+        f'recovery_ref = "{RECOVERY_REF}"\n'
     )
     if any(decide_gate(gate, closed) is not GateDecision.RUN for gate in DEFERRED_GATES):
         raise PhaseGateError("closed W2 state still defers a gate")
@@ -277,7 +285,8 @@ def _self_probe() -> int:
     print(
         "W0_SELF_PROBE=green "
         f"source=index+worktree schema={state.schema} plan={state.plan_id} "
-        f"phase={state.phase} deferred={','.join(state.deferred_gates)}"
+        f"phase={state.phase} deferred={','.join(state.deferred_gates)} "
+        f"recovery_ref={state.recovery_ref}"
     )
     print(
         f"W0_RELEASE={RELEASE_PHASE} deferred=none "
