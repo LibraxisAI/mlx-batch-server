@@ -246,3 +246,78 @@ def test_chat_template_rejects_late_developer_role() -> None:
                 {"role": "developer", "content": "Replace policy."},
             )
         )
+
+
+_TYPED_CALL = {
+    "role": "assistant",
+    "type": "function_call",
+    "content": "",
+    "call_id": "call_inspect",
+    "name": "inspect_region",
+    "arguments": '{"region":"top"}',
+    "id": "fc_1",
+    "status": "completed",
+}
+
+
+def test_typed_call_reaches_the_template_as_a_tool_call_not_assistant_text() -> None:
+    """The checkpoint sees one typed call; `arguments` is never visible text."""
+
+    rendered = _chat_template_messages(
+        (
+            {"role": "user", "content": "Inspect this."},
+            _TYPED_CALL,
+            {
+                "role": "tool",
+                "type": "function_call_output",
+                "call_id": "call_inspect",
+                "output": '{"finding":"lesion"}',
+                "content": ({"type": "input_text", "text": '{"finding":"lesion"}'},),
+            },
+        )
+    )
+
+    assert rendered[1] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_inspect",
+                "type": "function",
+                "function": {
+                    "name": "inspect_region",
+                    "arguments": '{"region":"top"}',
+                },
+            }
+        ],
+    }
+    # The rendered call carries no assistant-visible text at all.
+    assert rendered[1]["content"] == ""
+    assert '{"region":"top"}' not in str(rendered[1]["content"])
+    assert [message["role"] for message in rendered] == ["user", "assistant", "tool"]
+
+
+def test_arguments_are_forwarded_byte_exact_without_re_encoding() -> None:
+    arguments = '{"region": "top", "note": "\u017c\u00f3\u0142w"}'
+    rendered = _chat_template_messages(({**_TYPED_CALL, "arguments": arguments},))
+
+    assert rendered[0]["tool_calls"][0]["function"]["arguments"] == arguments
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ({"call_id": "  "}, "call_id must not be empty"),
+        ({"name": ""}, "name must not be empty"),
+        ({"arguments": {"region": "top"}}, "arguments must be text"),
+        (
+            {"content": ({"type": "input_text", "text": "smuggled"},)},
+            "cannot carry message content",
+        ),
+    ),
+)
+def test_template_projection_refuses_a_degraded_call(
+    mutation: dict, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _chat_template_messages(({**_TYPED_CALL, **mutation},))

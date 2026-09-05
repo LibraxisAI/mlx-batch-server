@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import json
 import socket
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -840,12 +839,13 @@ def _assert_continuation_history(runtime: _ToolRuntime) -> None:
     messages = [dict(message) for message in runtime.starter.requests[1].messages]
 
     assert [message["role"] for message in messages] == ["user", "assistant", "tool"]
-    assert json.loads(messages[1]["content"][0]["text"]) == {
-        "type": "function_call",
-        "call_id": CALL_ID,
-        "name": "get_weather",
-        "arguments": CALL_ARGUMENTS,
-    }
+    # The call reaches the backend as the typed item; its rendered text belongs
+    # to canonical history and never becomes visible assistant content.
+    assert messages[1]["type"] == "function_call"
+    assert messages[1]["content"] == ()
+    assert messages[1]["call_id"] == CALL_ID
+    assert messages[1]["name"] == "get_weather"
+    assert messages[1]["arguments"] == CALL_ARGUMENTS
     assert messages[2]["type"] == "function_call_output"
     assert messages[2]["call_id"] == CALL_ID
     assert messages[2]["output"] == TOOL_RESULT

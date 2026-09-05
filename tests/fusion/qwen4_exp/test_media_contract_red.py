@@ -8,6 +8,7 @@ import pytest
 
 from mlx_batch_server.runtime.contracts import BackendKind, RuntimeKey
 from mlx_batch_server.runtime.fusion.qwen4_exp.media import (
+    TERMINAL_ITEM_STATUSES,
     PreparedMediaItem,
     PreparedQwen4Message,
     PreparedTextItem,
@@ -277,4 +278,201 @@ def test_message_digest_changes_with_is_error_and_rejects_tampering() -> None:
             content_digest=error_prompt.content_digest,
             media_digest=success_prompt.media_digest,
             messages=success_prompt.messages,
+        )
+
+
+def _text_only_prompt(response_id: str):
+    plan = MultimodalInputPlan(
+        prompt=(PromptText(part_index=0, text="anchor"),),
+        media=(),
+    )
+    return Qwen4PromptBuilder().build(
+        response_id=response_id,
+        runtime=RUNTIME,
+        plan=plan,
+        resolution=_bundle(),
+    )
+
+
+def _sealed_call(**overrides) -> PreparedQwen4Message:
+    fields: dict[str, object] = {
+        "message_index": 0,
+        "role": "assistant",
+        "items": (),
+        "item_type": "function_call",
+        "id": "fc_1",
+        "status": "completed",
+        "call_id": "call_1",
+        "name": "inspect_region",
+        "arguments": '{"region":"top"}',
+    }
+    fields.update(overrides)
+    return PreparedQwen4Message(**fields)  # type: ignore[arg-type]
+
+
+def test_prepared_call_carries_every_identity_field_immutably() -> None:
+    call = _sealed_call()
+
+    assert (call.id, call.status, call.call_id, call.name, call.arguments) == (
+        "fc_1",
+        "completed",
+        "call_1",
+        "inspect_region",
+        '{"region":"top"}',
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        call.arguments = '{"region":"bottom"}'  # type: ignore[misc]
+    with pytest.raises((AttributeError, TypeError)):
+        call.status = "incomplete"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("field", ("id", "status", "name", "arguments"))
+def test_call_only_fields_are_forbidden_on_unrelated_message_kinds(
+    field: str,
+) -> None:
+    value = "completed" if field == "status" else "smuggled"
+    with pytest.raises(ValueError, match="belong only to function_call"):
+        PreparedQwen4Message(
+            message_index=0,
+            role="user",
+            items=(),
+            item_type="message",
+            **{field: value},
+        )
+    with pytest.raises(ValueError, match="belong only to function_call"):
+        PreparedQwen4Message(
+            message_index=0,
+            role="tool",
+            items=(),
+            item_type="function_call_output",
+            call_id="call_1",
+            output="",
+            **{field: value},
+        )
+
+
+@pytest.mark.parametrize("status", ("in_progress", "failed", "COMPLETED", ""))
+def test_only_terminal_status_vocabulary_is_sealed(status: str) -> None:
+    assert status not in TERMINAL_ITEM_STATUSES
+    with pytest.raises(ValueError, match="terminal item status"):
+        _sealed_call(status=status)
+
+    for accepted in sorted(TERMINAL_ITEM_STATUSES):
+        assert _sealed_call(status=accepted).status == accepted
+    assert _sealed_call(status=None).status is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    (
+        ({"call_id": "  "}, "call_id must not be empty"),
+        ({"call_id": " call_1 "}, "call_id must already be normalized"),
+        ({"name": ""}, "name must not be empty"),
+        ({"name": "inspect_region "}, "name must already be normalized"),
+        ({"arguments": {"region": "top"}}, "arguments must be text"),
+        ({"id": " fc_1"}, "id must already be normalized"),
+        ({"role": "user"}, "must keep its assistant role"),
+        ({"output": "leaked"}, "belong only to function_call_output"),
+    ),
+)
+def test_malformed_sealed_call_identity_is_refused(overrides: dict, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        _sealed_call(**overrides)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"id": "fc_2"},
+        {"status": "incomplete"},
+        {"call_id": "call_2"},
+        {"name": "inspect_other"},
+        {"arguments": '{"region":"bottom"}'},
+        {"id": None},
+        {"status": None},
+    ),
+)
+def test_every_call_identity_field_moves_the_message_digest(mutation: dict) -> None:
+    """One field changed alone must change the seal — no digest collisions.
+
+    W3-OA2 proved the pre-seal digest collided for two calls that shared a
+    `call_id` but differed in `name`/`arguments`; every case here must separate.
+    """
+
+    prompt = _text_only_prompt("resp_call_digest")
+    anchor = PreparedQwen4Message(
+        message_index=1,
+        role="user",
+        items=(prompt.items[0],),
+        item_type="message",
+    )
+    baseline = bind_prepared_messages(prompt, (_sealed_call(), anchor))
+    mutated = bind_prepared_messages(prompt, (_sealed_call(**mutation), anchor))
+
+    assert mutated.content_digest != baseline.content_digest
+
+
+def test_message_role_is_authenticated_by_the_digest() -> None:
+    prompt = _text_only_prompt("resp_role_digest")
+
+    def _anchor(role: str) -> PreparedQwen4Message:
+        return PreparedQwen4Message(
+            message_index=1,
+            role=role,
+            items=(prompt.items[0],),
+            item_type="message",
+        )
+
+    assert (
+        bind_prepared_messages(prompt, (_sealed_call(), _anchor("user"))).content_digest
+        != bind_prepared_messages(
+            prompt, (_sealed_call(), _anchor("system"))
+        ).content_digest
+    )
+
+
+def test_reordering_a_sealed_call_changes_the_digest() -> None:
+    prompt = _text_only_prompt("resp_call_order")
+    anchor_first = PreparedQwen4Message(
+        message_index=0,
+        role="user",
+        items=(prompt.items[0],),
+        item_type="message",
+    )
+    call_second = _sealed_call(message_index=1)
+    call_first = _sealed_call(message_index=0)
+    anchor_second = PreparedQwen4Message(
+        message_index=1,
+        role="user",
+        items=(prompt.items[0],),
+        item_type="message",
+    )
+
+    assert (
+        bind_prepared_messages(prompt, (anchor_first, call_second)).content_digest
+        != bind_prepared_messages(prompt, (call_first, anchor_second)).content_digest
+    )
+
+
+def test_a_sealed_call_cannot_be_swapped_under_its_own_digest() -> None:
+    prompt = _text_only_prompt("resp_call_swap")
+    anchor = PreparedQwen4Message(
+        message_index=1,
+        role="user",
+        items=(prompt.items[0],),
+        item_type="message",
+    )
+    sealed = bind_prepared_messages(prompt, (_sealed_call(), anchor))
+    tampered = (_sealed_call(arguments='{"region":"bottom"}'), anchor)
+
+    with pytest.raises(ValueError, match="does not seal message layout"):
+        sealed.__class__(
+            response_id=sealed.response_id,
+            runtime=sealed.runtime,
+            items=sealed.items,
+            media=sealed.media,
+            resolution=sealed.resolution,
+            content_digest=sealed.content_digest,
+            media_digest=sealed.media_digest,
+            messages=tampered,
         )

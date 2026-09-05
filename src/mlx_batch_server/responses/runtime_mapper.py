@@ -28,6 +28,9 @@ _MESSAGE_ITEM_TYPE = "message"
 _FUNCTION_CALL_ITEM_TYPE = "function_call"
 _FUNCTION_OUTPUT_ITEM_TYPE = "function_call_output"
 _ITEM_STATUSES = frozenset(("in_progress", "completed", "incomplete"))
+# A `function_call` arriving as input already happened, so `in_progress` cannot
+# be true of it. The non-terminal claim is refused rather than coerced.
+_TERMINAL_ITEM_STATUSES = frozenset(("completed", "incomplete"))
 _FUNCTION_CALL_FIELDS = frozenset(
     {"type", "id", "call_id", "name", "arguments", "status", "namespace"}
 )
@@ -274,6 +277,7 @@ def _validate_raw_input(raw_input: Any) -> None:
             "input",
         )
     function_call_ids: set[str] = set()
+    declared_call_ids: set[str] = set()
     for message_index, entry in enumerate(entries):
         param = f"input[{message_index}]"
         if isinstance(entry, str):
@@ -282,7 +286,13 @@ def _validate_raw_input(raw_input: Any) -> None:
             raise _invalid("input entries must be text or message mappings", param)
         item_type = entry.get("type")
         if item_type == _FUNCTION_CALL_ITEM_TYPE:
-            _validate_function_call(entry, param)
+            declared = _validate_function_call(entry, param)
+            if declared in declared_call_ids:
+                raise _invalid(
+                    "function_call call_id is duplicated",
+                    f"{param}.call_id",
+                )
+            declared_call_ids.add(declared)
             continue
         if item_type == _FUNCTION_OUTPUT_ITEM_TYPE:
             call_id = _validate_function_call_output(entry, param)
@@ -331,7 +341,7 @@ def _validate_function_call(
         )
     _validate_optional_item_identity(entry, "id", "function_call", param)
     _validate_optional_item_identity(entry, "namespace", "function_call", param)
-    _validate_item_status(entry, "function_call", param)
+    _validate_terminal_item_status(entry, "function_call", param)
     return call_id
 
 
@@ -452,6 +462,18 @@ def _validate_item_status(entry: Mapping[str, Any], item_type: str, param: str) 
         return
     if entry["status"] not in _ITEM_STATUSES:
         raise _invalid(f"{item_type} status is unknown", f"{param}.status")
+
+
+def _validate_terminal_item_status(
+    entry: Mapping[str, Any], item_type: str, param: str
+) -> None:
+    """An inherited call is finished; a non-terminal status is refused."""
+
+    _validate_item_status(entry, item_type, param)
+    if "status" not in entry or entry["status"] is None:
+        return
+    if entry["status"] not in _TERMINAL_ITEM_STATUSES:
+        raise _invalid(f"{item_type} status is not terminal", f"{param}.status")
 
 
 def _validate_raw_content(content: Any, param: str) -> None:
@@ -829,25 +851,40 @@ def _validate_call_lineage(
 ) -> None:
     """Reject a tool result that no preceding call in the lineage can explain."""
 
-    seen: set[str] = set()
+    seen: dict[str, Mapping[str, Any]] = {}
+    settled: set[str] = set()
     for index, item in enumerate((*parents, *current)):
         item_type = item.get("type")
+        param = (
+            f"input[{index - len(parents)}].call_id"
+            if index >= len(parents)
+            else "previous_response_id"
+        )
         if item_type == _FUNCTION_CALL_ITEM_TYPE:
-            seen.add(str(item["call_id"]))
-        elif item_type == _FUNCTION_OUTPUT_ITEM_TYPE:
-            call_id = str(item["call_id"])
-            if call_id in seen:
-                continue
-            param = (
-                f"input[{index - len(parents)}].call_id"
-                if index >= len(parents)
-                else "previous_response_id"
-            )
+            seen[str(item["call_id"])] = item
+            continue
+        if item_type != _FUNCTION_OUTPUT_ITEM_TYPE:
+            continue
+        call_id = str(item["call_id"])
+        call = seen.get(call_id)
+        if call is None:
             raise _invalid(
                 "no function_call in this conversation matches "
                 f"function_call_output call_id {call_id!r}",
                 param,
             )
+        if call_id in settled:
+            raise _invalid(
+                f"function_call {call_id!r} already has a function_call_output",
+                param,
+            )
+        if call.get("status") == "incomplete":
+            raise _invalid(
+                f"function_call {call_id!r} never completed, so it cannot carry "
+                "a function_call_output",
+                param,
+            )
+        settled.add(call_id)
 
 
 def _canonical_message(value: Any, param: str) -> Mapping[str, Any]:
@@ -894,10 +931,23 @@ def _text_message(message: Mapping[str, Any]) -> Mapping[str, Any]:
     if message_type == _MESSAGE_ITEM_TYPE:
         canonical["type"] = _MESSAGE_ITEM_TYPE
     elif message_type == _FUNCTION_CALL_ITEM_TYPE:
-        # No installed renderer seals a `function_call` item yet, so the call is
-        # delivered as the assistant turn that produced it, carrying the exact
-        # official item as its text. Canonical history keeps the typed item.
-        canonical["type"] = _MESSAGE_ITEM_TYPE
+        # Both renderers now seal the typed item, so the call is forwarded with
+        # its exact identity instead of being flattened into an assistant turn.
+        # Content is dropped here on purpose: the rendered call text belongs to
+        # canonical history, and `arguments` must never reach the model as
+        # visible assistant text.
+        canonical.update(
+            {
+                "type": _FUNCTION_CALL_ITEM_TYPE,
+                "content": (),
+                "call_id": message["call_id"],
+                "name": message["name"],
+                "arguments": message["arguments"],
+            }
+        )
+        for field in ("id", "status"):
+            if field in message:
+                canonical[field] = message[field]
     elif message_type == _FUNCTION_OUTPUT_ITEM_TYPE:
         canonical.update(
             {

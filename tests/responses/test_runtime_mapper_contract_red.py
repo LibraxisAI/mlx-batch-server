@@ -232,11 +232,21 @@ def test_preserves_function_output_before_typed_message_and_image() -> None:
     # mapper as inherited lineage exactly as the registry materializes it.
     prepared = _prepare(mapper, payload, parents=(_CALL_LINEAGE,))
 
+    # The inherited call reaches the backend as the typed item it always was;
+    # `_CALL_TEXT` stays in canonical history and never becomes assistant text.
     assert prepared.request.messages[0] == {
-        "type": "message",
+        "type": "function_call",
         "role": "assistant",
-        "content": ({"type": "input_text", "text": _CALL_TEXT},),
+        "content": (),
+        "call_id": INSPECT_CALL_ID,
+        "name": "inspect_canvas",
+        "arguments": INSPECT_ARGUMENTS,
+        "id": "fc_inspect_canvas",
+        "status": "completed",
     }
+    assert prepared.materialized_messages[0]["content"] == (
+        {"type": "input_text", "text": _CALL_TEXT},
+    )
     function_output = prepared.request.messages[1]
     assert function_output == {
         "type": "function_call_output",
@@ -286,10 +296,15 @@ def test_preserves_function_output_before_typed_message_and_image() -> None:
     # Delivery proof: the fused mixed-content preparer seals this exact request.
     _parts, layouts = _reconstruct_mixed_messages(prepared.request)
     assert [layout.item_type for layout in layouts] == [
-        "message",
+        "function_call",
         "function_call_output",
         "message",
     ]
+    assert layouts[0].call_id == INSPECT_CALL_ID
+    assert layouts[0].name == "inspect_canvas"
+    assert layouts[0].arguments == INSPECT_ARGUMENTS
+    assert layouts[0].id == "fc_inspect_canvas"
+    assert layouts[0].status == "completed"
 
 
 @pytest.mark.parametrize(
@@ -1116,12 +1131,16 @@ def test_direct_official_function_call_reaches_the_backend_with_its_result() -> 
     # The backend receives the ordered call/result pair, not a lone result.
     backend = list(prepared.request.messages)
     assert [message["role"] for message in backend] == ["assistant", "tool", "user"]
-    # The rendered call is the official item verbatim, so it round-trips.
-    assert json.loads(backend[0]["content"][0]["text"]) == {
+    # The call reaches the backend as the official typed item, with no text body.
+    assert backend[0] == {
         "type": "function_call",
+        "role": "assistant",
+        "content": (),
         "call_id": "call_1",
         "name": "get_weather",
         "arguments": '{"city":"Kielce"}',
+        "id": "fc_1",
+        "status": "completed",
     }
     assert backend[1]["call_id"] == "call_1"
     assert backend[1]["output"] == "18C"
@@ -1290,7 +1309,10 @@ def test_inherited_call_lineage_explains_a_direct_tool_result() -> None:
     ]
     assert prepared.materialized_messages[0]["call_id"] == INSPECT_CALL_ID
     assert prepared.materialized_messages[0]["arguments"] == INSPECT_ARGUMENTS
-    assert prepared.request.messages[0]["content"][0]["text"] == _CALL_TEXT
+    assert prepared.materialized_messages[0]["content"][0]["text"] == _CALL_TEXT
+    assert prepared.request.messages[0]["type"] == "function_call"
+    assert prepared.request.messages[0]["content"] == ()
+    assert prepared.request.messages[0]["arguments"] == INSPECT_ARGUMENTS
 
     with pytest.raises(ResponsesMappingError) as foreign:
         _prepare(

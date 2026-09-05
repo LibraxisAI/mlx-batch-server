@@ -4821,7 +4821,12 @@ def _require_prepared_vision_prompt(
         ):
             raise ValueError("prepared prompt role/message layout changed")
         item_type = raw_message.get("type")
-        if item_type not in (None, "message", "function_call_output"):
+        if item_type not in (
+            None,
+            "message",
+            "function_call",
+            "function_call_output",
+        ):
             raise ValueError("canonical message type is unsupported")
         if sealed_message.item_type != item_type:
             raise ValueError("prepared prompt message type changed")
@@ -4834,13 +4839,27 @@ def _require_prepared_vision_prompt(
             or sealed_message.is_error != expected_is_error
         ):
             raise ValueError("prepared prompt tool receipt identity changed")
+        # Every field the seal authenticates is compared here, so mutating the
+        # raw request or the sealed value alone is caught before the model runs.
+        if (
+            sealed_message.id != raw_message.get("id")
+            or sealed_message.status != raw_message.get("status")
+            or sealed_message.name != raw_message.get("name")
+            or sealed_message.arguments != raw_message.get("arguments")
+        ):
+            raise ValueError("prepared prompt call identity changed")
         if any(
             str(item.get("_role", "")).strip().lower() != normalized_role
             for item in request.media
             if isinstance(item, Mapping) and item.get("_message_index") == index
         ):
             raise ValueError("canonical media role provenance changed")
-        expected_text = _canonical_message_text(raw_message.get("content"))
+        if item_type == "function_call":
+            if raw_message.get("content"):
+                raise ValueError("function_call cannot carry message content")
+            expected_text: tuple[str, ...] = ()
+        else:
+            expected_text = _canonical_message_text(raw_message.get("content"))
         expected_kinds = _expected_message_item_kinds(
             len(expected_text),
             media_slots.get(index, set()),
@@ -4960,6 +4979,14 @@ def _render_prepared_messages(
             rendered_message["call_id"] = message.call_id
             rendered_message["output"] = template_output
             rendered_message["is_error"] = message.is_error
+        elif message.item_type == "function_call":
+            rendered_message["call_id"] = message.call_id
+            rendered_message["name"] = message.name
+            rendered_message["arguments"] = message.arguments
+            if message.id is not None:
+                rendered_message["id"] = message.id
+            if message.status is not None:
+                rendered_message["status"] = message.status
         rendered.append(rendered_message)
     return rendered, image_count
 
@@ -4980,8 +5007,44 @@ def _chat_template_instruction_text(content: object) -> str:
     return "".join(parts)
 
 
+def _render_chat_template_function_call(
+    message: Mapping[str, Any],
+) -> dict[str, object]:
+    """Hand the checkpoint one typed tool call, never an assistant text turn.
+
+    The call is projected onto the tool-call object the installed chat template
+    consumes. `arguments` is forwarded as the exact string the client sent, so
+    it is never re-encoded and never becomes visible assistant content.
+    """
+
+    call_id = message.get("call_id")
+    name = message.get("name")
+    arguments = message.get("arguments")
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise ValueError("function_call call_id must not be empty")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("function_call name must not be empty")
+    if not isinstance(arguments, str):
+        raise ValueError("function_call arguments must be text")
+    if message.get("content"):
+        raise ValueError("function_call cannot carry message content")
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        ],
+    }
+
+
 def _render_chat_template_message(message: Mapping[str, Any]) -> dict[str, object]:
     rendered = dict(message)
+    if rendered.get("type") == "function_call":
+        return _render_chat_template_function_call(rendered)
     if rendered.get("type") != "function_call_output":
         return rendered
     is_error = rendered.get("is_error") if "is_error" in rendered else None
