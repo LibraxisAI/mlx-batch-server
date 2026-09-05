@@ -18,12 +18,16 @@ from enum import StrEnum
 from typing import TypeAlias
 
 from .events import (
+    HOSTED_CALL_ITEM_KIND,
     REASONING_CONTENT_KIND,
     TERMINAL_EVENT_TYPES,
     TEXT_CONTENT_KIND,
     TURN_EVENT_TYPES,
     ContentPartCompleted,
     ContentPartStarted,
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallStarted,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -82,6 +86,8 @@ class _ItemLifecycle:
         self.tool_name: str | None = None
         self.tool_arguments = ""
         self.tool_completed = False
+        self.hosted_started = False
+        self.hosted_status: str | None = None
         self.completed = False
 
 
@@ -330,6 +336,12 @@ class GenerationTurn:
             self._append_tool(event)
         elif isinstance(event, ToolCompleted):
             self._complete_tool(event)
+        elif isinstance(event, HostedCallStarted):
+            self._start_hosted_call(event)
+        elif isinstance(event, HostedCallProgress):
+            self._progress_hosted_call(event)
+        elif isinstance(event, HostedCallCompleted):
+            self._complete_hosted_call(event)
         elif isinstance(event, UsageUpdate):
             self._accept_usage(event)
         elif isinstance(event, ProgressUpdate):
@@ -344,7 +356,11 @@ class GenerationTurn:
             )
         if event.item_id in self._item_ids:
             raise RuntimeError(f"duplicate output item id {event.item_id!r}")
-        self._items[event.index] = _ItemLifecycle(event.kind, event.item_id)
+        item = _ItemLifecycle(event.kind, event.item_id)
+        if event.kind == HOSTED_CALL_ITEM_KIND:
+            item.call_id = event.call_id
+            item.tool_name = event.name
+        self._items[event.index] = item
         self._item_ids.add(event.item_id)
 
     def _complete_item(self, event: OutputItemCompleted) -> None:
@@ -355,6 +371,19 @@ class GenerationTurn:
             raise RuntimeError("output item has an open content part")
         if item.kind == "function_call" and not item.tool_completed:
             raise RuntimeError("function-call output item has no done event")
+        if item.kind == HOSTED_CALL_ITEM_KIND:
+            if item.hosted_status is None:
+                raise RuntimeError("hosted_call output item has no receipt event")
+            if event.call_id != item.call_id or event.name != item.tool_name:
+                raise RuntimeError(
+                    "hosted_call output item completion does not match its call"
+                )
+            if event.status != item.hosted_status:
+                raise RuntimeError(
+                    "hosted_call output item status must match its receipt"
+                )
+            item.completed = True
+            return
         if item.kind in {"message", "reasoning"}:
             completed_text = "".join(content.text for content in item.contents.values())
             if event.text != completed_text:
@@ -465,6 +494,47 @@ class GenerationTurn:
         if event.arguments != item.tool_arguments:
             raise RuntimeError("tool done arguments do not match emitted deltas")
         item.tool_completed = True
+
+    def _require_hosted_item(
+        self,
+        index: int,
+        item_id: str,
+        call_id: str,
+    ) -> _ItemLifecycle:
+        item = self._require_open_item(index, item_id)
+        if item.kind != HOSTED_CALL_ITEM_KIND:
+            raise RuntimeError("hosted call events require a hosted_call output item")
+        if call_id != item.call_id:
+            raise RuntimeError("hosted call id does not match its output item")
+        return item
+
+    def _start_hosted_call(self, event: HostedCallStarted) -> None:
+        item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+        if event.tool_name != item.tool_name:
+            raise RuntimeError("hosted call tool name does not match its output item")
+        if item.hosted_started:
+            raise RuntimeError("hosted call already started")
+        item.hosted_started = True
+
+    def _progress_hosted_call(self, event: HostedCallProgress) -> None:
+        item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+        if not item.hosted_started:
+            raise RuntimeError("hosted call progress requires a started hosted call")
+        if item.hosted_status is not None:
+            raise RuntimeError("hosted call progress cannot follow its receipt")
+
+    def _complete_hosted_call(self, event: HostedCallCompleted) -> None:
+        item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+        if event.tool_name != item.tool_name:
+            raise RuntimeError("hosted call tool name does not match its output item")
+        if not item.hosted_started:
+            raise RuntimeError("hosted call receipt requires a started hosted call")
+        if item.hosted_status is not None:
+            raise RuntimeError("hosted call receipt already emitted")
+        receipt_call_id = event.receipt.get("call_id")
+        if receipt_call_id is not None and receipt_call_id != event.call_id:
+            raise RuntimeError("hosted call receipt does not match its call id")
+        item.hosted_status = event.status
 
     def _accept_usage(self, event: UsageUpdate) -> None:
         previous = self._usage

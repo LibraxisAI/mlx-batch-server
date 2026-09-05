@@ -16,7 +16,11 @@ from typing import Any, TypeAlias
 TEXT_CONTENT_KIND = "output_text"
 REASONING_CONTENT_KIND = "reasoning_summary_text"
 CONTENT_KINDS = frozenset((TEXT_CONTENT_KIND, REASONING_CONTENT_KIND))
-OUTPUT_ITEM_KINDS = frozenset(("message", "reasoning", "function_call"))
+HOSTED_CALL_ITEM_KIND = "hosted_call"
+OUTPUT_ITEM_KINDS = frozenset(
+    ("message", "reasoning", "function_call", HOSTED_CALL_ITEM_KIND)
+)
+HOSTED_CALL_STATUSES = frozenset(("completed", "failed"))
 
 
 class _FrozenDict(dict[str, Any]):
@@ -125,10 +129,10 @@ class OutputItemStarted:
             raise ValueError(f"unsupported output item kind {self.kind!r}")
         _require_index("index", self.index)
         _require_identity("item_id", self.item_id)
-        if self.kind == "function_call":
+        if self.kind in {"function_call", HOSTED_CALL_ITEM_KIND}:
             if self.call_id is None or self.name is None:
                 raise ValueError(
-                    "function_call output item start requires call_id and name"
+                    f"{self.kind} output item start requires call_id and name"
                 )
             _require_identity("call_id", self.call_id)
             _require_identity("name", self.name)
@@ -155,6 +159,20 @@ class OutputItemCompleted:
             raise ValueError(f"unsupported output item kind {self.kind!r}")
         _require_index("index", self.index)
         _require_identity("item_id", self.item_id)
+        if self.kind == HOSTED_CALL_ITEM_KIND:
+            if self.status not in HOSTED_CALL_STATUSES:
+                raise ValueError(
+                    "hosted_call output item status must be completed or failed"
+                )
+            if self.text is not None or self.arguments is not None:
+                raise ValueError(
+                    "hosted_call completion cannot carry text or arguments"
+                )
+            if self.call_id is None or self.name is None:
+                raise ValueError("hosted_call completion requires call_id and name")
+            _require_identity("call_id", self.call_id)
+            _require_identity("name", self.name)
+            return
         if self.status not in {"completed", "incomplete"}:
             raise ValueError("output item status must be completed or incomplete")
         if self.kind in {"message", "reasoning"}:
@@ -301,6 +319,59 @@ class ToolCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class HostedCallStarted:
+    """One target-executed hosted call opened inside a hosted_call output item."""
+
+    index: int
+    item_id: str
+    call_id: str
+    tool_name: str
+    action: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _require_index("index", self.index)
+        _require_identity("item_id", self.item_id)
+        _require_identity("call_id", self.call_id)
+        _require_identity("tool_name", self.tool_name)
+        object.__setattr__(self, "action", _freeze_mapping(self.action))
+
+
+@dataclass(frozen=True, slots=True)
+class HostedCallProgress:
+    index: int
+    item_id: str
+    call_id: str
+    phase: str
+
+    def __post_init__(self) -> None:
+        _require_index("index", self.index)
+        _require_identity("item_id", self.item_id)
+        _require_identity("call_id", self.call_id)
+        _require_identity("phase", self.phase)
+
+
+@dataclass(frozen=True, slots=True)
+class HostedCallCompleted:
+    """The one immutable receipt event closing a hosted call, success or failure."""
+
+    index: int
+    item_id: str
+    call_id: str
+    tool_name: str
+    status: str
+    receipt: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _require_index("index", self.index)
+        _require_identity("item_id", self.item_id)
+        _require_identity("call_id", self.call_id)
+        _require_identity("tool_name", self.tool_name)
+        if self.status not in HOSTED_CALL_STATUSES:
+            raise ValueError("hosted call status must be completed or failed")
+        object.__setattr__(self, "receipt", _freeze_mapping(self.receipt))
+
+
+@dataclass(frozen=True, slots=True)
 class UsageUpdate:
     input_tokens: int
     output_tokens: int
@@ -396,6 +467,9 @@ TurnEvent: TypeAlias = (
     | TextCompleted
     | ToolDelta
     | ToolCompleted
+    | HostedCallStarted
+    | HostedCallProgress
+    | HostedCallCompleted
     | UsageUpdate
     | ProgressUpdate
     | TerminalEvent
@@ -414,6 +488,9 @@ TURN_EVENT_TYPES = (
     TextCompleted,
     ToolDelta,
     ToolCompleted,
+    HostedCallStarted,
+    HostedCallProgress,
+    HostedCallCompleted,
     UsageUpdate,
     ProgressUpdate,
     *TERMINAL_EVENT_TYPES,
