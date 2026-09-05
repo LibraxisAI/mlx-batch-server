@@ -22,7 +22,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import anthropic
 import httpx
-from openai import AsyncOpenAI
+import openai
+from openai import APIStatusError, AsyncOpenAI, OpenAI
 
 from mlx_batch_server.utils.safe_public_fetch import (
     FetchedResource,
@@ -708,6 +709,202 @@ async def probe_openai_websocket(config: VerificationConfig) -> dict[str, Any]:
     )
     result.update({"socket_count": 1, "stream_id": config.stream_id})
     return result
+
+
+def _sync_input_item_ids(
+    config: VerificationConfig,
+    response_id: str,
+    *,
+    limit: int,
+    order: str,
+) -> list[str]:
+    with OpenAI(
+        api_key=config.api_key,
+        base_url=_api_base(config.base_url),
+        timeout=config.timeout_s,
+        max_retries=0,
+    ) as client:
+        return [
+            item.id
+            for item in client.responses.input_items.list(
+                response_id,
+                limit=limit,
+                order=order,  # type: ignore[arg-type]
+            )
+        ]
+
+
+async def probe_openai_public_admission(  # noqa: PLR0915 - one receipt spans the lifecycle
+    config: VerificationConfig,
+) -> dict[str, Any]:
+    """Exercise the complete public Responses lifecycle with official clients."""
+
+    input_items: list[dict[str, Any]] = [
+        {
+            "type": "message",
+            "role": "user",
+            "content": (
+                f"context item {index}"
+                if index % 2 == 0
+                else [{"type": "input_text", "text": f"context item {index}"}]
+            ),
+        }
+        for index in range(25)
+    ]
+    headers = {"Authorization": f"Bearer {config.api_key}"}
+    started = time.perf_counter_ns()
+    async with AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=_api_base(config.base_url),
+        timeout=config.timeout_s,
+        max_retries=0,
+    ) as client:
+        created = await client.responses.create(
+            model=config.model,
+            input=input_items,  # type: ignore[arg-type]
+            background=True,
+            max_output_tokens=config.max_output_tokens,
+        )
+        create_latency_ms = (time.perf_counter_ns() - started) / 1_000_000
+        _require(
+            created.status in {"queued", "in_progress"},
+            "background create did not return before terminal completion",
+        )
+        _require(created.background is True, "background policy was not echoed")
+        _require(created.model == config.model, "background model alias changed")
+
+        first_get = await client.responses.retrieve(created.id)
+        _require(
+            first_get.status in {"queued", "in_progress"},
+            "first background GET did not expose a live lifecycle state",
+        )
+        statuses = [str(created.status), str(first_get.status)]
+
+        async_ascending = [
+            item.id
+            async for item in client.responses.input_items.list(
+                created.id,
+                limit=6,
+                order="asc",
+            )
+        ]
+        sync_descending = await asyncio.to_thread(
+            _sync_input_item_ids,
+            config,
+            created.id,
+            limit=7,
+            order="desc",
+        )
+        _require(len(async_ascending) == 25, "async pagination lost input items")
+        _require(len(sync_descending) == 25, "sync pagination lost input items")
+        _require(
+            len(set(async_ascending)) == len(async_ascending),
+            "async pagination returned duplicate IDs",
+        )
+        _require(
+            sync_descending == list(reversed(async_ascending)),
+            "sync and async pagination disagree on canonical order",
+        )
+
+        deadline = time.monotonic() + max(0.1, config.timeout_s / 2)
+        terminal = first_get
+        while terminal.status in {"queued", "in_progress"}:
+            if time.monotonic() >= deadline:
+                raise VerificationError(
+                    "background response did not reach terminal state"
+                )
+            await asyncio.sleep(0.02)
+            terminal = await client.responses.retrieve(created.id)
+            statuses.append(str(terminal.status))
+        _require(terminal.status == "completed", "background response did not complete")
+        _require(terminal.model == config.model, "terminal model alias changed")
+
+        cancellable = await client.responses.create(
+            model=config.model,
+            input="Generate a deliberately long answer for cancellation verification.",
+            background=True,
+            max_output_tokens=config.max_output_tokens,
+        )
+        _require(
+            cancellable.status in {"queued", "in_progress"},
+            "cancellation fixture completed before cancel admission",
+        )
+        cancelled = await client.responses.cancel(cancellable.id)
+        cancelled_again = await client.responses.cancel(cancellable.id)
+        _require(cancelled.status == "cancelled", "background cancel did not settle")
+        _require(
+            cancelled_again.id == cancelled.id
+            and cancelled_again.status == cancelled.status,
+            "background cancel was not idempotent",
+        )
+
+        unsupported_error: Mapping[str, Any] | None = None
+        try:
+            await client.responses.create(
+                model=config.model,
+                input="unsupported field",
+                max_tool_calls=1,
+            )
+        except APIStatusError as error:
+            payload = error.response.json()
+            if isinstance(payload, Mapping):
+                nested = payload.get("error")
+                if isinstance(nested, Mapping):
+                    unsupported_error = nested
+        if unsupported_error is None:
+            raise VerificationError("unsupported field was accepted")
+        _require(
+            unsupported_error.get("code") == "unsupported_parameter"
+            and unsupported_error.get("param") == "max_tool_calls",
+            "unsupported field returned the wrong typed error",
+        )
+
+        await client.responses.delete(created.id)
+
+    timeout = httpx.Timeout(config.timeout_s, connect=min(config.timeout_s, 10.0))
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as raw_client:
+        malformed = await raw_client.post(
+            f"{config.base_url.rstrip('/')}/v1/responses",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b'{"model":',
+        )
+        deleted_get = await raw_client.get(
+            f"{config.base_url.rstrip('/')}/v1/responses/{created.id}",
+            headers=headers,
+        )
+    malformed_payload = malformed.json()
+    _require(malformed.status_code == 400, "malformed JSON did not return HTTP 400")
+    _require(
+        isinstance(malformed_payload, Mapping)
+        and set(malformed_payload) == {"error"}
+        and "detail" not in malformed_payload,
+        "malformed JSON leaked a framework error envelope",
+    )
+    malformed_error = malformed_payload.get("error")
+    _require(
+        isinstance(malformed_error, Mapping)
+        and set(malformed_error) == {"message", "type", "param", "code"}
+        and malformed_error.get("code") == "invalid_json",
+        "malformed JSON returned the wrong typed error",
+    )
+    _require(deleted_get.status_code == 404, "deleted response remained retrievable")
+
+    return {
+        "sdk_version": openai.__version__,
+        "background_response_id": created.id,
+        "background_create_latency_ms": create_latency_ms,
+        "lifecycle_statuses": statuses,
+        "pagination_item_count": len(async_ascending),
+        "pagination_first_id": async_ascending[0],
+        "pagination_last_id": async_ascending[-1],
+        "pagination_unique_ids": len(set(async_ascending)),
+        "cancelled_response_id": cancelled.id,
+        "cancel_status": cancelled.status,
+        "delete_status": deleted_get.status_code,
+        "malformed_error_code": malformed_error.get("code"),
+        "unsupported_error_code": unsupported_error.get("code"),
+        "unsupported_error_param": unsupported_error.get("param"),
+    }
 
 
 def _anthropic_text(message: Any) -> str:
@@ -1572,6 +1769,7 @@ _REQUIRED_PROBE_IDS = (
     "openai_non_stream",
     "openai_sse",
     "openai_websocket",
+    "openai_public_admission",
     "anthropic_sdk_sync_non_stream",
     "anthropic_sdk_async_non_stream",
     "anthropic_sdk_sync_sse",
@@ -1665,6 +1863,10 @@ async def run_verification(
         ("openai_non_stream", lambda: probe_openai_non_stream(config)),
         ("openai_sse", lambda: probe_openai_sse(config)),
         ("openai_websocket", lambda: probe_openai_websocket(config)),
+        (
+            "openai_public_admission",
+            lambda: probe_openai_public_admission(config),
+        ),
         (
             "anthropic_sdk_sync_non_stream",
             lambda: probe_anthropic_sync_non_stream(config),
