@@ -309,15 +309,11 @@ class RuntimeManager:
                 elif record.handle is None:
                     return record.state is ModelState.COLD and record.error is None
                 else:
-                    record.state = ModelState.UNLOADING
-                    record.error = None
-                    record.materialization = None
-                    self._mark_roles_unloading(runtime)
-                    unload_task = asyncio.create_task(
-                        self._unload_and_publish(runtime, record, deadline_s),
-                        name=f"runtime-unload:{runtime.model_id}",
+                    unload_task = self._begin_unload_locked(
+                        runtime,
+                        record,
+                        deadline_s=deadline_s,
                     )
-                    record.unload_task = unload_task
 
             if wait_for_load is not None:
                 await asyncio.shield(wait_for_load)
@@ -407,9 +403,31 @@ class RuntimeManager:
                     except Exception:
                         pass
 
-                remaining = max(0.0, deadline_at - loop.time())
+                remaining = deadline_at - loop.time()
+                async with self._lock:
+                    record = self._records[runtime]
+                    unload_task = record.unload_task
+                    if unload_task is None and record.handle is not None:
+                        unload_task = self._begin_unload_locked(
+                            runtime,
+                            record,
+                            deadline_s=max(0.0, remaining),
+                        )
+                if unload_task is None:
+                    continue
+                if remaining <= 0:
+                    failures.append(f"{runtime.model_id}: unload timed out")
+                    continue
+
                 try:
-                    await self.unload(runtime, deadline_s=remaining)
+                    # The record owns this exact task.  Shielding keeps cleanup
+                    # retryable after the shutdown attempt reaches its deadline.
+                    await asyncio.wait_for(
+                        asyncio.shield(unload_task),
+                        timeout=max(0.0, deadline_at - loop.time()),
+                    )
+                except TimeoutError:
+                    failures.append(f"{runtime.model_id}: unload timed out")
                 except Exception as exc:
                     failures.append(f"{runtime.model_id}: {self._error_text(exc)}")
 
@@ -642,6 +660,30 @@ class RuntimeManager:
                 record.materialization = None
         self._mark_roles_cold(runtime)
         return True
+
+    def _begin_unload_locked(
+        self,
+        runtime: RuntimeKey,
+        record: _RuntimeRecord,
+        *,
+        deadline_s: float,
+    ) -> asyncio.Task[bool]:
+        """Start one manager-owned unload while the lifecycle lock is held."""
+
+        if record.handle is None:
+            raise RuntimeManagerError("cannot unload a runtime without a handle")
+        if record.unload_task is not None:
+            return record.unload_task
+        record.state = ModelState.UNLOADING
+        record.error = None
+        record.materialization = None
+        self._mark_roles_unloading(runtime)
+        unload_task = asyncio.create_task(
+            self._unload_and_publish(runtime, record, deadline_s),
+            name=f"runtime-unload:{runtime.model_id}",
+        )
+        record.unload_task = unload_task
+        return unload_task
 
     def _role_names_for(self, runtime: RuntimeKey) -> tuple[RoleName, ...]:
         return tuple(

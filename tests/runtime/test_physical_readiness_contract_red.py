@@ -7,6 +7,7 @@ W2 is active.
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import replace
 
 import pytest
@@ -341,6 +342,71 @@ async def test_ready_publication_occurs_inside_manager_lifecycle_lock(
 
 
 @pytest.mark.asyncio
+async def test_cross_thread_observer_never_sees_ready_before_manager_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = _Handle()
+    factory = _Factory(handle)
+    manager, readiness = _services(factory)
+    load = asyncio.create_task(manager.acquire_role(RoleName.MAIN))
+    await factory.started.wait()
+
+    observer_started = threading.Event()
+    ready_published = threading.Event()
+    ready_inspected = threading.Event()
+    observations: list[tuple[object, ModelState, object, object]] = []
+    original_mark_ready = readiness.mark_ready
+
+    def publish_then_yield_to_observer(
+        *args: object,
+        **kwargs: object,
+    ) -> RoleSnapshot:
+        snapshot = original_mark_ready(*args, **kwargs)
+        ready_published.set()
+        assert ready_inspected.wait(timeout=1.0)
+        return snapshot
+
+    def observe_readiness() -> None:
+        observer_started.set()
+        assert ready_published.wait(timeout=1.0)
+        snapshot = readiness.snapshot(RoleName.MAIN)
+        record = manager._records[RUNTIME]
+        observations.append(
+            (
+                record.handle,
+                record.state,
+                record.materialization,
+                snapshot.materialization,
+            )
+        )
+        ready_inspected.set()
+
+    monkeypatch.setattr(
+        readiness,
+        "mark_ready",
+        publish_then_yield_to_observer,
+    )
+
+    observer = threading.Thread(target=observe_readiness, daemon=True)
+    observer.start()
+    assert observer_started.wait(timeout=1.0)
+
+    factory.release.set()
+    assert await load is handle
+    observer.join(timeout=1.0)
+
+    assert observer.is_alive() is False
+    assert observations == [
+        (
+            handle,
+            ModelState.READY,
+            handle._receipt,
+            handle._receipt,
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_bounds_an_already_running_unload_by_original_deadline() -> None:
     handle = _BlockingCloseHandle()
     factory = _Factory(handle)
@@ -358,6 +424,44 @@ async def test_shutdown_bounds_an_already_running_unload_by_original_deadline() 
     handle.close_release.set()
     assert await unload is True
     await manager.shutdown(deadline_s=60.0)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_bounds_new_ready_handle_close_and_retains_ownership() -> None:
+    handle = _BlockingCloseHandle()
+    factory = _Factory(handle)
+    factory.release.set()
+    manager, readiness = _services(factory)
+    await manager.acquire_role(RoleName.MAIN)
+
+    with pytest.raises(RuntimeManagerError, match="shutdown incomplete"):
+        await asyncio.wait_for(manager.shutdown(deadline_s=0.05), timeout=0.5)
+
+    assert handle.close_deadlines and 0.0 < handle.close_deadlines[0] <= 0.05
+    record = manager._records[RUNTIME]
+    unload_task = record.unload_task
+    assert unload_task is not None
+    assert unload_task.done() is False
+    assert record.handle is handle
+    assert record.state is ModelState.UNLOADING
+    assert record.materialization is None
+    assert manager.status(RUNTIME) == {
+        "state": ModelState.UNLOADING.value,
+        "loaded": True,
+        "loading": False,
+        "unloading": True,
+        "cleaning": False,
+        "error": None,
+    }
+    assert readiness.is_ready(RoleName.MAIN) is False
+
+    handle.close_release.set()
+    assert await unload_task is True
+    await manager.shutdown(deadline_s=60.0)
+
+    assert handle.close_calls == 1
+    assert manager._closed is True
+    assert manager.status(RUNTIME)["loaded"] is False
 
 
 @pytest.mark.asyncio
