@@ -523,9 +523,37 @@ def _open_hosted_item(
             item_id,
             call_id=call_id,
             name=name,
+            action={"query": "q"},
         )
     )
     turn.emit(HostedCallStarted(index, item_id, call_id, name, {"query": "q"}))
+
+
+@pytest.mark.asyncio
+async def test_hosted_start_action_must_match_the_item_opening_action() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    turn.emit(
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "hosted_0",
+            call_id="call_0",
+            name="web_search",
+            action={"query": "opening"},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="does not match its output item start"):
+        turn.emit(
+            HostedCallStarted(
+                0,
+                "hosted_0",
+                "call_0",
+                "web_search",
+                {"query": "different"},
+            )
+        )
 
 
 _RESULT_URL = "https://example.com/result"
@@ -642,6 +670,7 @@ async def test_hosted_call_receipt_requires_a_started_call() -> None:
             "hosted_0",
             call_id="call_0",
             name="web_search",
+            action={"query": "q"},
         )
     )
     with pytest.raises(RuntimeError, match="requires a started hosted call"):
@@ -784,6 +813,7 @@ async def test_hosted_result_requires_a_started_call_and_exact_identity() -> Non
             "hosted_0",
             call_id="call_0",
             name="web_search",
+            action={"query": "q"},
         )
     )
     with pytest.raises(RuntimeError, match="requires a started hosted call"):
@@ -936,6 +966,7 @@ async def test_fetch_completion_action_cannot_contradict_its_started_url() -> No
             "hosted_0",
             call_id="call_0",
             name="web_fetch",
+            action={"url": "https://example.com/doc"},
         )
     )
     turn.emit(

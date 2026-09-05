@@ -588,6 +588,7 @@ class _HostedAgenticTurn:
     def _emit_hosted_started(self, call: ParsedToolCall) -> _HostedItem:
         index = self._alloc_index()
         item_id = self._alloc_item_id(f"hosted_{call.call_id}")
+        opening_action = _call_action(call)
         item = _HostedItem(
             index=index,
             item_id=item_id,
@@ -601,6 +602,7 @@ class _HostedAgenticTurn:
                 item_id=item_id,
                 call_id=call.call_id,
                 name=call.name,
+                action=opening_action,
             )
         )
         self._forward(
@@ -609,7 +611,7 @@ class _HostedAgenticTurn:
                 item_id=item_id,
                 call_id=call.call_id,
                 tool_name=call.name,
-                action=_call_action(call),
+                action=opening_action,
             )
         )
         self._forward(

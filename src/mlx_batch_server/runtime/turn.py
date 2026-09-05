@@ -384,6 +384,7 @@ class GenerationTurn:
         if event.kind == HOSTED_CALL_ITEM_KIND:
             item.call_id = event.call_id
             item.tool_name = event.name
+            item.hosted_action = event.action
         self._items[event.index] = item
         self._item_ids.add(event.item_id)
 
@@ -541,8 +542,11 @@ class GenerationTurn:
             raise RuntimeError("hosted call tool name does not match its output item")
         if item.hosted_started:
             raise RuntimeError("hosted call already started")
+        if event.action != item.hosted_action:
+            raise RuntimeError(
+                "hosted call action does not match its output item start"
+            )
         item.hosted_started = True
-        item.hosted_action = event.action
 
     def _verify_hosted_action(
         self,

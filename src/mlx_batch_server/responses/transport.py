@@ -322,6 +322,29 @@ def render_started_item(event: OutputItemStarted) -> dict[str, Any]:
             "status": "in_progress",
             "summary": [],
         }
+    if event.kind == HOSTED_CALL_ITEM_KIND:
+        if event.name != "web_search":
+            raise ValueError(
+                "only hosted web_search starts have a Responses item rendering"
+            )
+        action = event.action
+        if action is None:  # pragma: no cover - enforced by the event
+            raise ValueError("hosted_call start is missing its opening action")
+        if set(action) != {"query"}:
+            raise ValueError(
+                "hosted web_search opening action carries exactly one query"
+            )
+        query = action["query"]
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError(
+                "hosted web_search opening action requires a non-empty query"
+            )
+        return {
+            "id": event.item_id,
+            "type": "web_search_call",
+            "status": "in_progress",
+            "action": {"type": "search", "query": query},
+        }
     return {
         "id": event.item_id,
         "type": "function_call",
