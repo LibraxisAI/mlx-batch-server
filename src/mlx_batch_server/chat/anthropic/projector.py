@@ -8,13 +8,25 @@ envelope can never disagree about what the model produced.
 The projector consumes ``mlx_batch_server.runtime.events`` — the shared,
 protocol-neutral event family — and never reaches into another protocol's
 internals. Provider semantics are mapped, not flattened.
+
+Two truths are *given* to the projector rather than inferred by it:
+
+``thinking``
+    Whether this turn may put reasoning on the Anthropic wire at all, and who
+    signs it. A runtime reasoning event is evidence that the runtime reasoned;
+    it is not evidence that the client asked for Anthropic extended thinking,
+    nor that anything can sign the block. Both are capability decisions, and
+    they are made once — by ``capabilities`` — and carried here.
+``service_tier``
+    The capacity lane that actually served the turn, reported as delivered
+    rather than echoed back from what the request preferred.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from mlx_batch_server.runtime.events import (
     REASONING_CONTENT_KIND,
@@ -51,6 +63,7 @@ from .anthropic_schema import (
     MessageStartEvent,
     MessageStopEvent,
     PingEvent,
+    ResponseServiceTier,
     SignatureDeltaBody,
     StopReason,
     StreamErrorBody,
@@ -76,6 +89,94 @@ _TOOL_REASONS = frozenset({"tool_calls", "tool_use", "function_call"})
 _REFUSAL_REASONS = frozenset({"refusal", "content_filter"})
 _PAUSE_REASONS = frozenset({"pause_turn", "pause"})
 _STOP_SEQUENCE_REASONS = frozenset({"stop_sequence", "stop_sequences"})
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingSignature:
+    """One integrity signature issued by a named owner for one thinking block.
+
+    Constructing this type is the *only* way a thinking block reaches the
+    wire, and it refuses to exist without both halves. That is deliberate:
+    "unsigned thinking" then has no representation to leak through, rather
+    than being a rule someone has to remember to check.
+    """
+
+    owner: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.owner.strip():
+            raise ValueError("a thinking signature must name the owner that issued it")
+        if not self.value.strip():
+            raise ValueError("a thinking signature must not be empty")
+
+
+@runtime_checkable
+class ThinkingSignatureOwner(Protocol):
+    """Whoever can vouch for the integrity of a thinking block.
+
+    No such owner exists on this runtime today, and the local capability
+    profile says so. The seam is named rather than implemented so the
+    truthful tier is a *decision* with a place to change, not an omission.
+    """
+
+    def sign_thinking(
+        self, *, message_id: str, index: int, thinking: str
+    ) -> ThinkingSignature:
+        """Issue the signature for one completed thinking block."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingProjection:
+    """The admitted decision about Anthropic thinking output for one turn.
+
+    ``refused()`` is the default everywhere. A projector that was told
+    nothing emits nothing: reasoning-channel runtime events are dropped
+    before any block exists, so no ``thinking``, ``thinking_delta``,
+    ``signature_delta`` or ``redacted_thinking`` can appear on the wire.
+    """
+
+    signature_owner: ThinkingSignatureOwner | None = None
+
+    @classmethod
+    def refused(cls) -> ThinkingProjection:
+        """No thinking on the wire — the truthful local tier."""
+
+        return cls()
+
+    @classmethod
+    def signed_by(cls, owner: ThinkingSignatureOwner) -> ThinkingProjection:
+        """Admit thinking output, vouched for by ``owner``."""
+
+        return cls(signature_owner=owner)
+
+    @property
+    def admitted(self) -> bool:
+        return self.signature_owner is not None
+
+    def sign(self, *, message_id: str, index: int, thinking: str) -> ThinkingSignature:
+        """Obtain the signature for one block, or fail before exposing it."""
+
+        owner = self.signature_owner
+        if owner is None:
+            raise AnthropicAPIError(
+                "a thinking block was assembled without an admitted signature "
+                "owner; the turn fails rather than emitting unsigned reasoning",
+                error_type="api_error",
+            )
+        signature = owner.sign_thinking(
+            message_id=message_id, index=index, thinking=thinking
+        )
+        if not isinstance(signature, ThinkingSignature):
+            # A signature owner that returns something else has not signed
+            # anything. Refuse it here rather than str()-ing it onto the wire.
+            raise AnthropicAPIError(
+                "the admitted thinking signature owner returned no "
+                f"{ThinkingSignature.__name__}",
+                error_type="api_error",
+            )
+        return signature
 
 
 @dataclass
@@ -113,18 +214,26 @@ class AnthropicMessageProjector:
         message_id: str,
         model_alias: str,
         initial_usage: Usage | None = None,
+        thinking: ThinkingProjection | None = None,
+        service_tier: ResponseServiceTier = ResponseServiceTier.STANDARD,
     ) -> None:
         if not message_id.strip():
             raise ValueError("message_id must not be empty")
         if not model_alias.strip():
             raise ValueError("model_alias must not be empty")
         self._message_id = message_id
+        # Omitted means refused. A caller that forgets to pass a decision gets
+        # the truthful tier, not the permissive one.
+        self._thinking = thinking or ThinkingProjection.refused()
+        # The lane that actually served this turn. This process runs exactly
+        # one, and reports it rather than echoing the requested preference.
+        self._service_tier = service_tier
         # The public alias the caller asked for. The runtime's resolved
         # physical model identity is deliberately never substituted here: the
         # ``model`` a client sees at message_start is the same one it sees in
         # the terminal envelope.
         self._model_alias = model_alias
-        self._state = ProjectionState(usage=initial_usage or Usage())
+        self._state = ProjectionState(usage=self._stamp_tier(initial_usage or Usage()))
         self._blocks: dict[tuple[Any, ...], _Block] = {}
         self._order: list[_Block] = []
         self._next_index = 0
@@ -153,6 +262,18 @@ class AnthropicMessageProjector:
     @property
     def usage(self) -> Usage:
         return self._state.usage
+
+    @property
+    def emits_thinking(self) -> bool:
+        """Whether this turn may put thinking on the Anthropic wire at all."""
+
+        return self._thinking.admitted
+
+    @property
+    def service_tier(self) -> ResponseServiceTier:
+        """The capacity lane this turn was actually served by."""
+
+        return self._service_tier
 
     def observe(  # noqa: PLR0911, PLR0912 - explicit typed event dispatcher
         self, event: TurnEvent
@@ -219,6 +340,15 @@ class AnthropicMessageProjector:
             if block.kind == _TEXT:
                 blocks.append(TextBlock(text=block.streamed_text))
             elif block.kind == _THINKING:
+                if not block.streamed_signature:
+                    # Reached only if a block escaped ``_close``. Refuse the
+                    # whole turn: an unsigned thinking block claims an
+                    # integrity guarantee this runtime never made.
+                    raise AnthropicAPIError(
+                        "a thinking block reached the response envelope "
+                        "without an integrity signature",
+                        error_type="api_error",
+                    )
                 blocks.append(
                     ThinkingBlock(
                         thinking=block.streamed_text,
@@ -328,6 +458,12 @@ class AnthropicMessageProjector:
     def _on_reasoning_delta(
         self, event: ReasoningDelta
     ) -> tuple[AnthropicStreamEvent, ...]:
+        if not self._thinking.admitted:
+            # The runtime reasoned; the client did not ask for Anthropic
+            # thinking, or nothing can sign it. Drop the event outright — it
+            # is not re-routed into visible text, which would be the same lie
+            # wearing a different block type.
+            return ()
         key = self._content_key(event.output_index, event.content_index)
         block, emitted = self._ensure_content_block(key, _THINKING)
         if not event.delta:
@@ -350,6 +486,8 @@ class AnthropicMessageProjector:
             if kind is None:
                 return ()
         elif isinstance(event, ReasoningCompleted):
+            if not self._thinking.admitted:
+                return ()
             kind = _THINKING
         else:
             kind = _TEXT
@@ -517,12 +655,13 @@ class AnthropicMessageProjector:
 
     # -- shared block plumbing -------------------------------------------
 
-    @staticmethod
-    def _content_kind(kind: str) -> str | None:
+    def _content_kind(self, kind: str) -> str | None:
         if kind == TEXT_CONTENT_KIND:
             return _TEXT
         if kind == REASONING_CONTENT_KIND:
-            return _THINKING
+            # Unadmitted reasoning has no Anthropic block kind at all, so no
+            # content_block_start is ever opened for it.
+            return _THINKING if self._thinking.admitted else None
         return None
 
     def _ensure_content_block(
@@ -536,7 +675,12 @@ class AnthropicMessageProjector:
         self._blocks[key] = block
         self._order.append(block)
         content: ContentBlock = (
-            ThinkingBlock(thinking="") if kind == _THINKING else TextBlock(text="")
+            # The opening block carries no signature yet — the protocol
+            # delivers it later as a signature_delta. Saying ``""`` here is
+            # explicit, and only reachable once thinking has been admitted.
+            ThinkingBlock(thinking="", signature="")
+            if kind == _THINKING
+            else TextBlock(text="")
         )
         return block, (
             ContentBlockStartEvent(index=block.index, content_block=content),
@@ -547,11 +691,20 @@ class AnthropicMessageProjector:
             return ()
         block.closed = True
         emitted: list[AnthropicStreamEvent] = []
-        if block.kind == _THINKING and block.streamed_signature:
+        if block.kind == _THINKING:
+            # Signing happens at close, on the assembled text, and it either
+            # produces a real signature or raises. There is no branch here
+            # that closes a thinking block unsigned.
+            signature = self._thinking.sign(
+                message_id=self._message_id,
+                index=block.index,
+                thinking=block.streamed_text,
+            )
+            block.streamed_signature = signature.value
             emitted.append(
                 ContentBlockDeltaEvent(
                     index=block.index,
-                    delta=SignatureDeltaBody(signature=block.streamed_signature),
+                    delta=SignatureDeltaBody(signature=signature.value),
                 )
             )
         emitted.append(ContentBlockStopEvent(index=block.index))
@@ -565,6 +718,11 @@ class AnthropicMessageProjector:
 
     # -- usage and finality ----------------------------------------------
 
+    def _stamp_tier(self, usage: Usage) -> Usage:
+        """Record the lane that served the turn on every usage snapshot."""
+
+        return usage.model_copy(update={"service_tier": self._service_tier})
+
     def _absorb_usage(self, event: UsageUpdate) -> None:
         self._state.usage = Usage(
             input_tokens=event.input_tokens,
@@ -577,6 +735,7 @@ class AnthropicMessageProjector:
             cache_read_input_tokens=(
                 event.cached_input_tokens if event.cached_input_tokens else None
             ),
+            service_tier=self._service_tier,
         )
 
     def _cumulative_usage(self) -> MessageDeltaUsage:
@@ -617,4 +776,10 @@ class AnthropicMessageProjector:
         )
 
 
-__all__ = ["AnthropicMessageProjector", "ProjectionState"]
+__all__ = [
+    "AnthropicMessageProjector",
+    "ProjectionState",
+    "ThinkingProjection",
+    "ThinkingSignature",
+    "ThinkingSignatureOwner",
+]

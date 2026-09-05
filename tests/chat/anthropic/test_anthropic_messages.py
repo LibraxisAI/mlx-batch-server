@@ -506,6 +506,39 @@ class TestAnthropicMessages:
         assert response.usage is not None
         assert any(block.type == "text" for block in response.content)
 
+    @pytest.mark.parametrize("requested", ["auto", "standard_only"])
+    def test_messages_service_tier_reports_the_delivered_lane(
+        self, anthropic_client, requested
+    ):
+        """The official SDK reads the tier that actually served the turn.
+
+        ``auto`` and ``standard_only`` are both accepted here, and neither is
+        echoed back: the SDK's own ``usage.service_tier`` — a closed
+        ``standard | priority | batch`` set — reports ``standard``, the one
+        capacity lane this process runs.
+        """
+
+        response = anthropic_client.messages.create(
+            model=self.model_id,
+            max_tokens=self.max_tokens,
+            service_tier=requested,
+            messages=[{"role": "user", "content": "Hello!"}],
+        )
+
+        assert response.usage.service_tier == "standard"
+
+    def test_messages_carry_no_thinking_when_none_was_requested(self, anthropic_client):
+        """No thinking block appears on a turn that never asked for one."""
+
+        response = anthropic_client.messages.create(
+            model=self.thinking_model,
+            max_tokens=self.max_tokens,
+            messages=[{"role": "user", "content": "What is 15 + 27?"}],
+        )
+
+        assert all(block.type != "thinking" for block in response.content)
+        assert any(block.type == "text" for block in response.content)
+
     def test_messages_error_handling(self, anthropic_client):
         """Test error handling for invalid requests"""
         try:
