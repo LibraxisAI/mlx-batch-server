@@ -7,6 +7,7 @@ import argparse
 import ast
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -193,17 +194,36 @@ def _safe_fetch_checks(root: Path) -> tuple[SourceCheck, ...]:
 
 def _multirow_checks(root: Path) -> tuple[SourceCheck, ...]:
     path = root / "src/mlx_batch_server/runtime/fusion/qwen4_exp/model/tensor.py"
+    benchmark_path = root / "scripts/benchmark_live_responses.py"
     tree = _parse_or_none(path)
+    benchmark_tree = _parse_or_none(benchmark_path)
     runtime = _class_or_none(tree, "_Qwen4ExpTensorRuntime")
+    telemetry = _class_or_none(tree, "_TensorForwardTelemetry")
     execute = _method_or_none(runtime, "execute")
+    stats = _method_or_none(runtime, "stats")
     decode_batch = _method_or_none(runtime, "_decode_batch")
     decode_mtp_batch = _method_or_none(runtime, "_decode_mtp_batch")
     target_batch = _method_or_none(runtime, "_target_forward_batch")
     mtp_forward_batch = _method_or_none(runtime, "_mtp_forward_batch")
+    mtp_update_batch = _method_or_none(runtime, "_mtp_update_batch")
     mtp_singleton = _method_or_none(runtime, "_decode_mtp_one")
+    ar_singleton = _method_or_none(runtime, "_decode_ar_one")
+    target_singleton = _method_or_none(runtime, "_target_forward")
+    benchmark_main = _function_or_none(benchmark_tree, "_main")
+    benchmark_parser = _function_or_none(benchmark_tree, "_parser")
     execute_source = ast.unparse(execute) if execute is not None else ""
     decode_source = ast.unparse(decode_batch) if decode_batch is not None else ""
     mtp_source = ast.unparse(decode_mtp_batch) if decode_mtp_batch is not None else ""
+    stats_source = ast.unparse(stats) if stats is not None else ""
+    telemetry_source = ast.unparse(telemetry) if telemetry is not None else ""
+    benchmark_main_source = (
+        ast.unparse(benchmark_main) if benchmark_main is not None else ""
+    )
+    benchmark_parser_source = (
+        ast.unparse(benchmark_parser) if benchmark_parser is not None else ""
+    )
+    tensor_source = _read_or_empty(path)
+    benchmark_file_source = _read_or_empty(benchmark_path)
     scatter = _function_or_none(tree, "_scatter_batch_cache")
     scatter_source = ast.unparse(scatter) if scatter is not None else ""
     model_calls = _self_model_calls(target_batch)
@@ -234,7 +254,8 @@ def _multirow_checks(root: Path) -> tuple[SourceCheck, ...]:
             "one-tensor-forward",
             len(model_calls) == 1
             and tensor_batch_builders >= 1
-            and "self._target_forward_batch(" in decode_source,
+            and "self._target_forward_batch(" in decode_source
+            and not _named_call_inside_loop(target_batch, "model"),
             "multirow decode does not build a batch and issue exactly one model forward",
         ),
         SourceCheck(
@@ -253,6 +274,7 @@ def _multirow_checks(root: Path) -> tuple[SourceCheck, ...]:
             mtp_forward_batch is not None
             and len(draft_model_calls) == 1
             and _call_inside_loop(decode_mtp_batch, "_mtp_forward_batch")
+            and not _named_call_inside_loop(mtp_forward_batch, "mtp_forward")
             and "mx.concatenate" in ast.unparse(mtp_forward_batch)
             and "mx.stack" in ast.unparse(mtp_forward_batch),
             "recursive draft depths are not issued as one batched MTP model call",
@@ -284,6 +306,122 @@ def _multirow_checks(root: Path) -> tuple[SourceCheck, ...]:
             and _self_method_call_count(decode_mtp_batch, "_mtp_update_batch") == 1
             and "history_depth" in mtp_source,
             "verify captures, stochastic corrections, or MTP history are not scattered by row",
+        ),
+        SourceCheck(
+            "tensor-forward-telemetry-schema",
+            telemetry is not None
+            and "qwen4-exp.tensor-forward.v1" in tensor_source
+            and "per_tensor_runtime_instance" in tensor_source
+            and all(
+                phase in tensor_source
+                for phase in (
+                    "target_decode",
+                    "mtp_draft",
+                    "target_verify",
+                    "target_correction",
+                    "mtp_history_update",
+                )
+            )
+            and "tensor_forward" in stats_source
+            and "runtime_instance_id" in telemetry_source
+            and "completed_calls_by_shape" in tensor_source,
+            "tensor stats lack the versioned per-runtime physical-forward schema",
+        ),
+        SourceCheck(
+            "completed-physical-forward-recorders",
+            _calls_are_ordered(
+                target_batch,
+                ("model", "eval", "_scatter_batch_cache", "_record_tensor_forward"),
+            )
+            and _call_has_literal_argument(
+                target_batch,
+                "_record_tensor_forward",
+                None,
+            )
+            and _calls_are_ordered(
+                mtp_forward_batch,
+                (
+                    "mtp_forward",
+                    "eval",
+                    "_scatter_batch_cache",
+                    "_record_tensor_forward",
+                ),
+            )
+            and _call_has_literal_argument(
+                mtp_forward_batch,
+                "_record_tensor_forward",
+                "mtp_draft",
+            )
+            and _calls_are_ordered(
+                mtp_update_batch,
+                (
+                    "mtp_update_cache",
+                    "eval",
+                    "_scatter_batch_cache",
+                    "_record_tensor_forward",
+                ),
+            )
+            and _call_has_literal_argument(
+                mtp_update_batch,
+                "_record_tensor_forward",
+                "mtp_history_update",
+            )
+            and not _named_call_inside_loop(mtp_update_batch, "mtp_update_cache")
+            and _calls_are_ordered(
+                decode_mtp_batch,
+                ("commit_verified_window", "_record_tensor_forward"),
+            )
+            and _call_has_literal_argument(
+                decode_mtp_batch,
+                "_record_tensor_forward",
+                "target_verify",
+            )
+            and _call_with_keyword_value(
+                decode_mtp_batch,
+                "_target_forward_batch",
+                "telemetry_phase",
+                "target_correction",
+            )
+            and _calls_are_ordered(
+                target_singleton,
+                ("model", "eval", "_record_tensor_forward"),
+            )
+            and all(
+                _call_has_literal_argument(
+                    mtp_singleton,
+                    "_record_tensor_forward",
+                    phase,
+                )
+                for phase in ("mtp_draft", "target_verify", "mtp_history_update")
+            )
+            and _call_with_keyword_value(
+                mtp_singleton,
+                "_target_forward",
+                "telemetry_phase",
+                "target_correction",
+            )
+            and _calls_are_ordered(
+                ar_singleton,
+                ("mtp_update_cache", "eval", "_record_tensor_forward"),
+            )
+            and _call_has_literal_argument(
+                ar_singleton,
+                "_record_tensor_forward",
+                "mtp_history_update",
+            ),
+            "physical target/MTP completion recorders are missing, early, or row-serial",
+        ),
+        SourceCheck(
+            "live-histogram-delta-requirements",
+            "--require-target-batch-rows" in benchmark_parser_source
+            and "--require-mtp-batch-rows" in benchmark_parser_source
+            and "same_runtime_instance" in benchmark_file_source
+            and "completed_calls_by_shape" in benchmark_file_source
+            and "_has_positive_batch_delta" in benchmark_file_source
+            and "_tensor_forward_requirements(" in benchmark_main_source
+            and "tensor_forward_before" in benchmark_main_source
+            and "tensor_forward_after" in benchmark_main_source,
+            "live benchmark lacks same-instance positive tensor histogram delta gates",
         ),
     )
 
@@ -531,6 +669,72 @@ def _call_inside_loop(
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "self"
             for node in ast.walk(loop)
+        ):
+            return True
+    return False
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    return None
+
+
+def _named_call_inside_loop(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    name: str,
+) -> bool:
+    if method is None:
+        return False
+    return any(
+        _call_name(call) == name
+        for loop in ast.walk(method)
+        if isinstance(loop, ast.For | ast.While | ast.comprehension)
+        for call in ast.walk(loop)
+        if isinstance(call, ast.Call)
+    )
+
+
+def _calls_are_ordered(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    names: tuple[str, ...],
+) -> bool:
+    if method is None:
+        return False
+    positions = {
+        name: min(
+            (
+                node.lineno
+                for node in ast.walk(method)
+                if isinstance(node, ast.Call) and _call_name(node) == name
+            ),
+            default=-1,
+        )
+        for name in names
+    }
+    return all(positions[name] >= 0 for name in names) and all(
+        positions[left] < positions[right] for left, right in pairwise(names)
+    )
+
+
+def _call_has_literal_argument(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    name: str,
+    value: str | None,
+) -> bool:
+    if method is None:
+        return False
+    for node in ast.walk(method):
+        if not isinstance(node, ast.Call) or _call_name(node) != name:
+            continue
+        if value is None:
+            return True
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == value
         ):
             return True
     return False

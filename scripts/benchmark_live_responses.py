@@ -29,6 +29,13 @@ TERMINAL_EVENTS = {
     "response.incomplete",
     "response.cancelled",
 }
+TENSOR_FORWARD_SCHEMA = "qwen4-exp.tensor-forward.v1"
+TARGET_FORWARD_PHASES = (
+    "target_decode",
+    "target_verify",
+    "target_correction",
+)
+MTP_FORWARD_PHASES = ("mtp_draft", "mtp_history_update")
 
 
 @dataclass(frozen=True)
@@ -256,6 +263,201 @@ def _mtp_counters(snapshot: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
+def _tensor_forward_counters(snapshot: dict[str, Any]) -> dict[str, Any]:
+    try:
+        telemetry = snapshot["ready"]["role_runtime"]["runtime_stats"]["executor"][
+            "driver"
+        ]["tensor_forward"]
+    except (KeyError, TypeError):
+        return {}
+    return telemetry if isinstance(telemetry, dict) else {}
+
+
+def _counter(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _shape_rows(shape: str) -> int | None:
+    batch, separator, sequence = shape.partition("x")
+    if separator != "x" or not batch.isdigit() or not sequence.isdigit():
+        return None
+    batch_rows = int(batch)
+    sequence_length = int(sequence)
+    if batch_rows < 1 or sequence_length < 1:
+        return None
+    return batch_rows
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("batch row requirements must be positive")
+    return parsed
+
+
+def _tensor_forward_phase_delta(
+    phase: str,
+    before: object,
+    after: object,
+    errors: list[str],
+) -> dict[str, Any]:
+    phase_before = before if isinstance(before, dict) else {}
+    phase_after = after if isinstance(after, dict) else {}
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        errors.append(f"tensor forward phase is missing: {phase}")
+
+    counters: dict[str, int] = {}
+    for name in ("completed_calls", "completed_rows", "max_completed_rows"):
+        before_value = _counter(phase_before.get(name))
+        after_value = _counter(phase_after.get(name))
+        if before_value is None or after_value is None:
+            errors.append(f"tensor forward counter is invalid: {phase}.{name}")
+            counters[name] = 0
+            continue
+        delta = after_value - before_value
+        if name != "max_completed_rows" and delta < 0:
+            errors.append(f"tensor forward counter regressed: {phase}.{name}")
+        if name == "max_completed_rows" and after_value < before_value:
+            errors.append(f"tensor forward maximum regressed: {phase}.{name}")
+        counters[name] = delta
+
+    shapes_before = phase_before.get("completed_calls_by_shape")
+    shapes_after = phase_after.get("completed_calls_by_shape")
+    if not isinstance(shapes_before, dict) or not isinstance(shapes_after, dict):
+        errors.append(f"tensor forward histogram is missing: {phase}")
+        shapes_before = {}
+        shapes_after = {}
+    histogram: dict[str, int] = {}
+    for shape in sorted(set(shapes_before) | set(shapes_after)):
+        if not isinstance(shape, str) or _shape_rows(shape) is None:
+            errors.append(f"tensor forward shape is not canonical BxS: {shape!r}")
+            continue
+        before_value = _counter(shapes_before.get(shape, 0))
+        after_value = _counter(shapes_after.get(shape, 0))
+        if before_value is None or after_value is None:
+            errors.append(f"tensor forward histogram count is invalid: {phase}.{shape}")
+            continue
+        delta = after_value - before_value
+        if delta < 0:
+            errors.append(f"tensor forward histogram regressed: {phase}.{shape}")
+        histogram[shape] = delta
+    return {**counters, "completed_calls_by_shape": histogram}
+
+
+def _tensor_forward_delta(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, Any]:
+    errors: list[str] = []
+    before_schema = before.get("schema")
+    after_schema = after.get("schema")
+    if before_schema != TENSOR_FORWARD_SCHEMA or after_schema != TENSOR_FORWARD_SCHEMA:
+        errors.append(f"tensor forward schema must be {TENSOR_FORWARD_SCHEMA}")
+    before_instance = before.get("runtime_instance_id")
+    after_instance = after.get("runtime_instance_id")
+    same_instance = (
+        isinstance(before_instance, str)
+        and bool(before_instance)
+        and before_instance == after_instance
+    )
+    if not same_instance:
+        errors.append("tensor runtime instance changed between snapshots")
+
+    before_phases = before.get("phases")
+    after_phases = after.get("phases")
+    if not isinstance(before_phases, dict) or not isinstance(after_phases, dict):
+        errors.append("tensor forward phase maps are missing")
+        before_phases = {}
+        after_phases = {}
+
+    phase_deltas: dict[str, dict[str, Any]] = {}
+    for phase in (*TARGET_FORWARD_PHASES, *MTP_FORWARD_PHASES):
+        phase_deltas[phase] = _tensor_forward_phase_delta(
+            phase,
+            before_phases.get(phase),
+            after_phases.get(phase),
+            errors,
+        )
+
+    return {
+        "schema": TENSOR_FORWARD_SCHEMA,
+        "runtime_instance_id": after_instance,
+        "same_runtime_instance": same_instance,
+        "valid": not errors,
+        "errors": errors,
+        "phases": phase_deltas,
+    }
+
+
+def _has_positive_batch_delta(
+    phases: dict[str, Any],
+    names: tuple[str, ...],
+    minimum_rows: int,
+) -> bool:
+    for name in names:
+        phase = phases.get(name)
+        if not isinstance(phase, dict):
+            continue
+        histogram = phase.get("completed_calls_by_shape")
+        if not isinstance(histogram, dict):
+            continue
+        for shape, count in histogram.items():
+            rows = _shape_rows(shape) if isinstance(shape, str) else None
+            count_value = _counter(count)
+            if (
+                rows is not None
+                and rows >= minimum_rows
+                and count_value is not None
+                and count_value > 0
+            ):
+                return True
+    return False
+
+
+def _tensor_forward_requirements(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    *,
+    target_rows: int | None,
+    mtp_rows: int | None,
+) -> dict[str, Any]:
+    delta = _tensor_forward_delta(before, after)
+    required = target_rows is not None or mtp_rows is not None
+    if not required:
+        return {
+            "required": False,
+            "required_target_batch_rows": None,
+            "required_mtp_batch_rows": None,
+            "passed": True,
+            "errors": [],
+            "delta": delta,
+        }
+    errors = list(delta["errors"])
+    phases = delta["phases"]
+    if target_rows is not None and not _has_positive_batch_delta(
+        phases,
+        TARGET_FORWARD_PHASES,
+        target_rows,
+    ):
+        errors.append(
+            f"no positive target forward histogram delta reached B>={target_rows}"
+        )
+    if mtp_rows is not None and not _has_positive_batch_delta(
+        phases,
+        MTP_FORWARD_PHASES,
+        mtp_rows,
+    ):
+        errors.append(f"no positive MTP forward histogram delta reached B>={mtp_rows}")
+    return {
+        "required": True,
+        "required_target_batch_rows": target_rows,
+        "required_mtp_batch_rows": mtp_rows,
+        "passed": not errors,
+        "errors": errors,
+        "delta": delta,
+    }
+
+
 async def _main(args: argparse.Namespace) -> int:
     base_url = args.base_url.rstrip("/")
     headers = {"Content-Type": "application/json"}
@@ -335,6 +537,15 @@ async def _main(args: argparse.Namespace) -> int:
             )
         after = await _snapshot(client, base_url)
 
+    tensor_before = _tensor_forward_counters(before)
+    tensor_after = _tensor_forward_counters(after)
+    tensor_requirements = _tensor_forward_requirements(
+        tensor_before,
+        tensor_after,
+        target_rows=args.require_target_batch_rows,
+        mtp_rows=args.require_mtp_batch_rows,
+    )
+
     result = {
         "schema_version": "mlx-batch-server.live-responses-benchmark.v1",
         "created_at_unix": time.time(),
@@ -348,11 +559,16 @@ async def _main(args: argparse.Namespace) -> int:
             "reasoning_effort": args.reasoning_effort,
             "max_output_tokens": args.max_output_tokens,
             "usage_source": "terminal_responses_event",
+            "require_target_batch_rows": args.require_target_batch_rows,
+            "require_mtp_batch_rows": args.require_mtp_batch_rows,
         },
         "runtime_before": before,
         "runtime_after": after,
         "mtp_before": _mtp_counters(before),
         "mtp_after": _mtp_counters(after),
+        "tensor_forward_before": tensor_before,
+        "tensor_forward_after": tensor_after,
+        "tensor_forward_requirements": tensor_requirements,
         "summaries": summaries,
         "samples": [asdict(sample) for sample in samples],
     }
@@ -364,6 +580,7 @@ async def _main(args: argparse.Namespace) -> int:
     return (
         0
         if all(sample.status == "completed" and sample.exact for sample in samples)
+        and tensor_requirements["passed"]
         else 1
     )
 
@@ -380,6 +597,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-effort", default="off")
     parser.add_argument("--max-output-tokens", type=int, default=96)
     parser.add_argument("--timeout", type=float, default=240.0)
+    parser.add_argument("--require-target-batch-rows", type=_positive_int)
+    parser.add_argument("--require-mtp-batch-rows", type=_positive_int)
     parser.add_argument("--output", type=Path)
     return parser
 
