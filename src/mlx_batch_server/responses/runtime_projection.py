@@ -8,10 +8,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..runtime.events import (
+    HOSTED_CALL_ITEM_KIND,
     REASONING_CONTENT_KIND,
     TEXT_CONTENT_KIND,
     ContentPartCompleted,
     ContentPartStarted,
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallResult,
+    HostedCallStarted,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -33,6 +38,7 @@ from .controller import PreparedResponse
 from .transport import (
     ResponseSnapshotIdentity,
     build_response_snapshot,
+    render_hosted_call_item,
     request_settings_from,
 )
 
@@ -106,6 +112,8 @@ class _ItemState:
     done_arguments: str | None = None
     tool_completed: bool = False
     completion_status: str | None = None
+    hosted_status: str | None = None
+    hosted_completion: OutputItemCompleted | None = None
 
 
 class RuntimeResponseProjection:
@@ -209,6 +217,20 @@ class RuntimeResponseProjection:
             self._append_tool(event)
         elif isinstance(event, ToolCompleted):
             self._complete_tool(event)
+        elif isinstance(event, HostedCallStarted):
+            item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+            if event.tool_name != item.name:
+                raise RuntimeProjectionError(
+                    "hosted call tool name does not match its output item"
+                )
+        elif isinstance(event, HostedCallProgress):
+            self._require_hosted_item(event.index, event.item_id, event.call_id)
+        elif isinstance(event, HostedCallResult):
+            # Lifecycle acceptance only: the payload never enters projection
+            # state, keeping the terminal envelope free of fetched content.
+            self._require_hosted_item(event.index, event.item_id, event.call_id)
+        elif isinstance(event, HostedCallCompleted):
+            self._complete_hosted_call(event)
         elif isinstance(event, UsageUpdate):
             self._accept_usage(event)
         elif isinstance(event, ProgressUpdate):
@@ -264,7 +286,21 @@ class RuntimeResponseProjection:
             raise RuntimeProjectionError("output item has an open content part")
         if item.kind == "function_call" and not item.tool_completed:
             raise RuntimeProjectionError("function-call output item has no done event")
-        if item.kind in {"message", "reasoning"}:
+        if item.kind == HOSTED_CALL_ITEM_KIND:
+            if item.hosted_status is None:
+                raise RuntimeProjectionError(
+                    "hosted_call completion requires its receipt event first"
+                )
+            if event.status != item.hosted_status:
+                raise RuntimeProjectionError(
+                    "hosted_call completion status does not match its receipt"
+                )
+            if event.call_id != item.call_id or event.name != item.name:
+                raise RuntimeProjectionError(
+                    "hosted_call completion does not match its call identity"
+                )
+            item.hosted_completion = event
+        elif item.kind in {"message", "reasoning"}:
             completed_text = "".join(
                 content.done_text or "" for content in item.contents.values()
             )
@@ -395,6 +431,33 @@ class RuntimeResponseProjection:
         item.done_arguments = event.arguments
         item.tool_completed = True
 
+    def _require_hosted_item(
+        self,
+        index: int,
+        item_id: str,
+        call_id: str,
+    ) -> _ItemState:
+        item = self._require_open_item(index, item_id)
+        if item.kind != HOSTED_CALL_ITEM_KIND:
+            raise RuntimeProjectionError(
+                "hosted call events require a hosted_call output item"
+            )
+        if call_id != item.call_id:
+            raise RuntimeProjectionError(
+                "hosted call id does not match its output item"
+            )
+        return item
+
+    def _complete_hosted_call(self, event: HostedCallCompleted) -> None:
+        item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+        if event.tool_name != item.name:
+            raise RuntimeProjectionError(
+                "hosted call tool name does not match its output item"
+            )
+        if item.hosted_status is not None:
+            raise RuntimeProjectionError("hosted call receipt already recorded")
+        item.hosted_status = event.status
+
     def _accept_usage(self, event: UsageUpdate) -> None:
         previous = self._usage
         if previous is not None and (
@@ -455,6 +518,13 @@ class RuntimeResponseProjection:
             output=[
                 self._project_item(self._items[index])
                 for index in range(len(self._items))
+                # A hosted call interrupted before its sealed completion has
+                # no proven action to render; like the live snapshot, the
+                # terminal envelope omits it rather than fabricating one.
+                if not (
+                    self._items[index].kind == HOSTED_CALL_ITEM_KIND
+                    and self._items[index].hosted_completion is None
+                )
             ],
             usage=self._project_usage(),
             error=error,
@@ -464,6 +534,17 @@ class RuntimeResponseProjection:
 
     def _project_item(self, item: _ItemState) -> dict[str, Any]:
         status = item.completion_status or "incomplete"
+        if item.kind == HOSTED_CALL_ITEM_KIND:
+            completion = item.hosted_completion
+            if completion is None or completion.action is None:
+                raise RuntimeProjectionError(
+                    "hosted_call output item has no sealed completion to render"
+                )
+            return render_hosted_call_item(
+                item.item_id,
+                completion.status,
+                completion.action,
+            )
         if item.kind == "message":
             return {
                 "id": item.item_id,
