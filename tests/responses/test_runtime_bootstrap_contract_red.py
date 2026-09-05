@@ -36,6 +36,7 @@ from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.role_manifest import packaged_role_manifest_path
 from mlx_batch_server.runtime.roles import RoleDirectory
 from mlx_batch_server.runtime.service import RuntimeStartService
+from mlx_batch_server.vision.input import MediaSourceField
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE_MANIFEST = packaged_role_manifest_path()
@@ -97,13 +98,19 @@ class _DormantLegacyProvider:
         raise AssertionError("composition must not acquire legacy models")
 
 
-def _factories() -> (
-    tuple[
-        dict[BackendKind, _DormantBackendFactory],
-        _DormantBackendFactory,
-        _DormantBackendFactory,
-    ]
-):
+class _DormantFileIdResolver:
+    async def resolve(self, request: object) -> Any:
+        raise AssertionError("composition must not resolve file identities")
+
+
+_FactoryBundle = tuple[
+    dict[BackendKind, _DormantBackendFactory],
+    _DormantBackendFactory,
+    _DormantBackendFactory,
+]
+
+
+def _factories() -> _FactoryBundle:
     fused = _DormantBackendFactory()
     legacy = _DormantBackendFactory()
     return (
@@ -258,6 +265,67 @@ def test_role_composition_places_only_the_selected_backend_behind_manager() -> N
     assert execution_factory.calls == []
 
 
+def test_default_fused_composition_publishes_exact_inert_media_sources() -> None:
+    execution_factory = _DormantExecutionFactory()
+
+    receipt = compose_role_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        execution_factory=execution_factory,
+    )
+
+    assert receipt.responses.media_source_fields == {
+        RoleName.MAIN: frozenset(
+            {
+                MediaSourceField.IMAGE_URL,
+                MediaSourceField.IMAGE_BASE64,
+                MediaSourceField.FILE_DATA,
+            }
+        )
+    }
+    assert execution_factory.calls == []
+    with pytest.raises(TypeError):
+        receipt.responses.media_source_fields[RoleName.MAIN] = frozenset()  # type: ignore[index]
+
+
+def test_fused_media_receipt_comes_only_from_canonical_composition_inputs() -> None:
+    resolver = _DormantFileIdResolver()
+    receipt = compose_role_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        allowed_url_origins=("https://media.example",),
+        file_id_resolver=resolver,
+        execution_factory=_DormantExecutionFactory(),
+    )
+
+    assert receipt.responses.media_source_fields[RoleName.MAIN] == frozenset(
+        {
+            MediaSourceField.IMAGE_URL,
+            MediaSourceField.IMAGE_BASE64,
+            MediaSourceField.FILE_DATA,
+            MediaSourceField.FILE_URL,
+            MediaSourceField.FILE_ID,
+        }
+    )
+
+
+def test_injected_preparer_and_generic_composition_fail_closed_to_text_only() -> None:
+    injected = compose_role_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        request_preparer=_DormantRequestPreparer(),
+        execution_factory=_DormantExecutionFactory(),
+    )
+    generic = compose_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        backend_factories={BackendKind.FUSED_MTP_MLX: _DormantBackendFactory()},
+    )
+
+    assert injected.responses.media_source_fields == {RoleName.MAIN: frozenset()}
+    assert generic.media_source_fields == {RoleName.MAIN: frozenset()}
+
+
 def test_legacy_role_composition_does_not_construct_the_fused_graph() -> None:
     legacy_provider = _DormantLegacyProvider()
 
@@ -275,6 +343,7 @@ def test_legacy_role_composition_does_not_construct_the_fused_graph() -> None:
     assert receipt.responses.runtime_manager._factories == {
         BackendKind.LEGACY_MLX: receipt.legacy_backend,
     }
+    assert receipt.responses.media_source_fields == {RoleName.VISION: frozenset()}
 
 
 @pytest.mark.asyncio

@@ -24,12 +24,13 @@ not silently allowed through.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
 
 from mlx_batch_server.runtime.contracts import RoleName
+from mlx_batch_server.vision.input import MediaSourceField
 
 from .anthropic_schema import (
     AnthropicTool,
@@ -108,6 +109,7 @@ class AnthropicCapabilityProfile:
     backend: str | None
     declared_capabilities: tuple[str, ...]
     fields: Mapping[str, FieldClassification]
+    media_source_fields: frozenset[MediaSourceField] = field(default_factory=frozenset)
 
     def classification(self, key: str, wire_path: str) -> FieldClassification:
         entry = self.fields.get(key)
@@ -154,6 +156,7 @@ class RuntimeRoleReceipt:
     aliases: Mapping[str, str]
     capabilities: Mapping[str, tuple[str, ...]]
     backends: Mapping[str, str]
+    media_source_fields: Mapping[str, frozenset[MediaSourceField]]
 
 
 def role_receipt(runtime: object | None) -> RuntimeRoleReceipt | None:
@@ -189,16 +192,40 @@ def role_receipt(runtime: object | None) -> RuntimeRoleReceipt | None:
         )
         backend = getattr(spec, "backend", None)
         backends[role] = _role_value(backend) if backend is not None else ""
+    media_source_fields = _media_source_receipt(
+        getattr(receipt, "media_source_fields", None)
+    )
     return RuntimeRoleReceipt(
         aliases=MappingProxyType(aliases),
         capabilities=MappingProxyType(capabilities),
         backends=MappingProxyType(backends),
+        media_source_fields=MappingProxyType(media_source_fields),
     )
 
 
 def _role_value(role: object) -> str:
     value = getattr(role, "value", role)
     return str(value).strip().lower()
+
+
+def _media_source_receipt(
+    raw_receipt: object,
+) -> dict[str, frozenset[MediaSourceField]]:
+    """Snapshot a typed composition receipt without probing runtime objects."""
+
+    if not isinstance(raw_receipt, Mapping):
+        return {}
+    sources: dict[str, frozenset[MediaSourceField]] = {}
+    for raw_role, raw_fields in raw_receipt.items():
+        role = _role_value(raw_role)
+        try:
+            sources[role] = frozenset(MediaSourceField(field) for field in raw_fields)
+        except (TypeError, ValueError) as error:
+            raise AnthropicAPIError(
+                f"runtime media-source receipt for role {role!r} is invalid",
+                error_type="api_error",
+            ) from error
+    return sources
 
 
 def resolve_capability_profile(
@@ -224,6 +251,7 @@ def resolve_capability_profile(
         role = DETACHED_ROLE
         declared = _DETACHED_CAPABILITIES
         backend = None
+        media_source_fields: frozenset[MediaSourceField] = frozenset()
     else:
         resolved = receipt.aliases.get(requested.casefold())
         if resolved is None:
@@ -234,6 +262,7 @@ def resolve_capability_profile(
         role = resolved
         declared = receipt.capabilities.get(resolved, ())
         backend = receipt.backends.get(resolved) or None
+        media_source_fields = receipt.media_source_fields.get(resolved, frozenset())
 
     if role not in _CANONICAL_ROLES:
         raise AnthropicAPIError(
@@ -247,7 +276,8 @@ def resolve_capability_profile(
         role=role,
         backend=backend,
         declared_capabilities=tuple(declared),
-        fields=_field_table(declared),
+        media_source_fields=media_source_fields,
+        fields=_field_table(declared, media_source_fields),
     )
 
 
@@ -345,19 +375,21 @@ _BASE_FIELDS: Final[tuple[FieldClassification, ...]] = (
     ),
     _unsupported(
         "content.image",
-        _W3_AC,
-        "No media resolution is bound to this protocol surface; the request "
-        "is refused rather than answered from text alone.",
+        "canonical media-source receipt",
+        "Image support is source-specific; this coarse key never grants all "
+        "image source forms.",
     ),
     _unsupported(
         "content.document",
-        _W3_AC,
-        "Document input has no rich-input owner on this protocol surface.",
+        "canonical media-source receipt",
+        "Document support is source-specific; this coarse key never grants all "
+        "document source forms.",
     ),
-    _unsupported(
+    _normalized(
         "content.search_result",
         _W3_AC,
-        "Search-result input has no rich-input owner on this protocol surface.",
+        "caller-supplied provenance is delimited as untrusted input_text and "
+        "its URL is never interpreted as media or fetch authorization",
     ),
     _unsupported(
         "content.server_tool_use",
@@ -419,15 +451,25 @@ _TOOLS_WITHOUT_ROLE_SUPPORT: Final[tuple[FieldClassification, ...]] = (
     ),
 )
 
+_MEDIA_CLASSIFICATIONS: Final[tuple[tuple[str, MediaSourceField], ...]] = (
+    ("content.image.image_url", MediaSourceField.IMAGE_URL),
+    ("content.image.image_base64", MediaSourceField.IMAGE_BASE64),
+    ("content.image.file_id", MediaSourceField.FILE_ID),
+    ("content.document.file_url", MediaSourceField.FILE_URL),
+    ("content.document.file_data", MediaSourceField.FILE_DATA),
+    ("content.document.file_id", MediaSourceField.FILE_ID),
+)
+
 
 def _field_table(
     declared: Sequence[str],
+    media_source_fields: frozenset[MediaSourceField],
 ) -> Mapping[str, FieldClassification]:
     """Build the immutable classification table for one role.
 
-    The only axis that varies today is the tool capability the signed role
-    manifest declares. Nothing here reads the manifest a second time: the
-    declared tuple arrives on the resolver receipt.
+    The tool axis comes from the signed role manifest. Rich media varies only
+    by the exact source fields published by the composition receipt. Nothing
+    here reads runtime state or inspects a preparer.
     """
 
     table: dict[str, FieldClassification] = {entry.key: entry for entry in _BASE_FIELDS}
@@ -435,6 +477,20 @@ def _field_table(
     if "tools" not in {str(item).strip().lower() for item in declared}:
         for entry in _TOOLS_WITHOUT_ROLE_SUPPORT:
             table[entry.key] = entry
+    for key, source in _MEDIA_CLASSIFICATIONS:
+        if source in media_source_fields:
+            table[key] = _implemented(key, _W3_AC)
+        else:
+            table[key] = _unsupported(
+                key,
+                "canonical media-source receipt",
+                f"The selected runtime role does not accept {source.value!r}.",
+            )
+    table["content.document.unsupported_source"] = _unsupported(
+        "content.document.unsupported_source",
+        _W3_AC,
+        "This document source type has no exact canonical file ABI.",
+    )
     return MappingProxyType(table)
 
 
@@ -563,7 +619,10 @@ def _message(message: InputMessage, path: str) -> Iterator[tuple[str, str]]:
         return
     for index, block in enumerate(message.content):
         block_path = f"{path}.content.{index}"
-        yield _block_key(block), f"{block_path}.type"
+        if isinstance(block, RequestImageBlock | RequestDocumentBlock):
+            yield _direct_media_classification(block, block_path)
+        else:
+            yield _block_key(block), f"{block_path}.type"
         yield from _cache_control(block, block_path)
         if isinstance(block, RequestToolResultBlock):
             # The nested tool_result ABI keeps its W2 owner; preflight only
@@ -590,6 +649,33 @@ def _nested_tool_result(
 def _cache_control(block: object, path: str) -> Iterator[tuple[str, str]]:
     if getattr(block, "cache_control", None) is not None:
         yield "cache_control", f"{path}.cache_control"
+
+
+def _direct_media_classification(
+    block: RequestImageBlock | RequestDocumentBlock,
+    path: str,
+) -> tuple[str, str]:
+    """Name only the source field the caller supplied, at its wire path."""
+
+    source_type = block.source.type
+    if isinstance(block, RequestImageBlock):
+        fields = {
+            "url": ("content.image.image_url", "url"),
+            "base64": ("content.image.image_base64", "data"),
+            "file": ("content.image.file_id", "file_id"),
+        }
+        key, field = fields[source_type]
+    else:
+        fields = {
+            "url": ("content.document.file_url", "url"),
+            "base64": ("content.document.file_data", "data"),
+            "file": ("content.document.file_id", "file_id"),
+        }
+        selected = fields.get(source_type)
+        if selected is None:
+            return "content.document.unsupported_source", f"{path}.source.type"
+        key, field = selected
+    return key, f"{path}.source.{field}"
 
 
 #: Every represented request-content block maps to exactly one classification

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from ..chat.anthropic.runtime_source import RuntimeAnthropicTurnSource
@@ -73,6 +74,7 @@ class RuntimeCompositionReceipt:
     process_port: int
     public_aliases: Mapping[str, RoleName]
     role_directory: RoleDirectory
+    media_source_fields: Mapping[RoleName, frozenset[MediaSourceField]]
     readiness_service: ReadinessService
     admission_controller: AdmissionController
     runtime_manager: RuntimeManager
@@ -161,6 +163,7 @@ def compose_responses_runtime(
         backend_factories=backend_factories,
         public_aliases=public_aliases,
         build_receipt=build_receipt,
+        media_source_fields=frozenset(),
     )
 
 
@@ -179,6 +182,7 @@ def _compose_responses_runtime(
     backend_factories: Mapping[BackendKind | str, BackendFactory],
     public_aliases: Mapping[str, RoleName | str] | None,
     build_receipt: BuildReceipt | None,
+    media_source_fields: frozenset[MediaSourceField],
 ) -> RuntimeCompositionReceipt:
     topology = manifest.role_directory()
     process_spec = topology.resolve(process_role)
@@ -247,6 +251,9 @@ def _compose_responses_runtime(
         process_port=process_spec.port,
         public_aliases=resolver.aliases,
         role_directory=roles,
+        media_source_fields=MappingProxyType(
+            {process_spec.name: frozenset(media_source_fields)}
+        ),
         readiness_service=readiness,
         admission_controller=admission,
         runtime_manager=manager,
@@ -302,15 +309,28 @@ def compose_role_responses_runtime(
     qwen4_exp: Qwen4ExpBackendCompositionReceipt | None = None
     resolved_legacy_provider: LegacyPortProvider | None = None
     legacy_backend: LegacyMlxBackend | None = None
+    media_source_fields: frozenset[MediaSourceField] = frozenset()
 
     if process_spec.backend is BackendKind.FUSED_MTP_MLX:
         if legacy_provider is not None:
             raise ValueError("a fused process cannot register a legacy provider")
         origins = tuple(allowed_url_origins)
-        resolved_preparer = request_preparer or _default_qwen4_exp_preparer(
-            allowed_url_origins=origins,
-            file_id_resolver=file_id_resolver,
-        )
+        if request_preparer is None:
+            media_capabilities = _default_qwen4_exp_capabilities(
+                allowed_url_origins=origins,
+                file_id_resolver=file_id_resolver,
+            )
+            resolved_preparer = _default_qwen4_exp_preparer(
+                allowed_url_origins=origins,
+                file_id_resolver=file_id_resolver,
+                capabilities=media_capabilities,
+            )
+            media_source_fields = media_capabilities.accepted_sources
+        else:
+            # An injected preparer is an opaque port. Without a separately
+            # trusted composition receipt, inspecting its private resolver or
+            # planner would invent capability truth, so it stays text-only.
+            resolved_preparer = request_preparer
         if not isinstance(resolved_preparer, Qwen4ExpRequestPreparerPort):
             raise TypeError("request_preparer must satisfy Qwen4ExpRequestPreparerPort")
         qwen4_exp = compose_qwen4_exp_backend(
@@ -344,6 +364,7 @@ def compose_role_responses_runtime(
         backend_factories=factories,
         public_aliases=public_aliases,
         build_receipt=build_receipt,
+        media_source_fields=media_source_fields,
     )
     return RoleRuntimeCompositionReceipt(
         responses=responses,
@@ -357,7 +378,25 @@ def _default_qwen4_exp_preparer(
     *,
     allowed_url_origins: tuple[str, ...],
     file_id_resolver: FileIdResolverPort | None,
+    capabilities: MultimodalInputCapabilities,
 ) -> Qwen4ExpRequestPreparer:
+    resolver = compose_source_media_resolver(
+        allowed_url_origins=allowed_url_origins,
+        file_id_resolver=file_id_resolver,
+    )
+    return Qwen4ExpRequestPreparer(
+        resolver=resolver,
+        capabilities=capabilities,
+    )
+
+
+def _default_qwen4_exp_capabilities(
+    *,
+    allowed_url_origins: tuple[str, ...],
+    file_id_resolver: FileIdResolverPort | None,
+) -> MultimodalInputCapabilities:
+    """Derive the default preparer's exact source contract from trusted inputs."""
+
     accepted_sources = {
         MediaSourceField.IMAGE_URL,
         MediaSourceField.IMAGE_BASE64,
@@ -367,16 +406,7 @@ def _default_qwen4_exp_preparer(
         accepted_sources.add(MediaSourceField.FILE_URL)
     if file_id_resolver is not None:
         accepted_sources.add(MediaSourceField.FILE_ID)
-    resolver = compose_source_media_resolver(
-        allowed_url_origins=allowed_url_origins,
-        file_id_resolver=file_id_resolver,
-    )
-    return Qwen4ExpRequestPreparer(
-        resolver=resolver,
-        capabilities=MultimodalInputCapabilities(
-            accepted_sources=frozenset(accepted_sources)
-        ),
-    )
+    return MultimodalInputCapabilities(accepted_sources=frozenset(accepted_sources))
 
 
 def _validated_backend_factories(
