@@ -90,7 +90,7 @@ _TEST_MATERIALIZATION_AUTHORITY = _TensorMaterializationIssuerAuthority()
 
 
 def _materialization(runtime: RuntimeKey) -> TensorMaterializationReceipt:
-    return TensorMaterializationReceipt(
+    return _TEST_MATERIALIZATION_AUTHORITY._issue(
         schema="mlx-tensor-materialization.v1",
         load_id="load-test",
         runtime=runtime,
@@ -103,7 +103,6 @@ def _materialization(runtime: RuntimeKey) -> TensorMaterializationReceipt:
         owner_thread_id=threading.get_ident(),
         completed_at_monotonic_ns=1,
         checkpoint_content_sha256="4" * 64,
-        _issuer_authority=_TEST_MATERIALIZATION_AUTHORITY,
     )
 
 

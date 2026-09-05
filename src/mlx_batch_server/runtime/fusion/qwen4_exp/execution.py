@@ -30,9 +30,23 @@ if TYPE_CHECKING:
 
 
 class _TensorMaterializationIssuerAuthority:
-    """Unserializable per-composition seal shared only by tensor issuer and owner."""
+    """Per-composition issuer that never exposes the receipt authentication seal."""
 
-    __slots__ = ()
+    __slots__ = ("__seal",)
+
+    def __init__(self) -> None:
+        self.__seal = object()
+
+    def _issue(self, **fields: Any) -> TensorMaterializationReceipt:
+        from ...contracts import TensorMaterializationReceipt
+
+        return TensorMaterializationReceipt(
+            **fields,
+            _issuer_authority=self.__seal,
+        )
+
+    def _authenticates(self, receipt: TensorMaterializationReceipt) -> bool:
+        return receipt._issued_by(self.__seal)
 
 
 @runtime_checkable

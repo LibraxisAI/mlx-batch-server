@@ -198,6 +198,9 @@ def compose_responses_runtime(
 
     Composition reads and verifies only the supplied manifest. It does not probe
     factories, load models, start services, or mount donor protocol surfaces.
+    Directly injected fused factories are intentionally untrusted: they support
+    inert/test composition but cannot publish production READY. The role-owned
+    composition below supplies the closed concrete factory binding.
     """
 
     manifest = _load_manifest(role_manifest_path)
@@ -395,7 +398,7 @@ def compose_role_responses_runtime(
             capacity=fused_capacity,
         )
         factories: Mapping[BackendKind, BackendFactory] = {
-            BackendKind.FUSED_MTP_MLX: qwen4_exp.backend,
+            BackendKind.FUSED_MTP_MLX: qwen4_exp.trusted_backend,
         }
     else:
         if request_preparer is not None:

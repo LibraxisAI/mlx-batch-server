@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import mlx.nn as nn
 
-from ..model.load_plan import Qwen4ExpModelLoadPlan
+from ..model.load_plan import Qwen4ExpModelLoadPlan, Qwen4ExpShardSet
 from .processing import OpaqueRows, VisionContractError
 from .tower import (
     DeepstackFeatureReceipt,
@@ -311,6 +311,7 @@ class Qwen4ExpVisionTensorTower(nn.Module):
     def from_load_plan(
         cls,
         plan: Qwen4ExpModelLoadPlan,
+        shard_set: Qwen4ExpShardSet,
     ) -> Qwen4ExpVisionTensorTower:
         """Open only shards sealed by the immutable checkpoint load plan."""
 
@@ -336,7 +337,11 @@ class Qwen4ExpVisionTensorTower(nn.Module):
                 "load plan maps no approved shard to vision tensors",
             )
         for shard in vision_shards:
-            loaded = mx.load(str(_planned_shard_path(plan, shard)))
+            _planned_shard_path(plan, shard)
+            loaded = mx.load(
+                shard_set.stream_for_load(shard),
+                format="safetensors",
+            )
             for key, value in loaded.items():
                 if key not in vision_keys:
                     continue

@@ -23,11 +23,15 @@ from mlx_batch_server.runtime.contracts import (
     RuntimeKey,
     TensorMaterializationReceipt,
 )
+from mlx_batch_server.runtime.factory_authority import (
+    _bind_trusted_fused_backend_factory,
+)
 from mlx_batch_server.runtime.manager import RuntimeManager
 from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.roles import RoleDirectory
 
 FLASH_MODEL = "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit"
+_TEST_MATERIALIZATION_AUTHORITY = object()
 
 
 def _receipt(runtime: RuntimeKey) -> TensorMaterializationReceipt:
@@ -44,7 +48,7 @@ def _receipt(runtime: RuntimeKey) -> TensorMaterializationReceipt:
         owner_thread_id=1,
         completed_at_monotonic_ns=1,
         checkpoint_content_sha256="4" * 64,
-        _issuer_authority=object(),
+        _issuer_authority=_TEST_MATERIALIZATION_AUTHORITY,
     )
 
 
@@ -123,7 +127,12 @@ def _manager(
     roles = RoleDirectory([_main_role()])
     readiness = ReadinessService(roles, receipt={"target_sha": "32cafd2"})
     manager = RuntimeManager(
-        {BackendKind.FUSED_MTP_MLX: factory},
+        {
+            BackendKind.FUSED_MTP_MLX: _bind_trusted_fused_backend_factory(
+                factory,
+                _TEST_MATERIALIZATION_AUTHORITY,
+            )
+        },
         roles=roles,
         readiness=readiness,
     )

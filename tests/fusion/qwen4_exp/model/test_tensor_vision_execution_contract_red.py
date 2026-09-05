@@ -84,7 +84,8 @@ def test_owner_thread_builds_existing_vision_components_from_load_plan() -> None
     runtime = _segment(TENSOR_PATH, "_Qwen4ExpTensorRuntime")
     prepare = _segment(TENSOR_PATH, "_prepare_vision_prompt")
     assert "Qwen4ExpTensorPreprocessor.from_load_plan(plan)" in runtime
-    assert "Qwen4ExpVisionTensorTower.from_load_plan(plan)" in runtime
+    assert "Qwen4ExpVisionTensorTower.from_load_plan(" in runtime
+    assert "shard_set," in runtime
     assert "VisionProcessingRequest(" in prepare
     assert "VisionTowerRequest(" in prepare
     assert "build_vision_splice_plan(" in prepare

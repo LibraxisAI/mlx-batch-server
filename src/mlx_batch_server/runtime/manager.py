@@ -23,6 +23,10 @@ from .contracts import (
     RuntimeKey,
     TensorMaterializationReceipt,
 )
+from .factory_authority import (
+    _receipt_matches_factory_authority,
+    _unwrap_trusted_fused_backend_factory,
+)
 
 if TYPE_CHECKING:
     from .readiness import ReadinessService
@@ -81,10 +85,14 @@ class RuntimeManager:
         if readiness is not None and roles is not None and readiness.roles is not roles:
             raise ValueError("readiness and manager must share one RoleDirectory")
 
-        self._factories = {
-            key if isinstance(key, BackendKind) else BackendKind(key): factory
-            for key, factory in factories.items()
-        }
+        self._factories: dict[BackendKind, BackendFactory] = {}
+        self._factory_materialization_authorities: dict[BackendKind, object] = {}
+        for key, candidate in factories.items():
+            kind = key if isinstance(key, BackendKind) else BackendKind(key)
+            factory, authority = _unwrap_trusted_fused_backend_factory(candidate)
+            self._factories[kind] = factory
+            if authority is not None:
+                self._factory_materialization_authorities[kind] = authority
         self._roles = roles or (readiness.roles if readiness is not None else None)
         self._readiness = readiness
         self._admission = admission or AdmissionController()
@@ -369,7 +377,11 @@ class RuntimeManager:
             for runtime in runtimes:
                 async with self._lock:
                     record = self._records[runtime]
-                    lifecycle_task = record.load_task or record.cleanup_task
+                    lifecycle_task = (
+                        record.load_task
+                        or record.cleanup_task
+                        or record.unload_task
+                    )
                 if lifecycle_task is not None:
                     remaining = deadline_at - loop.time()
                     if remaining <= 0:
@@ -490,11 +502,21 @@ class RuntimeManager:
                     )
                 else:
                     try:
+                        record.load_task = None
+                        record.handle = handle
+                        record.state = ModelState.READY
+                        record.error = None
+                        record.materialization = materialization
                         self._mark_roles_ready(runtime, handle, materialization)
                     except BaseException as error:
                         publication_error = error
                         error_text = self._error_text(error)
-                        record.load_task = None
+                        self._mark_roles_degraded(
+                            runtime,
+                            error_text,
+                            transition="ready_publication_failed",
+                        )
+                        record.handle = None
                         record.state = ModelState.DEGRADED
                         record.error = error_text
                         record.materialization = None
@@ -508,12 +530,6 @@ class RuntimeManager:
                             ),
                             success_error=error_text,
                         )
-                    else:
-                        record.load_task = None
-                        record.handle = handle
-                        record.state = ModelState.READY
-                        record.error = None
-                        record.materialization = materialization
         if cleanup_task is not None:
             await asyncio.shield(cleanup_task)
             if publication_error is not None:
@@ -679,8 +695,8 @@ class RuntimeManager:
         for role in self._role_names_for(runtime):
             self._readiness.mark_cold(role, transition=transition)
 
-    @staticmethod
     def _validated_materialization(
+        self,
         handle: BackendHandle,
         runtime: RuntimeKey,
     ) -> TensorMaterializationReceipt | None:
@@ -698,6 +714,11 @@ class RuntimeManager:
         if receipt.runtime != runtime:
             raise RuntimeManagerError(
                 "fused backend materialization receipt has a different runtime"
+            )
+        authority = self._factory_materialization_authorities.get(runtime.backend)
+        if not _receipt_matches_factory_authority(receipt, authority):
+            raise RuntimeManagerError(
+                "fused backend materialization receipt has no trusted factory authority"
             )
         return receipt
 

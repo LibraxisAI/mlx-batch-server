@@ -540,7 +540,7 @@ class Qwen4ExpTensorOwner:
                 "driver must expose the canonical binding model object"
             )
         receipt = binding.materialization_receipt
-        if not receipt._issued_by(self._materialization_authority):
+        if not self._materialization_authority._authenticates(receipt):
             raise Qwen4ExpTensorIdentityError(
                 "materialization receipt was not issued by this concrete owner graph"
             )

@@ -23,6 +23,9 @@ from mlx_batch_server.runtime.contracts import (
     RuntimeKey,
     TensorMaterializationReceipt,
 )
+from mlx_batch_server.runtime.factory_authority import (
+    _bind_trusted_fused_backend_factory,
+)
 from mlx_batch_server.runtime.manager import RuntimeManager, RuntimeManagerError
 from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.roles import RoleDirectory
@@ -33,9 +36,14 @@ RUNTIME = RuntimeKey(
     revision="exact-revision",
     backend=BackendKind.FUSED_MTP_MLX,
 )
+_TEST_MATERIALIZATION_AUTHORITY = object()
 
 
-def _receipt(runtime: RuntimeKey = RUNTIME) -> TensorMaterializationReceipt:
+def _receipt(
+    runtime: RuntimeKey = RUNTIME,
+    *,
+    authority: object = _TEST_MATERIALIZATION_AUTHORITY,
+) -> TensorMaterializationReceipt:
     return TensorMaterializationReceipt(
         schema="mlx-tensor-materialization.v1",
         load_id="load-test",
@@ -49,7 +57,7 @@ def _receipt(runtime: RuntimeKey = RUNTIME) -> TensorMaterializationReceipt:
         owner_thread_id=1,
         completed_at_monotonic_ns=1,
         checkpoint_content_sha256="4" * 64,
-        _issuer_authority=object(),
+        _issuer_authority=authority,
     )
 
 
@@ -140,7 +148,11 @@ class _Factory:
         return self.handle
 
 
-def _services(factory: _Factory) -> tuple[RuntimeManager, ReadinessService]:
+def _services(
+    factory: _Factory,
+    *,
+    trusted: bool = True,
+) -> tuple[RuntimeManager, ReadinessService]:
     roles = RoleDirectory(
         (
             RoleSpec(
@@ -158,8 +170,16 @@ def _services(factory: _Factory) -> tuple[RuntimeManager, ReadinessService]:
         roles,
         receipt={"role_manifest_sha256": "build-receipt"},
     )
+    registered_factory = (
+        _bind_trusted_fused_backend_factory(
+            factory,
+            _TEST_MATERIALIZATION_AUTHORITY,
+        )
+        if trusted
+        else factory
+    )
     manager = RuntimeManager(
-        {BackendKind.FUSED_MTP_MLX: factory},
+        {BackendKind.FUSED_MTP_MLX: registered_factory},
         roles=roles,
         readiness=readiness,
     )
@@ -192,6 +212,36 @@ async def test_manager_rejects_and_closes_fused_handle_without_receipt() -> None
     assert handle.close_calls == 1
     assert readiness.snapshot(RoleName.MAIN).model_state is ModelState.DEGRADED
     assert readiness.snapshot(RoleName.MAIN).materialization is None
+
+
+@pytest.mark.asyncio
+async def test_plain_public_factory_cannot_publish_fabricated_receipt() -> None:
+    handle = _Handle()
+    factory = _Factory(handle)
+    factory.release.set()
+    manager, readiness = _services(factory, trusted=False)
+
+    with pytest.raises(RuntimeManagerError, match="trusted factory authority"):
+        await manager.acquire_role(RoleName.MAIN)
+
+    assert handle.close_calls == 1
+    assert manager.status(RUNTIME)["loaded"] is False
+    assert readiness.is_ready(RoleName.MAIN) is False
+
+
+@pytest.mark.asyncio
+async def test_trusted_factory_rejects_receipt_fabricated_under_foreign_seal() -> None:
+    handle = _Handle(receipt=_receipt(authority=object()))
+    factory = _Factory(handle)
+    factory.release.set()
+    manager, readiness = _services(factory)
+
+    with pytest.raises(RuntimeManagerError, match="trusted factory authority"):
+        await manager.acquire_role(RoleName.MAIN)
+
+    assert handle.close_calls == 1
+    assert manager.status(RUNTIME)["loaded"] is False
+    assert readiness.is_ready(RoleName.MAIN) is False
 
 
 @pytest.mark.asyncio
@@ -262,6 +312,10 @@ async def test_ready_publication_occurs_inside_manager_lifecycle_lock(
 
     def mark_ready(*args: object, **kwargs: object) -> RoleSnapshot:
         observed_lock_state.append(manager._lock.locked())
+        record = manager._records[RUNTIME]
+        assert record.handle is handle
+        assert record.state is ModelState.READY
+        assert record.materialization is handle._receipt
         return original_mark_ready(*args, **kwargs)
 
     monkeypatch.setattr(readiness, "mark_ready", mark_ready)
@@ -270,6 +324,26 @@ async def test_ready_publication_occurs_inside_manager_lifecycle_lock(
     assert observed_lock_state == [True]
     assert manager.status(RUNTIME)["state"] == ModelState.READY.value
     assert readiness.is_ready(RoleName.MAIN) is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_bounds_an_already_running_unload_by_original_deadline() -> None:
+    handle = _BlockingCloseHandle()
+    factory = _Factory(handle)
+    factory.release.set()
+    manager, _ = _services(factory)
+    await manager.acquire_role(RoleName.MAIN)
+
+    unload = asyncio.create_task(manager.unload(RUNTIME, deadline_s=60.0))
+    await handle.close_entered.wait()
+    with pytest.raises(RuntimeManagerError, match="shutdown incomplete"):
+        await asyncio.wait_for(manager.shutdown(deadline_s=0.01), timeout=0.2)
+
+    assert unload.done() is False
+    assert handle.close_deadlines == [60.0]
+    handle.close_release.set()
+    assert await unload is True
+    await manager.shutdown(deadline_s=60.0)
 
 
 @pytest.mark.asyncio

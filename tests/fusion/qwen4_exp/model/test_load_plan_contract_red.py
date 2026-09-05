@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.load_plan import (
     Qwen4ExpLoadPlanError,
     load_qwen4_exp_plan,
+    open_qwen4_exp_shard,
     verify_qwen4_exp_shard_content,
 )
 
@@ -238,6 +240,46 @@ def test_load_plan_and_materialization_reject_checkpoint_content_drift(
     )
     assert first.artifacts.digest != second.artifacts.digest
     assert first.plan_sha256 != second.plan_sha256
+
+
+def test_open_shard_lease_keeps_consumed_identity_across_path_replacement(
+    tmp_path: Path,
+) -> None:
+    _write_snapshot(tmp_path)
+    plan = load_qwen4_exp_plan(
+        model_dir=tmp_path,
+        model_id="grant-ai/flash",
+        revision="revision-a",
+    )
+    name = "model-00001-of-00001.safetensors"
+    original = tmp_path / name
+    replacement = tmp_path / "replacement.safetensors"
+    replacement.write_bytes(b"foreign-checkpoint")
+
+    with open_qwen4_exp_shard(plan, name) as lease:
+        os.replace(replacement, original)
+        assert lease.stream.read() == b"fixture"
+        lease.verify_after_eval()
+
+    with pytest.raises(Qwen4ExpLoadPlanError, match="content changed"):
+        open_qwen4_exp_shard(plan, name)
+
+
+def test_open_shard_lease_detects_in_place_mutation_after_eval(tmp_path: Path) -> None:
+    _write_snapshot(tmp_path)
+    plan = load_qwen4_exp_plan(
+        model_dir=tmp_path,
+        model_id="grant-ai/flash",
+        revision="revision-a",
+    )
+    name = "model-00001-of-00001.safetensors"
+    alias = tmp_path / "same-inode-alias.safetensors"
+    os.link(tmp_path / name, alias)
+
+    with open_qwen4_exp_shard(plan, name) as lease:
+        alias.write_bytes(b"mutated-after-open")
+        with pytest.raises(Qwen4ExpLoadPlanError, match="changed after tensor eval"):
+            lease.verify_after_eval()
 
 
 def test_load_plan_rejects_duplicate_json_keys(tmp_path: Path) -> None:

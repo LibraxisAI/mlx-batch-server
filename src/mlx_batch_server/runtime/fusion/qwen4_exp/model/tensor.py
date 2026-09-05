@@ -112,8 +112,9 @@ from ..vision.tensor_tower import Qwen4ExpVisionTensorTower
 from ..vision.tower import VisionTowerRequest
 from .load_plan import (
     Qwen4ExpModelLoadPlan,
+    Qwen4ExpShardSet,
     load_qwen4_exp_plan,
-    verify_qwen4_exp_shard_content,
+    open_qwen4_exp_shards,
 )
 from .multirow import MultirowBatchPlan
 from .sampling import (
@@ -4500,11 +4501,16 @@ def _quantize_for_plan(model: Model, plan: Qwen4ExpModelLoadPlan) -> None:
         raise ValueError(f"planned quantized tensors have no modules: {missing!r}")
 
 
-def _read_indexed_weights(plan: Qwen4ExpModelLoadPlan) -> dict[str, mx.array]:
+def _read_indexed_weights(
+    plan: Qwen4ExpModelLoadPlan,
+    shard_set: Qwen4ExpShardSet,
+) -> dict[str, mx.array]:
     weights: dict[str, mx.array] = {}
     for shard_name in plan.artifacts.weight_shards:
-        verify_qwen4_exp_shard_content(plan, shard_name)
-        shard = mx.load(str(Path(plan.model_dir) / shard_name))
+        shard = mx.load(
+            shard_set.stream_for_load(shard_name),
+            format="safetensors",
+        )
         for key, value in shard.items():
             if key in weights:
                 raise ValueError(f"duplicate checkpoint tensor: {key}")
@@ -4522,13 +4528,14 @@ def _read_indexed_weights(plan: Qwen4ExpModelLoadPlan) -> dict[str, mx.array]:
 def load_qwen4_exp_tensor(
     plan: Qwen4ExpModelLoadPlan,
     capabilities: Qwen4ExpTensorCapabilities,
+    shard_set: Qwen4ExpShardSet,
 ) -> Model:
     """Build, quantize and strictly load exactly the immutable planned snapshot."""
 
     with tensor_capability_scope(capabilities):
         model = Model(plan.config, capabilities)
         _quantize_for_plan(model, plan)
-        weights = model.sanitize(_read_indexed_weights(plan))
+        weights = model.sanitize(_read_indexed_weights(plan, shard_set))
         model.load_weights(list(weights.items()), strict=True)
         if capabilities.has("fused_ple"):
             _fuse_resident_ple_embeddings(model)
@@ -4546,6 +4553,7 @@ def _materialize_qwen4_exp_parameters(
     model: Model,
     vision_tower: Qwen4ExpVisionTensorTower | None,
     materialization_authority: _TensorMaterializationIssuerAuthority,
+    shard_set: Qwen4ExpShardSet,
 ) -> TensorMaterializationReceipt:
     """Force every final checkpoint leaf before issuing the sole load receipt."""
 
@@ -4607,9 +4615,9 @@ def _materialize_qwen4_exp_parameters(
     logical_bytes = sum(int(leaf.nbytes) for leaf in unique_leaves)
     for offset in range(0, len(unique_leaves), _MATERIALIZATION_EVAL_CHUNK_SIZE):
         mx.eval(*unique_leaves[offset : offset + _MATERIALIZATION_EVAL_CHUNK_SIZE])
-    verify_qwen4_exp_shard_content(plan)
+    shard_set.verify_after_eval()
 
-    return TensorMaterializationReceipt(
+    return materialization_authority._issue(
         schema="mlx-tensor-materialization.v1",
         load_id=str(uuid.uuid4()),
         runtime=runtime,
@@ -4622,7 +4630,6 @@ def _materialize_qwen4_exp_parameters(
         owner_thread_id=threading.get_ident(),
         completed_at_monotonic_ns=time.monotonic_ns(),
         checkpoint_content_sha256=plan.artifacts.weight_content_sha256,
-        _issuer_authority=materialization_authority,
     )
 
 
@@ -7690,20 +7697,27 @@ class _PreparedQwen4ExpExecutionFactory:
 
     def load(self) -> Qwen4ExpExecutionBinding:
         plan = self.model_plan
-        with tensor_capability_scope(self.capabilities):
-            model = load_qwen4_exp_tensor(plan, self.capabilities)
+        with (
+            tensor_capability_scope(self.capabilities),
+            open_qwen4_exp_shards(plan) as shard_set,
+        ):
+            model = load_qwen4_exp_tensor(plan, self.capabilities, shard_set)
             tokenizer = load_tokenizer(Path(plan.model_dir))
             vision_preprocessor = None
             vision_tower = None
             if not plan.config.language_model_only:
                 vision_preprocessor = Qwen4ExpTensorPreprocessor.from_load_plan(plan)
-                vision_tower = Qwen4ExpVisionTensorTower.from_load_plan(plan)
+                vision_tower = Qwen4ExpVisionTensorTower.from_load_plan(
+                    plan,
+                    shard_set,
+                )
             materialization_receipt = _materialize_qwen4_exp_parameters(
                 runtime=self.runtime,
                 plan=plan,
                 model=model,
                 vision_tower=vision_tower,
                 materialization_authority=self.materialization_authority,
+                shard_set=shard_set,
             )
         build_facts = {
             "qwen4_exp_plan_sha256": plan.plan_sha256,

@@ -121,6 +121,7 @@ def test_composition_wires_one_inert_fused_qwen4_exp_graph() -> None:
     assert receipt.cache_factory._registry is receipt.registry
     assert receipt.backend._executor_factory is receipt.executor_factory
     assert receipt.backend._cache_factory is receipt.cache_factory
+    assert receipt.trusted_backend is not receipt.backend
     assert request_preparer.calls == []
     assert receipt.registry.entry_count == 0
 

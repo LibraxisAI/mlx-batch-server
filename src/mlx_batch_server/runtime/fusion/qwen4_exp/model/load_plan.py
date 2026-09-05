@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from .artifacts import (
     Qwen4ExpArtifactInventory,
@@ -29,6 +31,97 @@ _CONTENT_HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
 class Qwen4ExpLoadPlanError(ValueError):
     """Checkpoint metadata cannot produce an immutable tensor load plan."""
+
+
+@dataclass(slots=True)
+class Qwen4ExpShardLease:
+    """Open-file identity whose admitted bytes are consumed by tensor loading."""
+
+    name: str
+    stream: BinaryIO
+    expected_sha256: str
+    _identity: tuple[int, int, int, int, int]
+    _closed: bool = False
+
+    def prepare_for_load(self) -> BinaryIO:
+        """Authenticate and rewind the held identity immediately before MLX."""
+
+        self._verify_held_identity(stage="before tensor load")
+        self.stream.seek(0)
+        return self.stream
+
+    def verify_after_eval(self) -> None:
+        """Rehash the same open file after MLX has evaluated its lazy tensors."""
+
+        self._verify_held_identity(stage="after tensor eval")
+        self.stream.seek(0)
+
+    def _verify_held_identity(self, *, stage: str) -> None:
+        if self._closed:
+            raise Qwen4ExpLoadPlanError(
+                f"checkpoint shard lease is closed: {self.name}"
+            )
+        before = _descriptor_identity(self.stream, self.name)
+        observed = _stream_sha256(self.stream, self.name)
+        after = _descriptor_identity(self.stream, self.name)
+        if before != self._identity or after != self._identity:
+            raise Qwen4ExpLoadPlanError(
+                f"checkpoint shard identity changed {stage}: {self.name}"
+            )
+        if observed != self.expected_sha256:
+            raise Qwen4ExpLoadPlanError(
+                f"checkpoint shard bytes changed {stage}: {self.name}"
+            )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.stream.close()
+
+    def __enter__(self) -> Qwen4ExpShardLease:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+@dataclass(slots=True)
+class Qwen4ExpShardSet:
+    """All checkpoint shard identities held until final model materialization."""
+
+    leases: Mapping[str, Qwen4ExpShardLease]
+    _closed: bool = False
+
+    def stream_for_load(self, shard_name: str) -> BinaryIO:
+        if self._closed:
+            raise Qwen4ExpLoadPlanError("checkpoint shard set is closed")
+        try:
+            lease = self.leases[shard_name]
+        except KeyError as error:
+            raise Qwen4ExpLoadPlanError(
+                f"unplanned checkpoint shard: {shard_name}"
+            ) from error
+        return lease.prepare_for_load()
+
+    def verify_after_eval(self) -> None:
+        if self._closed:
+            raise Qwen4ExpLoadPlanError("checkpoint shard set is closed")
+        for lease in self.leases.values():
+            lease.verify_after_eval()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for lease in self.leases.values():
+            lease.close()
+
+    def __enter__(self) -> Qwen4ExpShardSet:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +308,101 @@ def verify_qwen4_exp_shard_content(
             )
 
 
+def open_qwen4_exp_shard(
+    plan: Qwen4ExpModelLoadPlan,
+    shard_name: str,
+) -> Qwen4ExpShardLease:
+    """Open, authenticate, and hold the exact file object MLX must consume."""
+
+    expected = dict(plan.artifacts.weight_shard_sha256).get(shard_name)
+    if expected is None:
+        raise Qwen4ExpLoadPlanError(f"unplanned checkpoint shard: {shard_name}")
+    if Path(shard_name).name != shard_name:
+        raise Qwen4ExpLoadPlanError(
+            "load-plan shard names must be checkpoint basenames"
+        )
+    path = Path(plan.model_dir) / shard_name
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+        stream = os.fdopen(descriptor, "rb", closefd=True)
+    except (OSError, ValueError) as error:
+        raise Qwen4ExpLoadPlanError(
+            f"cannot open checkpoint shard: {shard_name}"
+        ) from error
+    try:
+        identity = _descriptor_identity(stream, shard_name)
+        observed = _stream_sha256(stream, shard_name)
+        if observed != expected:
+            raise Qwen4ExpLoadPlanError(
+                f"checkpoint shard content changed after planning: {shard_name}"
+            )
+        stream.seek(0)
+        return Qwen4ExpShardLease(
+            name=shard_name,
+            stream=stream,
+            expected_sha256=expected,
+            _identity=identity,
+        )
+    except BaseException:
+        stream.close()
+        raise
+
+
+def open_qwen4_exp_shards(plan: Qwen4ExpModelLoadPlan) -> Qwen4ExpShardSet:
+    """Open every planned shard now and retain all identities through eval."""
+
+    leases: dict[str, Qwen4ExpShardLease] = {}
+    try:
+        for shard_name in plan.artifacts.weight_shards:
+            leases[shard_name] = open_qwen4_exp_shard(plan, shard_name)
+    except BaseException:
+        for lease in leases.values():
+            lease.close()
+        raise
+    return Qwen4ExpShardSet(leases=leases)
+
+
+def _descriptor_identity(
+    stream: BinaryIO,
+    name: str,
+) -> tuple[int, int, int, int, int]:
+    try:
+        observed = os.fstat(stream.fileno())
+    except (OSError, ValueError) as error:
+        raise Qwen4ExpLoadPlanError(
+            f"cannot stat open checkpoint shard: {name}"
+        ) from error
+    if not stat.S_ISREG(observed.st_mode) or observed.st_size < 1:
+        raise Qwen4ExpLoadPlanError(
+            f"checkpoint shard must be a non-empty regular file: {name}"
+        )
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _stream_sha256(stream: BinaryIO, name: str) -> str:
+    digest = hashlib.sha256()
+    try:
+        stream.seek(0)
+        while chunk := stream.read(_CONTENT_HASH_CHUNK_BYTES):
+            digest.update(chunk)
+    except (OSError, ValueError) as error:
+        raise Qwen4ExpLoadPlanError(
+            f"cannot hash open checkpoint shard: {name}"
+        ) from error
+    return digest.hexdigest()
+
+
 def _stable_file_sha256(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise Qwen4ExpLoadPlanError(
@@ -316,6 +504,10 @@ def _string_mapping(name: str, value: Mapping[Any, Any]) -> Mapping[str, str]:
 __all__ = [
     "Qwen4ExpLoadPlanError",
     "Qwen4ExpModelLoadPlan",
+    "Qwen4ExpShardLease",
+    "Qwen4ExpShardSet",
     "load_qwen4_exp_plan",
+    "open_qwen4_exp_shard",
+    "open_qwen4_exp_shards",
     "verify_qwen4_exp_shard_content",
 ]

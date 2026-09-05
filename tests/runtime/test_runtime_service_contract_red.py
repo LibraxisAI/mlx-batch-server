@@ -28,6 +28,9 @@ from mlx_batch_server.runtime.contracts import (
     TensorMaterializationReceipt,
     TurnSink,
 )
+from mlx_batch_server.runtime.factory_authority import (
+    _bind_trusted_fused_backend_factory,
+)
 from mlx_batch_server.runtime.manager import RuntimeManager, RuntimeManagerError
 from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.roles import RoleDirectory
@@ -38,6 +41,7 @@ from mlx_batch_server.runtime.service import (
 
 FLASH_MODEL = "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit"
 VISION_MODEL = "mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit"
+_TEST_MATERIALIZATION_AUTHORITY = object()
 
 
 def _receipt(runtime: RuntimeKey) -> TensorMaterializationReceipt:
@@ -54,7 +58,7 @@ def _receipt(runtime: RuntimeKey) -> TensorMaterializationReceipt:
         owner_thread_id=1,
         completed_at_monotonic_ns=1,
         checkpoint_content_sha256="4" * 64,
-        _issuer_authority=object(),
+        _issuer_authority=_TEST_MATERIALIZATION_AUTHORITY,
     )
 
 
@@ -246,7 +250,12 @@ async def test_concurrent_starts_join_one_manager_load_and_start_one_turn_each()
     roles = _roles()
     admission = AdmissionController(max_active_requests=2)
     manager = RuntimeManager(
-        {BackendKind.FUSED_MTP_MLX: factory},
+        {
+            BackendKind.FUSED_MTP_MLX: _bind_trusted_fused_backend_factory(
+                factory,
+                _TEST_MATERIALIZATION_AUTHORITY,
+            )
+        },
         roles=roles,
         readiness=ReadinessService(roles),
         admission=admission,
@@ -472,7 +481,12 @@ async def test_role_selection_never_rewrites_model_or_backend() -> None:
     roles = _roles()
     admission = AdmissionController()
     manager = RuntimeManager(
-        {BackendKind.FUSED_MTP_MLX: fused_factory},
+        {
+            BackendKind.FUSED_MTP_MLX: _bind_trusted_fused_backend_factory(
+                fused_factory,
+                _TEST_MATERIALIZATION_AUTHORITY,
+            )
+        },
         roles=roles,
         readiness=ReadinessService(roles),
         admission=admission,

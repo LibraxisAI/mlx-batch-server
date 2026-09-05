@@ -10,7 +10,14 @@ from pathlib import Path
 from types import MappingProxyType
 
 from ...backends.fused_mtp_mlx import MtpMlxBackend
-from ...contracts import BackendHandle, BackendKind, LoadConfig, RuntimeKey
+from ...contracts import (
+    BackendFactory,
+    BackendHandle,
+    BackendKind,
+    LoadConfig,
+    RuntimeKey,
+)
+from ...factory_authority import _bind_trusted_fused_backend_factory
 from ..mtp import MtpPolicy
 from ..qwen4_exp.execution import (
     Qwen4ExpExecutionFactoryPort,
@@ -37,6 +44,7 @@ class Qwen4ExpBackendCompositionReceipt:
     executor_factory: OmlxMtplxExecutorFactory
     cache_factory: OmlxMtplxCacheFactory
     backend: MtpMlxBackend
+    trusted_backend: BackendFactory
     scheduler_config: SchedulerConfig
     mtp_policy: MtpPolicy
     capacity: int
@@ -133,6 +141,10 @@ def compose_qwen4_exp_backend(
         scheduler_config=scheduler_config,
         mtp_policy=mtp_policy,
     )
+    trusted_backend = _bind_trusted_fused_backend_factory(
+        backend,
+        materialization_authority,
+    )
     return Qwen4ExpBackendCompositionReceipt(
         execution_factory=resolved_execution_factory,
         request_preparer=request_preparer,
@@ -141,6 +153,7 @@ def compose_qwen4_exp_backend(
         executor_factory=executor_factory,
         cache_factory=cache_factory,
         backend=backend,
+        trusted_backend=trusted_backend,
         scheduler_config=scheduler_config,
         mtp_policy=mtp_policy,
         capacity=capacity,

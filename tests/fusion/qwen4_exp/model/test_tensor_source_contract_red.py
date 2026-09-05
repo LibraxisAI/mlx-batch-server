@@ -8,6 +8,12 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[4]
 _TENSOR_PATH = _ROOT / "src/mlx_batch_server/runtime/fusion/qwen4_exp/model/tensor.py"
+_LOAD_PLAN_PATH = (
+    _ROOT / "src/mlx_batch_server/runtime/fusion/qwen4_exp/model/load_plan.py"
+)
+_VISION_TOWER_PATH = (
+    _ROOT / "src/mlx_batch_server/runtime/fusion/qwen4_exp/vision/tensor_tower.py"
+)
 _SUPPORT_PATH = (
     _ROOT / "src/mlx_batch_server/runtime/fusion/qwen4_exp/model/tensor_support.py"
 )
@@ -162,7 +168,7 @@ def test_factory_prepares_the_single_plan_before_owner_thread_tensor_load() -> N
     assert len(plan_calls) == 1
     assert load_plan_calls == []
     assert 'config.options["model_dir"] must be an absolute path' in source
-    assert "load_qwen4_exp_tensor(plan, self.capabilities)" in source
+    assert "load_qwen4_exp_tensor(plan, self.capabilities, shard_set)" in source
     assert '"qwen4_exp_plan_sha256": plan.plan_sha256' in source
     assert '"build_facts": build_facts' in source
     assert '"config.json"' not in source
@@ -184,8 +190,8 @@ def test_materialization_receipt_is_issued_once_after_complete_chunked_eval() ->
         node
         for node in ast.walk(materialize)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "TensorMaterializationReceipt"
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_issue"
     ]
 
     assert len(eval_calls) == 1
@@ -199,22 +205,73 @@ def test_materialization_receipt_is_issued_once_after_complete_chunked_eval() ->
     assert "text_mtp.mtp." in source
     assert "mx.eval(*unique_leaves" in source
     assert source.index("mx.eval(*unique_leaves") < source.index(
-        "verify_qwen4_exp_shard_content(plan)"
+        "shard_set.verify_after_eval()"
     )
-    assert source.index("verify_qwen4_exp_shard_content(plan)") < source.index(
-        "TensorMaterializationReceipt("
+    assert source.index("shard_set.verify_after_eval()") < source.index(
+        "materialization_authority._issue("
     )
+    assert "verify_qwen4_exp_shard_content" not in source
     assert "checkpoint_content_sha256=plan.artifacts.weight_content_sha256" in source
-    assert "_issuer_authority=materialization_authority" in source
+    assert "_issuer_authority" not in source
 
 
-def test_each_checkpoint_reopen_verifies_exact_shard_bytes_before_mx_load() -> None:
-    tree = _tree(_TENSOR_PATH)
-    source = ast.unparse(_function(tree, "_read_indexed_weights"))
+def test_every_production_mx_load_consumes_one_held_verified_shard_stream() -> None:
+    consumers: list[tuple[Path, ast.Call]] = []
+    for path in (_ROOT / "src").rglob("*.py"):
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "mx"
+                and node.func.attr == "load"
+            ):
+                consumers.append((path, node))
 
-    assert source.count("verify_qwen4_exp_shard_content(plan, shard_name)") == 1
-    assert source.count("mx.load(str(Path(plan.model_dir) / shard_name))") == 1
-    assert source.index("verify_qwen4_exp_shard_content") < source.index("mx.load")
+    assert {path for path, _ in consumers} == {_TENSOR_PATH, _VISION_TOWER_PATH}
+    assert len(consumers) == 2
+    for _, call in consumers:
+        assert len(call.args) == 1
+        stream = call.args[0]
+        assert isinstance(stream, ast.Call)
+        assert isinstance(stream.func, ast.Attribute)
+        assert stream.func.attr == "stream_for_load"
+        assert any(
+            keyword.arg == "format"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "safetensors"
+            for keyword in call.keywords
+        )
+
+    text_source = ast.unparse(_function(_tree(_TENSOR_PATH), "_read_indexed_weights"))
+    vision_source = ast.unparse(
+        _method(
+            _class(_tree(_VISION_TOWER_PATH), "Qwen4ExpVisionTensorTower"),
+            "from_load_plan",
+        )
+    )
+    for source in (text_source, vision_source):
+        assert source.index("stream_for_load") < source.index("mx.load")
+
+    prepared_source = ast.unparse(
+        _method(
+            _class(_tree(_TENSOR_PATH), "_PreparedQwen4ExpExecutionFactory"),
+            "load",
+        )
+    )
+    assert prepared_source.index("open_qwen4_exp_shards") < prepared_source.index(
+        "load_qwen4_exp_tensor"
+    )
+    assert prepared_source.index("load_qwen4_exp_tensor") < prepared_source.index(
+        "Qwen4ExpVisionTensorTower.from_load_plan"
+    )
+    assert prepared_source.index(
+        "Qwen4ExpVisionTensorTower.from_load_plan"
+    ) < prepared_source.index("_materialize_qwen4_exp_parameters")
+
+    load_plan_source = _source(_LOAD_PLAN_PATH)
+    assert 'getattr(os, "O_NOFOLLOW", 0)' in load_plan_source
+    assert "os.fstat(stream.fileno())" in load_plan_source
 
 
 def test_prepared_factory_propagates_one_receipt_after_text_mtp_and_vision() -> None:
@@ -243,7 +300,7 @@ def test_no_other_production_surface_can_mint_materialization_receipts() -> None
         )
 
     assert len(constructors) == 1
-    assert constructors[0][0] == _TENSOR_PATH
+    assert constructors[0][0] == _EXECUTION_PATH
 
 
 def test_production_composition_owns_the_private_issuer_and_no_injection_seam() -> None:
@@ -264,7 +321,11 @@ def test_production_composition_owns_the_private_issuer_and_no_injection_seam() 
     }
     assert composition_source.count("_TensorMaterializationIssuerAuthority()") == 1
     assert composition_source.count("_Qwen4ExpExecutionFactory(") == 1
+    assert "_bind_trusted_fused_backend_factory(" in composition_source
     assert "materialization_authority=materialization_authority" in composition_source
+    assert "__seal" in execution_source
+    assert "def _issue(" in execution_source
+    assert "def _authenticates(" in execution_source
     assert "_TensorMaterializationIssuerAuthority" not in execution_source.split(
         "__all__ =", 1
     )[1]
