@@ -47,6 +47,8 @@ _FUNCTION_OUTPUT_CONTENT_FIELDS: Mapping[str, frozenset[str]] = {
         {"type", "detail", "file_data", "file_id", "file_url", "filename"}
     ),
 }
+_HOSTED_WEB_SEARCH_TYPE = "web_search"
+_HOSTED_TOOL_TYPES = frozenset({_HOSTED_WEB_SEARCH_TYPE})
 
 
 class _FrozenDict(dict[str, Any]):
@@ -981,17 +983,32 @@ def _tools(value: Any) -> tuple[Mapping[str, Any], ...]:
     if not _is_sequence(value):
         raise _invalid("tools must be a sequence of mappings", "tools")
     tools: list[Mapping[str, Any]] = []
+    hosted_count = 0
+    client_count = 0
     for index, tool in enumerate(value):
         if not isinstance(tool, Mapping) or not tool:
             raise _invalid("each tool must be a non-empty mapping", f"tools[{index}]")
         param = f"tools[{index}]"
         tool_type = tool.get("type")
+        if tool_type in _HOSTED_TOOL_TYPES:
+            unknown = set(tool) - {"type"}
+            if unknown:
+                field = sorted(unknown)[0]
+                raise ResponsesMappingError(
+                    f"hosted web_search option {field!r} is unsupported locally",
+                    code="unsupported_parameter",
+                    param=f"{param}.{field}",
+                )
+            hosted_count += 1
+            tools.append(_freeze_mapping({"type": _HOSTED_WEB_SEARCH_TYPE}))
+            continue
         if tool_type != "function":
             raise ResponsesMappingError(
-                "only client-owned function tools are supported locally",
+                f"hosted or tool type {tool_type!r} is unsupported locally",
                 code="unsupported_tool",
                 param=f"{param}.type",
             )
+        client_count += 1
         unknown = set(tool) - {
             "type",
             "name",
@@ -1018,6 +1035,18 @@ def _tools(value: Any) -> tuple[Mapping[str, Any], ...]:
         if strict is not None and not isinstance(strict, bool):
             raise _invalid("function tool strict must be a boolean", f"{param}.strict")
         tools.append(_freeze_mapping(tool))
+    if hosted_count > 1:
+        raise ResponsesMappingError(
+            "only one hosted web_search declaration is supported locally",
+            code="unsupported_capability",
+            param="tools",
+        )
+    if hosted_count and client_count:
+        raise ResponsesMappingError(
+            "hosted web_search cannot be mixed with client-owned tools",
+            code="unsupported_capability",
+            param="tools",
+        )
     return tuple(tools)
 
 

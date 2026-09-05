@@ -456,6 +456,7 @@ from mlx_batch_server.runtime.events import (  # noqa: E402
     HostedCallProgress,
     HostedCallResult,
     HostedCallStarted,
+    HostedCitation,
 )
 
 _SEALED_ACTION = {
@@ -466,7 +467,14 @@ _SEALED_ACTION = {
 _HOSTED_RESULT = {
     "kind": "search_results",
     "digest": "digest-1",
-    "results": ({"url": "https://a.example/one", "title": "One"},),
+    "query": "mlx",
+    "results": (
+        {
+            "url": "https://a.example/one",
+            "title": "One",
+            "snippet": "source passage",
+        },
+    ),
 }
 
 
@@ -480,7 +488,14 @@ def _hosted_lifecycle_events(
         action["sources"] = ()
     events: list[TurnEvent] = [
         TurnStarted("resp_projection", "buddy", 123),
-        OutputItemStarted("hosted_call", 0, "ws_1", "call_ws", "web_search"),
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "ws_1",
+            "call_ws",
+            "web_search",
+            {"query": "mlx"},
+        ),
         HostedCallStarted(0, "ws_1", "call_ws", "web_search", {"query": "mlx"}),
         HostedCallProgress(0, "ws_1", "call_ws", "searching"),
     ]
@@ -563,7 +578,14 @@ def test_hosted_lifecycle_identity_and_order_violations_fail_closed() -> None:
             projection,
             (
                 TurnStarted("resp_projection", "buddy", 123),
-                OutputItemStarted("hosted_call", 0, "ws_1", "call_ws", "web_search"),
+                OutputItemStarted(
+                    "hosted_call",
+                    0,
+                    "ws_1",
+                    "call_ws",
+                    "web_search",
+                    {"query": "mlx"},
+                ),
             ),
         )
         return projection
@@ -650,7 +672,14 @@ def test_interrupted_hosted_call_is_omitted_rather_than_fabricated() -> None:
         projection,
         (
             TurnStarted("resp_projection", "buddy", 123),
-            OutputItemStarted("hosted_call", 0, "ws_1", "call_ws", "web_search"),
+            OutputItemStarted(
+                "hosted_call",
+                0,
+                "ws_1",
+                "call_ws",
+                "web_search",
+                {"query": "mlx"},
+            ),
             HostedCallStarted(0, "ws_1", "call_ws", "web_search", {"query": "mlx"}),
             TurnCancelled("client_cancelled"),
         ),
@@ -658,3 +687,131 @@ def test_interrupted_hosted_call_is_omitted_rather_than_fabricated() -> None:
     terminal = projection.terminal_envelope()
     assert terminal["status"] == "cancelled"
     assert list(terminal["output"]) == []
+
+
+def _citation_projection() -> RuntimeResponseProjection:
+    projection = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+    _observe(
+        projection,
+        (
+            TurnStarted("resp_projection", "buddy", 123),
+            OutputItemStarted(
+                "hosted_call",
+                0,
+                "ws_1",
+                "call_ws",
+                "web_search",
+                {"query": "mlx"},
+            ),
+            HostedCallStarted(0, "ws_1", "call_ws", "web_search", {"query": "mlx"}),
+            HostedCallProgress(0, "ws_1", "call_ws", "executing"),
+            HostedCallResult(0, "ws_1", "call_ws", "web_search", _HOSTED_RESULT),
+            HostedCallCompleted(
+                0,
+                "ws_1",
+                "call_ws",
+                "web_search",
+                "completed",
+                {"call_id": "call_ws"},
+            ),
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "ws_1",
+                call_id="call_ws",
+                name="web_search",
+                action=_SEALED_ACTION,
+            ),
+            OutputItemStarted("message", 1, "msg_1"),
+            ContentPartStarted("output_text", 1, 0, "msg_1"),
+            TextDelta("source passage", "msg_1", 1, 0),
+        ),
+    )
+    return projection
+
+
+def _citation(**overrides: object) -> HostedCitation:
+    fields: dict[str, object] = {
+        "output_index": 1,
+        "item_id": "msg_1",
+        "content_index": 0,
+        "source_call_id": "call_ws",
+        "source_url": "https://a.example/one",
+        "cited_text": "source passage",
+        "source_start": 0,
+        "source_end": 14,
+        "output_start": 0,
+        "output_end": 14,
+    }
+    fields.update(overrides)
+    return HostedCitation(**fields)  # type: ignore[arg-type]
+
+
+def test_hosted_citation_is_validated_and_carried_into_terminal_snapshot() -> None:
+    from openai.types.responses import Response
+
+    projection = _citation_projection()
+    tail: tuple[TurnEvent, ...] = (
+        _citation(),
+        TextCompleted("source passage", "msg_1", 1, 0),
+        ContentPartCompleted("output_text", 1, 0, "msg_1", "source passage"),
+        OutputItemCompleted("message", 1, "msg_1", text="source passage"),
+        TurnCompleted("stop"),
+    )
+    for sequence_number, event in enumerate(tail, start=10):
+        projection.observe(SequencedTurnEvent(sequence_number, event))
+
+    annotation = projection.terminal_envelope()["output"][1]["content"][0][
+        "annotations"
+    ][0]
+    assert annotation == {
+        "type": "url_citation",
+        "url": "https://a.example/one",
+        "title": "https://a.example/one",
+        "start_index": 0,
+        "end_index": 14,
+    }
+    Response.model_validate(dict(projection.terminal_envelope()))
+    assert "source passage" not in repr(projection._hosted_source_lengths)
+
+
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        ({"source_call_id": "unknown"}, "unknown hosted result"),
+        ({"source_url": "https://unknown.example"}, "not proven"),
+        ({"source_end": 99}, "source range"),
+        ({"output_end": 99}, "output range"),
+        ({"cited_text": "wrong"}, "does not match"),
+    ],
+)
+def test_hosted_citation_mutations_fail_closed(
+    overrides: dict[str, object],
+    match: str,
+) -> None:
+    projection = _citation_projection()
+    with pytest.raises(RuntimeProjectionError, match=match):
+        projection.observe(SequencedTurnEvent(20, _citation(**overrides)))
+
+
+def test_overlapping_and_late_hosted_citations_fail_closed() -> None:
+    overlapping = _citation_projection()
+    overlapping.observe(SequencedTurnEvent(20, _citation()))
+    with pytest.raises(RuntimeProjectionError, match="must not overlap"):
+        overlapping.observe(
+            SequencedTurnEvent(
+                21,
+                _citation(
+                    cited_text="passage",
+                    source_start=7,
+                    source_end=14,
+                    output_start=7,
+                    output_end=14,
+                ),
+            )
+        )
+
+    late = _citation_projection()
+    late.observe(SequencedTurnEvent(20, TextCompleted("source passage", "msg_1", 1, 0)))
+    with pytest.raises(RuntimeProjectionError, match="cannot follow"):
+        late.observe(SequencedTurnEvent(21, _citation()))

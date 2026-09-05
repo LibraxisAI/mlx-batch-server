@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
-from .projector import project_event
+from .projector import NoWireResponseEvent, OpenAIProjectionState, project_event
 from .transport import (
     MultiplexedTransportSession,
     ResponseCreateCommand,
@@ -75,6 +75,7 @@ class ResponsesWebSocketSession:
         self._commands_by_response_id: dict[str, ResponseCreateCommand] = {}
         self._client_owned_stops: dict[str, _ClientOwnedStop] = {}
         self._pending_steers: dict[str, _PendingSteer] = {}
+        self._projection_states: dict[StreamId | None, OpenAIProjectionState] = {}
 
     @property
     def session(self) -> TransportSession:
@@ -245,19 +246,30 @@ class ResponsesWebSocketSession:
         return await self._core.receive()
 
     async def receive_payload(self) -> dict[str, Any]:
-        outcome = await self.receive()
-        if isinstance(outcome, TransportControlOutcome):
-            return dict(outcome.payload)
-        if isinstance(outcome, TransportErrorOutcome):
-            return render_protocol_error(outcome.error)
-        projected = project_event(outcome)
-        if outcome.terminal_response is not None:
-            terminal_response = await outcome.terminal_response
-            if not isinstance(terminal_response, Mapping):
-                raise TypeError("terminal_response must resolve to a response mapping")
-            projected["response"] = dict(terminal_response)
-            self._remember_client_owned_stop(outcome, terminal_response)
-        return projected
+        while True:
+            outcome = await self.receive()
+            if isinstance(outcome, TransportControlOutcome):
+                return dict(outcome.payload)
+            if isinstance(outcome, TransportErrorOutcome):
+                self._projection_states.pop(outcome.stream_id, None)
+                return render_protocol_error(outcome.error)
+            state = self._projection_states.setdefault(
+                outcome.stream_id,
+                OpenAIProjectionState(),
+            )
+            projected = project_event(outcome, state=state)
+            if isinstance(projected, NoWireResponseEvent):
+                continue
+            if outcome.terminal_response is not None:
+                terminal_response = await outcome.terminal_response
+                if not isinstance(terminal_response, Mapping):
+                    raise TypeError(
+                        "terminal_response must resolve to a response mapping"
+                    )
+                projected["response"] = dict(terminal_response)
+                self._remember_client_owned_stop(outcome, terminal_response)
+                self._projection_states.pop(outcome.stream_id, None)
+            return projected
 
     async def receive_encoded(self) -> str:
         return json.dumps(
@@ -269,6 +281,7 @@ class ResponsesWebSocketSession:
     async def close(self, reason: str = "transport_disconnected") -> None:
         self._client_owned_stops.clear()
         self._pending_steers.clear()
+        self._projection_states.clear()
         await self._core.close(reason)
 
     def _remember_client_owned_stop(
