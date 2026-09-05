@@ -25,7 +25,7 @@ from .input_items import (
     paginate_input_items,
 )
 from .operations import ResponsesOperationError
-from .projector import project_event
+from .projector import NoWireResponseEvent, OpenAIProjectionState, project_event
 from .registry import ResponseRegistry, ResponseRegistryError
 from .request_contract import ResponsesMappingError, capability_profile, local_setting
 from .transport import (
@@ -312,6 +312,7 @@ async def _drain_to_terminal(
 async def _sse_events(source: ResponseEventSource) -> AsyncIterator[bytes]:
     terminal_seen = False
     next_sequence_number = 0
+    projection_state = OpenAIProjectionState()
     try:
         async for item in source.events:
             if not isinstance(item, PublishedResponseEvent):
@@ -327,7 +328,9 @@ async def _sse_events(source: ResponseEventSource) -> AsyncIterator[bytes]:
                 terminal_response=(source.terminal_response if terminal else None),
                 snapshot=item.snapshot,
             )
-            projected = project_event(envelope)
+            projected = project_event(envelope, state=projection_state)
+            if isinstance(projected, NoWireResponseEvent):
+                continue
             if terminal:
                 terminal_seen = True
                 if source.terminal_response is None:

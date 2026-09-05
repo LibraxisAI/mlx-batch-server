@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from ..runtime.events import (
     REASONING_CONTENT_KIND,
     ContentPartCompleted,
     ContentPartStarted,
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallResult,
+    HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -25,9 +31,9 @@ from ..runtime.events import (
     UsageUpdate,
 )
 from .transport import (
-    ResponseSnapshotBuilder,
     render_completed_item,
     render_started_item,
+    render_url_citation,
     render_usage,
 )
 
@@ -35,7 +41,55 @@ if TYPE_CHECKING:
     from .transport import TransportEnvelope
 
 
-def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
+@dataclass(frozen=True, slots=True)
+class NoWireResponseEvent:
+    """An admitted neutral event with deliberately no legal OpenAI wire event."""
+
+    sequence_number: int
+    reason: Literal["hosted_result_internal", "failed_hosted_lifecycle_absent"]
+
+
+@dataclass(slots=True)
+class OpenAIProjectionState:
+    """Per-response wire bookkeeping that is not response snapshot truth."""
+
+    annotation_counts: dict[tuple[int, str, int], int] = field(default_factory=dict)
+    annotations: dict[tuple[int, str, int], list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
+
+    def add_citation(self, event: HostedCitation) -> tuple[int, dict[str, Any]]:
+        key = (event.output_index, event.item_id, event.content_index)
+        annotation_index = self.annotation_counts.get(key, 0)
+        annotation = render_url_citation(event)
+        self.annotation_counts[key] = annotation_index + 1
+        self.annotations.setdefault(key, []).append(annotation)
+        return annotation_index, annotation
+
+    def content_annotations(
+        self,
+        output_index: int,
+        item_id: str,
+        content_index: int,
+    ) -> tuple[dict[str, Any], ...]:
+        return tuple(self.annotations.get((output_index, item_id, content_index), ()))
+
+
+ProjectedResponseEvent: TypeAlias = dict[str, Any] | NoWireResponseEvent
+_HOSTED_EVENT_TYPES = (
+    HostedCallStarted,
+    HostedCallProgress,
+    HostedCallResult,
+    HostedCallCompleted,
+    HostedCitation,
+)
+
+
+def project_event(
+    envelope: TransportEnvelope,
+    *,
+    state: OpenAIProjectionState | None = None,
+) -> ProjectedResponseEvent:
     """Project one turn event onto an official Responses streaming event type."""
 
     event = envelope.event
@@ -57,11 +111,14 @@ def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
             "item": render_started_item(event),
         }
     if isinstance(event, OutputItemCompleted):
+        annotations = ()
+        if event.kind == "message" and state is not None:
+            annotations = state.content_annotations(event.index, event.item_id, 0)
         return {
             **base,
             "type": "response.output_item.done",
             "output_index": event.index,
-            "item": render_completed_item(event),
+            "item": render_completed_item(event, annotations=annotations),
         }
     if isinstance(event, ContentPartStarted):
         if event.kind == REASONING_CONTENT_KIND:
@@ -105,7 +162,17 @@ def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
             "part": {
                 "type": "output_text",
                 "text": event.text,
-                "annotations": [],
+                "annotations": (
+                    []
+                    if state is None
+                    else list(
+                        state.content_annotations(
+                            event.output_index,
+                            event.item_id,
+                            event.content_index,
+                        )
+                    )
+                ),
                 "logprobs": [],
             },
         }
@@ -164,6 +231,8 @@ def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
             "name": event.name,
             "arguments": event.arguments,
         }
+    if isinstance(event, _HOSTED_EVENT_TYPES):
+        return _project_hosted_event(envelope, state=state)
     if isinstance(event, UsageUpdate):
         response = _snapshot(envelope, "in_progress")
         response.setdefault("usage", None)
@@ -197,41 +266,110 @@ def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
     raise TypeError(f"unsupported turn event: {type(event).__name__}")
 
 
+def _project_hosted_event(
+    envelope: TransportEnvelope,
+    *,
+    state: OpenAIProjectionState | None,
+) -> ProjectedResponseEvent:
+    event = envelope.event
+    base: dict[str, Any] = {"sequence_number": envelope.sequence_number}
+    if envelope.stream_id is not None:
+        base["stream_id"] = envelope.stream_id.value
+    if isinstance(event, HostedCallStarted):
+        if event.tool_name != "web_search":
+            raise TypeError(f"unsupported hosted tool for Responses: {event.tool_name}")
+        return {
+            **base,
+            "type": "response.web_search_call.in_progress",
+            "item_id": event.item_id,
+            "output_index": event.index,
+        }
+    if isinstance(event, HostedCallProgress):
+        if event.phase not in {"executing", "searching"}:
+            raise TypeError(
+                f"unsupported hosted web_search progress phase: {event.phase}"
+            )
+        return {
+            **base,
+            "type": "response.web_search_call.searching",
+            "item_id": event.item_id,
+            "output_index": event.index,
+        }
+    if isinstance(event, HostedCallResult):
+        return NoWireResponseEvent(
+            envelope.sequence_number,
+            "hosted_result_internal",
+        )
+    if isinstance(event, HostedCallCompleted):
+        if event.tool_name != "web_search":
+            raise TypeError(f"unsupported hosted tool for Responses: {event.tool_name}")
+        if event.status == "failed":
+            return NoWireResponseEvent(
+                envelope.sequence_number,
+                "failed_hosted_lifecycle_absent",
+            )
+        return {
+            **base,
+            "type": "response.web_search_call.completed",
+            "item_id": event.item_id,
+            "output_index": event.index,
+        }
+    if isinstance(event, HostedCitation):
+        projection_state = state if state is not None else OpenAIProjectionState()
+        annotation_index, annotation = projection_state.add_citation(event)
+        return {
+            **base,
+            "type": "response.output_text.annotation.added",
+            "item_id": event.item_id,
+            "output_index": event.output_index,
+            "content_index": event.content_index,
+            "annotation_index": annotation_index,
+            "annotation": annotation,
+        }
+    raise TypeError(f"unsupported hosted turn event: {type(event).__name__}")
+
+
 def _snapshot(envelope: TransportEnvelope, status: str) -> dict[str, Any]:
     """Return the complete Response snapshot this lifecycle event must embed.
 
-    The transport lane folds every canonical event into one shared snapshot
-    builder, so the snapshot rides on the envelope. A `TurnStarted` envelope can
-    always seed its own snapshot; any other event reaching this projector
-    without lane state has no response identity to publish and keeps the
-    status-only body it had before.
+    The controller owns the only snapshot fold. Any response-embedding event
+    without that complete published snapshot is an integrity failure.
     """
 
     snapshot = envelope.snapshot
-    if snapshot is None and isinstance(envelope.event, TurnStarted):
-        builder = ResponseSnapshotBuilder()
-        builder.observe(envelope.event)
-        snapshot = builder.snapshot(envelope.event)
     if snapshot is None:
-        return {"status": status}
+        raise TypeError("response-embedding event is missing its full snapshot")
     projected = dict(snapshot)
     projected["status"] = status
     return projected
 
 
-def encode_sse(envelope: TransportEnvelope) -> bytes:
-    projected = project_event(envelope)
+def encode_sse(
+    envelope: TransportEnvelope,
+    *,
+    state: OpenAIProjectionState | None = None,
+) -> bytes | None:
+    projected = project_event(envelope, state=state)
+    if isinstance(projected, NoWireResponseEvent):
+        return None
     projected.pop("stream_id", None)
     event_type = str(projected["type"])
     payload = json.dumps(projected, separators=(",", ":"), ensure_ascii=False)
     return f"event: {event_type}\ndata: {payload}\n\n".encode()
 
 
-def encode_websocket(envelope: TransportEnvelope) -> str:
+def encode_websocket(
+    envelope: TransportEnvelope,
+    *,
+    state: OpenAIProjectionState | None = None,
+) -> str | None:
     """Encode the exact projected object used as the SSE data payload."""
 
+    projected = project_event(envelope, state=state)
+    if isinstance(projected, NoWireResponseEvent):
+        return None
     return json.dumps(
-        project_event(envelope),
+        projected,
         separators=(",", ":"),
         ensure_ascii=False,
     )

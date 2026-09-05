@@ -17,6 +17,7 @@ from ..runtime.events import (
     HostedCallProgress,
     HostedCallResult,
     HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -39,6 +40,7 @@ from .transport import (
     ResponseSnapshotIdentity,
     build_response_snapshot,
     render_hosted_call_item,
+    render_url_citation,
     request_settings_from,
 )
 
@@ -98,6 +100,8 @@ class _ContentState:
     done_text: str | None = None
     flow_completed: bool = False
     completed: bool = False
+    annotations: list[Mapping[str, Any]] = field(default_factory=list)
+    citation_ranges: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -162,6 +166,7 @@ class RuntimeResponseProjection:
         self._item_ids: set[str] = set()
         self._usage: UsageUpdate | None = None
         self._terminal: Mapping[str, Any] | None = None
+        self._hosted_source_lengths: dict[str, dict[str, int]] = {}
 
     def observe(self, sequenced: SequencedTurnEvent) -> None:
         if not isinstance(sequenced, SequencedTurnEvent):
@@ -226,9 +231,9 @@ class RuntimeResponseProjection:
         elif isinstance(event, HostedCallProgress):
             self._require_hosted_item(event.index, event.item_id, event.call_id)
         elif isinstance(event, HostedCallResult):
-            # Lifecycle acceptance only: the payload never enters projection
-            # state, keeping the terminal envelope free of fetched content.
-            self._require_hosted_item(event.index, event.item_id, event.call_id)
+            self._accept_hosted_result(event)
+        elif isinstance(event, HostedCitation):
+            self._accept_citation(event)
         elif isinstance(event, HostedCallCompleted):
             self._complete_hosted_call(event)
         elif isinstance(event, UsageUpdate):
@@ -458,6 +463,66 @@ class RuntimeResponseProjection:
             raise RuntimeProjectionError("hosted call receipt already recorded")
         item.hosted_status = event.status
 
+    def _accept_hosted_result(self, event: HostedCallResult) -> None:
+        item = self._require_hosted_item(event.index, event.item_id, event.call_id)
+        if event.tool_name != item.name:
+            raise RuntimeProjectionError(
+                "hosted result tool name does not match its output item"
+            )
+        if event.call_id in self._hosted_source_lengths:
+            raise RuntimeProjectionError("hosted result already recorded")
+        result = event.result
+        if result["kind"] == "document":
+            lengths = {str(result["url"]): len(str(result["content"]))}
+        else:
+            lengths = {
+                str(entry["url"]): len(str(entry["snippet"]))
+                for entry in result["results"]
+            }
+        self._hosted_source_lengths[event.call_id] = lengths
+
+    def _accept_citation(self, event: HostedCitation) -> None:
+        content = self._require_open_content(
+            event.output_index,
+            event.item_id,
+            event.content_index,
+            TEXT_CONTENT_KIND,
+        )
+        if content.flow_completed:
+            raise RuntimeProjectionError(
+                "hosted citation cannot follow output_text completion"
+            )
+        sources = self._hosted_source_lengths.get(event.source_call_id)
+        if sources is None:
+            raise RuntimeProjectionError(
+                "hosted citation references an unknown hosted result"
+            )
+        source_length = sources.get(event.source_url)
+        if source_length is None:
+            raise RuntimeProjectionError(
+                "hosted citation url is not proven by its result"
+            )
+        if event.source_end > source_length:
+            raise RuntimeProjectionError(
+                "hosted citation source range exceeds its proven result"
+            )
+        text = "".join(content.chunks)
+        if event.output_end > len(text):
+            raise RuntimeProjectionError(
+                "hosted citation output range exceeds emitted text"
+            )
+        if text[event.output_start : event.output_end] != event.cited_text:
+            raise RuntimeProjectionError(
+                "hosted citation text does not match its output range"
+            )
+        if any(
+            event.output_start < end and event.output_end > start
+            for start, end in content.citation_ranges
+        ):
+            raise RuntimeProjectionError("hosted citation ranges must not overlap")
+        content.citation_ranges.append((event.output_start, event.output_end))
+        content.annotations.append(render_url_citation(event))
+
     def _accept_usage(self, event: UsageUpdate) -> None:
         previous = self._usage
         if previous is not None and (
@@ -555,7 +620,10 @@ class RuntimeResponseProjection:
                     {
                         "type": "output_text",
                         "text": self._content_text(item.contents[index]),
-                        "annotations": [],
+                        "annotations": [
+                            dict(annotation)
+                            for annotation in item.contents[index].annotations
+                        ],
                     }
                     for index in range(len(item.contents))
                 ],

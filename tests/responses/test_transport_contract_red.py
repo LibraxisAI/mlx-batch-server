@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 
 from mlx_batch_server.responses.projector import (
+    NoWireResponseEvent,
+    OpenAIProjectionState,
     encode_sse,
     encode_websocket,
     project_event,
@@ -43,6 +45,11 @@ from mlx_batch_server.responses.websocket import (
 from mlx_batch_server.runtime.events import (
     ContentPartCompleted,
     ContentPartStarted,
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallResult,
+    HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ReasoningCompleted,
@@ -79,9 +86,33 @@ def _session(
     )
 
 
-async def _events(*events: TurnEvent) -> AsyncIterator[SequencedTurnEvent]:
+async def _events(*events: TurnEvent) -> AsyncIterator[PublishedResponseEvent]:
+    builder = ResponseSnapshotBuilder()
     for sequence_number, event in enumerate(events):
-        yield SequencedTurnEvent(sequence_number, event)
+        builder.observe(event)
+        snapshot = (
+            builder.snapshot(event)
+            if isinstance(event, SNAPSHOT_EMBEDDING_EVENT_TYPES)
+            else None
+        )
+        yield PublishedResponseEvent(sequence_number, event, snapshot)
+
+
+def _controller_envelope(
+    stream_id: StreamId | None,
+    sequence_number: int,
+    event: TurnEvent,
+) -> TransportEnvelope:
+    builder = ResponseSnapshotBuilder()
+    if not isinstance(event, TurnStarted):
+        builder.observe(TurnStarted("resp_test", "buddy", 1))
+    builder.observe(event)
+    return TransportEnvelope(
+        stream_id,
+        sequence_number,
+        event,
+        snapshot=builder.snapshot(event),
+    )
 
 
 def _source(response_id: str, text: str = "ok") -> ResponseEventSource:
@@ -439,13 +470,22 @@ def test_stream_id_is_websocket_only_while_event_payloads_otherwise_match() -> N
         stream_id=StreamId("buddy"),
         sequence_number=0,
         event=TurnStarted(response_id="resp_test", model="buddy", created_at=1),
+        snapshot=_controller_envelope(
+            StreamId("buddy"),
+            0,
+            TurnStarted(response_id="resp_test", model="buddy", created_at=1),
+        ).snapshot,
     )
     projected = project_event(envelope)
-    sse = encode_sse(envelope).decode()
+    encoded_sse = encode_sse(envelope)
+    encoded_websocket = encode_websocket(envelope)
+    assert encoded_sse is not None
+    assert encoded_websocket is not None
+    sse = encoded_sse.decode()
     data_line = next(line for line in sse.splitlines() if line.startswith("data: "))
 
     sse_payload = json.loads(data_line.removeprefix("data: "))
-    websocket_payload = json.loads(encode_websocket(envelope))
+    websocket_payload = json.loads(encoded_websocket)
     assert "stream_id" not in sse_payload
     assert websocket_payload.pop("stream_id") == "buddy"
     assert websocket_payload == sse_payload
@@ -547,7 +587,11 @@ def test_projector_uses_official_item_content_delta_and_done_types() -> None:
     assert projected_by_type["response.output_text.done"][0]["logprobs"] == []
 
     cancelled = project_event(
-        TransportEnvelope(stream_id, len(cases), TurnCancelled("user_stopped"))
+        _controller_envelope(
+            stream_id,
+            len(cases),
+            TurnCancelled("user_stopped"),
+        )
     )
     assert cancelled["type"] == "response.incomplete"
     assert cancelled["response"]["status"] == "incomplete"
@@ -569,7 +613,7 @@ def test_length_finish_projects_official_incomplete_terminal() -> None:
         )
     )
     terminal = project_event(
-        TransportEnvelope(
+        _controller_envelope(
             stream_id,
             8,
             TurnCompleted("length", UsageUpdate(4, 2, 6)),
@@ -577,25 +621,12 @@ def test_length_finish_projects_official_incomplete_terminal() -> None:
     )
 
     assert output_done["item"]["status"] == "incomplete"
-    assert terminal == {
-        "sequence_number": 8,
-        "stream_id": "limited",
-        "type": "response.incomplete",
-        "response": {
-            "status": "incomplete",
-            "incomplete_details": {"reason": "max_output_tokens"},
-            "usage": {
-                "input_tokens": 4,
-                "input_tokens_details": {
-                    "cache_write_tokens": 0,
-                    "cached_tokens": 0,
-                },
-                "output_tokens": 2,
-                "output_tokens_details": {"reasoning_tokens": 0},
-                "total_tokens": 6,
-            },
-        },
-    }
+    assert terminal["sequence_number"] == 8
+    assert terminal["stream_id"] == "limited"
+    assert terminal["type"] == "response.incomplete"
+    assert terminal["response"]["status"] == "incomplete"
+    assert terminal["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert terminal["response"]["usage"]["total_tokens"] == 6
 
 
 @pytest.mark.asyncio
@@ -607,13 +638,17 @@ async def test_same_stream_id_queues_fifo_without_overlap() -> None:
         name = str(command.response["input"])
         started.append(name)
 
-        async def held() -> AsyncIterator[SequencedTurnEvent]:
-            yield SequencedTurnEvent(
-                0,
-                TurnStarted(response_id=f"resp_{name}", model="buddy", created_at=1),
+        async def held() -> AsyncIterator[PublishedResponseEvent]:
+            builder = ResponseSnapshotBuilder()
+            started = TurnStarted(
+                response_id=f"resp_{name}", model="buddy", created_at=1
             )
+            builder.observe(started)
+            yield PublishedResponseEvent(0, started, builder.snapshot(started))
             await releases[name].wait()
-            yield SequencedTurnEvent(1, TurnCompleted("stop"))
+            completed = TurnCompleted("stop")
+            builder.observe(completed)
+            yield PublishedResponseEvent(1, completed, builder.snapshot(completed))
 
         return ResponseEventSource(held())
 
@@ -1192,12 +1227,14 @@ async def test_source_faults_request_cancel_without_authoring_response_terminal(
 async def test_websocket_renders_lane_fault_as_official_error_not_response_event() -> (
     None
 ):
-    async def invalid_sequence() -> AsyncIterator[SequencedTurnEvent]:
-        yield SequencedTurnEvent(
-            0,
-            TurnStarted(response_id="resp_main", model="buddy", created_at=1),
-        )
-        yield SequencedTurnEvent(2, TurnCompleted("stop"))
+    async def invalid_sequence() -> AsyncIterator[PublishedResponseEvent]:
+        builder = ResponseSnapshotBuilder()
+        started = TurnStarted(response_id="resp_main", model="buddy", created_at=1)
+        builder.observe(started)
+        yield PublishedResponseEvent(0, started, builder.snapshot(started))
+        completed = TurnCompleted("stop")
+        builder.observe(completed)
+        yield PublishedResponseEvent(2, completed, builder.snapshot(completed))
 
     websocket = ResponsesWebSocketSession(
         _session(),
@@ -1226,6 +1263,7 @@ async def test_websocket_renders_lane_fault_as_official_error_not_response_event
         },
     }
     assert "sequence_number" not in rendered
+    assert websocket._projection_states == {}
     assert "response" not in rendered
 
 
@@ -1295,26 +1333,23 @@ async def test_runtime_terminal_keeps_full_terminal_response_channel() -> None:
 
 def test_usage_projects_through_standard_in_progress_event() -> None:
     projected = project_event(
-        TransportEnvelope(StreamId("main"), 3, UsageUpdate(2, 3, 5))
+        _controller_envelope(StreamId("main"), 3, UsageUpdate(2, 3, 5))
     )
-    assert projected == {
-        "sequence_number": 3,
-        "stream_id": "main",
-        "type": "response.in_progress",
-        "response": {
-            "status": "in_progress",
-            "usage": {
-                "input_tokens": 2,
-                "input_tokens_details": {
-                    "cache_write_tokens": 0,
-                    "cached_tokens": 0,
-                },
-                "output_tokens": 3,
-                "output_tokens_details": {"reasoning_tokens": 0},
-                "total_tokens": 5,
-            },
-        },
-    }
+    assert projected["sequence_number"] == 3
+    assert projected["stream_id"] == "main"
+    assert projected["type"] == "response.in_progress"
+    assert projected["response"]["status"] == "in_progress"
+    assert projected["response"]["usage"]["total_tokens"] == 5
+
+
+def test_response_embedding_events_without_owner_snapshot_fail_closed() -> None:
+    for event in (
+        TurnStarted("resp_missing", "buddy", 1),
+        UsageUpdate(1, 1, 2),
+        TurnCompleted("stop"),
+    ):
+        with pytest.raises(TypeError, match="missing its full snapshot"):
+            project_event(TransportEnvelope(None, 0, event))
 
 
 @pytest.mark.asyncio
@@ -1376,13 +1411,15 @@ async def test_response_steer_interrupts_parent_and_commits_inherited_successor(
     cancel_reasons: list[str] = []
     commands: list[ResponseCreateCommand] = []
 
-    async def parent_events() -> AsyncIterator[SequencedTurnEvent]:
-        yield SequencedTurnEvent(
-            0,
-            TurnStarted(response_id="resp_parent", model="buddy", created_at=1),
-        )
+    async def parent_events() -> AsyncIterator[PublishedResponseEvent]:
+        builder = ResponseSnapshotBuilder()
+        started = TurnStarted(response_id="resp_parent", model="buddy", created_at=1)
+        builder.observe(started)
+        yield PublishedResponseEvent(0, started, builder.snapshot(started))
         await cancelled.wait()
-        yield SequencedTurnEvent(1, TurnCancelled("steered"))
+        stopped = TurnCancelled("steered")
+        builder.observe(stopped)
+        yield PublishedResponseEvent(1, stopped, builder.snapshot(stopped))
 
     def cancel_parent(reason: str) -> None:
         cancel_reasons.append(reason)
@@ -1986,6 +2023,8 @@ def _spine_turn_events() -> tuple[TurnEvent, ...]:
 async def _published_source(
     published: list[PublishedResponseEvent],
     terminal_body: dict[str, Any],
+    *,
+    response_id: str = "resp_spine",
 ) -> ResponseEventSource:
     async def events() -> AsyncIterator[PublishedResponseEvent]:
         for item in published:
@@ -1997,7 +2036,7 @@ async def _published_source(
     return ResponseEventSource(
         events(),
         terminal_response=asyncio.ensure_future(terminal()),
-        response_id="resp_spine",
+        response_id=response_id,
     )
 
 
@@ -2007,6 +2046,306 @@ def _as_plain(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_as_plain(item) for item in value]
     return value
+
+
+_HOSTED_SOURCE_URL = "https://a.example/one"
+_HOSTED_SOURCE_TEXT = "source passage"
+
+
+def _hosted_delivery_events(*, failed: bool) -> tuple[TurnEvent, ...]:
+    """Recorded success/failure turns at the admitted neutral event boundary."""
+
+    response_id = "resp_hosted_failure" if failed else "resp_hosted_success"
+    answer = "web search failed; continue without it" if failed else _HOSTED_SOURCE_TEXT
+    call_status = "failed" if failed else "completed"
+    sealed_sources: tuple[str, ...] = () if failed else (_HOSTED_SOURCE_URL,)
+    events: list[TurnEvent] = [
+        TurnStarted(
+            response_id,
+            _PHYSICAL_MODEL,
+            123,
+            requested_model=_PUBLIC_ALIAS,
+            request_settings={"tools": [{"type": "web_search"}]},
+        ),
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "ws_delivery",
+            "call_delivery",
+            "web_search",
+            {"query": "mlx"},
+        ),
+        HostedCallStarted(
+            0,
+            "ws_delivery",
+            "call_delivery",
+            "web_search",
+            {"query": "mlx"},
+        ),
+        HostedCallProgress(0, "ws_delivery", "call_delivery", "searching"),
+    ]
+    if not failed:
+        events.append(
+            HostedCallResult(
+                0,
+                "ws_delivery",
+                "call_delivery",
+                "web_search",
+                {
+                    "kind": "search_results",
+                    "digest": "digest-delivery",
+                    "query": "mlx",
+                    "results": (
+                        {
+                            "url": _HOSTED_SOURCE_URL,
+                            "title": "One",
+                            "snippet": _HOSTED_SOURCE_TEXT,
+                        },
+                    ),
+                },
+            )
+        )
+    events.extend(
+        (
+            HostedCallCompleted(
+                0,
+                "ws_delivery",
+                "call_delivery",
+                "web_search",
+                call_status,
+                {"call_id": "call_delivery", "status": call_status},
+            ),
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "ws_delivery",
+                call_id="call_delivery",
+                name="web_search",
+                status=call_status,
+                action={
+                    "kind": "search",
+                    "query": "mlx",
+                    "sources": sealed_sources,
+                },
+            ),
+            OutputItemStarted("message", 1, "msg_delivery"),
+            ContentPartStarted("output_text", 1, 0, "msg_delivery"),
+            TextDelta(answer, "msg_delivery", 1, 0),
+        )
+    )
+    if not failed:
+        events.append(
+            HostedCitation(
+                output_index=1,
+                item_id="msg_delivery",
+                content_index=0,
+                source_call_id="call_delivery",
+                source_url=_HOSTED_SOURCE_URL,
+                cited_text=_HOSTED_SOURCE_TEXT,
+                source_start=0,
+                source_end=len(_HOSTED_SOURCE_TEXT),
+                output_start=0,
+                output_end=len(_HOSTED_SOURCE_TEXT),
+            )
+        )
+    usage = UsageUpdate(7, 8, 15)
+    events.extend(
+        (
+            TextCompleted(answer, "msg_delivery", 1, 0),
+            ContentPartCompleted("output_text", 1, 0, "msg_delivery", answer),
+            OutputItemCompleted("message", 1, "msg_delivery", text=answer),
+            usage,
+            TurnCompleted("stop", usage),
+        )
+    )
+    return tuple(events)
+
+
+def _controller_hosted_recording(
+    *, failed: bool
+) -> tuple[list[PublishedResponseEvent], dict[str, Any]]:
+    """Run one recording through both controller-owned snapshot folds."""
+
+    from mlx_batch_server.responses.controller import PreparedResponse
+    from mlx_batch_server.responses.runtime_projection import RuntimeResponseProjection
+    from mlx_batch_server.runtime.contracts import GenerationRequest, RuntimeKey
+
+    events = _hosted_delivery_events(failed=failed)
+    response_id = "resp_hosted_failure" if failed else "resp_hosted_success"
+    prepared = PreparedResponse(
+        request=GenerationRequest(
+            response_id=response_id,
+            runtime=RuntimeKey(model_id=_PHYSICAL_MODEL),
+            messages=({"role": "user", "content": "search mlx"},),
+            tools=({"type": "web_search"},),
+            metadata={"requested_model": _PUBLIC_ALIAS},
+        ),
+        materialized_messages=({"role": "user", "content": "search mlx"},),
+    )
+    projection = RuntimeResponseProjection(prepared, clock=lambda: 123.0)
+    builder = ResponseSnapshotBuilder()
+    published: list[PublishedResponseEvent] = []
+    for sequence_number, event in enumerate(events):
+        sequenced = SequencedTurnEvent(sequence_number, event)
+        projection.observe(sequenced)
+        builder.observe(event)
+        snapshot = (
+            builder.snapshot(event)
+            if isinstance(event, SNAPSHOT_EMBEDDING_EVENT_TYPES)
+            else None
+        )
+        published.append(PublishedResponseEvent(sequence_number, event, snapshot))
+    return published, _as_plain(projection.terminal_envelope())
+
+
+async def _hosted_transport_payloads(
+    *, failed: bool
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    from mlx_batch_server.responses.runtime_router import _sse_events
+
+    published, committed = _controller_hosted_recording(failed=failed)
+    response_id = str(committed["id"])
+    http_source = await _published_source(
+        published,
+        committed,
+        response_id=response_id,
+    )
+    sse_payloads: list[dict[str, Any]] = []
+    async for chunk in _sse_events(http_source):
+        text = chunk.decode()
+        if text.startswith("data: [DONE]"):
+            continue
+        data_line = next(
+            line for line in text.splitlines() if line.startswith("data: ")
+        )
+        sse_payloads.append(json.loads(data_line.removeprefix("data: ")))
+
+    state = OpenAIProjectionState()
+    omissions = [
+        projected
+        for item in published
+        if isinstance(
+            (
+                projected := project_event(
+                    TransportEnvelope(
+                        StreamId("delivery"),
+                        item.sequence_number,
+                        item.event,
+                        snapshot=item.snapshot,
+                    ),
+                    state=state,
+                )
+            ),
+            NoWireResponseEvent,
+        )
+    ]
+    ws_source = await _published_source(
+        published,
+        committed,
+        response_id=response_id,
+    )
+    websocket = ResponsesWebSocketSession(_session(), lambda command: ws_source)
+    await websocket.create(
+        ResponseCreateCommand(
+            response={"model": _PUBLIC_ALIAS, "input": "search mlx"},
+            stream_id=StreamId("delivery"),
+        )
+    )
+    ws_payloads = [
+        await websocket.receive_payload()
+        for _ in range(len(published) - len(omissions))
+    ]
+    assert len(omissions) == 1
+    expected_reason = (
+        "failed_hosted_lifecycle_absent" if failed else "hosted_result_internal"
+    )
+    assert omissions[0].reason == expected_reason
+    return sse_payloads, ws_payloads, committed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+async def test_hosted_delivery_is_sdk_valid_and_transport_identical(
+    failed: bool,
+) -> None:
+    """Recorded delivery proof for success and typed-failure continuation."""
+
+    from openai.types.responses import Response, ResponseStreamEvent
+    from pydantic import TypeAdapter
+
+    sse_payloads, ws_payloads, committed = await _hosted_transport_payloads(
+        failed=failed
+    )
+    assert len(sse_payloads) == len(ws_payloads)
+    for sse_payload, ws_payload in zip(sse_payloads, ws_payloads, strict=True):
+        stripped = dict(ws_payload)
+        assert stripped.pop("stream_id") == "delivery"
+        assert json.dumps(stripped, sort_keys=True) == json.dumps(
+            sse_payload, sort_keys=True
+        )
+        TypeAdapter(ResponseStreamEvent).validate_python(sse_payload)
+    Response.model_validate(committed)
+
+    sequence_numbers = [item["sequence_number"] for item in sse_payloads]
+    assert sequence_numbers == sorted(sequence_numbers)
+    assert len(sequence_numbers) == len(set(sequence_numbers))
+    assert sse_payloads[-1]["response"] == committed
+
+    event_types = [item["type"] for item in sse_payloads]
+    assert event_types.count("response.web_search_call.in_progress") == 1
+    assert event_types.count("response.web_search_call.searching") == 1
+    assert event_types.count("response.output_item.done") == 2
+    assert event_types.count("response.web_search_call.completed") == (
+        0 if failed else 1
+    )
+
+    opening = next(
+        item["item"]
+        for item in sse_payloads
+        if item["type"] == "response.output_item.added"
+        and item["item"]["id"] == "ws_delivery"
+    )
+    assert opening["action"] == {"type": "search", "query": "mlx"}
+    sealed = next(
+        item["item"]
+        for item in sse_payloads
+        if item["type"] == "response.output_item.done"
+        and item["item"]["id"] == "ws_delivery"
+    )
+    assert sealed["status"] == ("failed" if failed else "completed")
+    assert sealed["action"]["sources"] == (
+        [] if failed else [{"type": "url", "url": _HOSTED_SOURCE_URL}]
+    )
+
+    continuations = [
+        item["item"]
+        for item in sse_payloads
+        if item["type"] == "response.output_item.done"
+        and item["item"]["type"] == "message"
+    ]
+    assert len(continuations) == 1
+    reconstructed = "".join(
+        item["delta"]
+        for item in sse_payloads
+        if item["type"] == "response.output_text.delta"
+    )
+    assert reconstructed == continuations[0]["content"][0]["text"]
+
+    annotations = [
+        item
+        for item in sse_payloads
+        if item["type"] == "response.output_text.annotation.added"
+    ]
+    if failed:
+        assert annotations == []
+    else:
+        assert len(annotations) == 1
+        final_message = next(
+            item for item in committed["output"] if item["type"] == "message"
+        )
+        assert final_message["content"][0]["annotations"] == [
+            annotations[0]["annotation"]
+        ]
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from typing import Any, TypeAlias, cast
 from ..runtime.events import (
     HOSTED_CALL_ITEM_KIND,
     TERMINAL_EVENT_TYPES,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -300,6 +301,21 @@ def render_usage(usage: UsageUpdate) -> dict[str, Any]:
     }
 
 
+def render_url_citation(event: HostedCitation) -> dict[str, Any]:
+    """Render one proven neutral citation without retaining fetched content."""
+
+    return {
+        "type": "url_citation",
+        "url": event.source_url,
+        # The neutral event deliberately carries no provider title. Reusing the
+        # proven URL is the only truthful, stable title available to all three
+        # Responses projections without retaining a fetched page body.
+        "title": event.source_url,
+        "start_index": event.output_start,
+        "end_index": event.output_end,
+    }
+
+
 def render_started_item(event: OutputItemStarted) -> dict[str, Any]:
     """Render an opening output item with every SDK-required field and no content.
 
@@ -386,7 +402,11 @@ def render_hosted_call_item(
     }
 
 
-def render_completed_item(event: OutputItemCompleted) -> dict[str, Any]:
+def render_completed_item(
+    event: OutputItemCompleted,
+    *,
+    annotations: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     """Render one finished output item with its complete official payload."""
 
     if event.kind == HOSTED_CALL_ITEM_KIND:
@@ -403,7 +423,7 @@ def render_completed_item(event: OutputItemCompleted) -> dict[str, Any]:
                 {
                     "type": "output_text",
                     "text": event.text,
-                    "annotations": [],
+                    "annotations": [dict(annotation) for annotation in annotations],
                     "logprobs": [],
                 }
             ],
@@ -477,13 +497,14 @@ class ResponseSnapshotBuilder:
     event, and it never outlives its stream.
     """
 
-    __slots__ = ("_identity", "_output", "_settings", "_usage")
+    __slots__ = ("_annotations", "_identity", "_output", "_settings", "_usage")
 
     def __init__(self) -> None:
         self._identity: ResponseSnapshotIdentity | None = None
         self._settings: Mapping[str, Any] = {}
         self._output: list[dict[str, Any]] = []
         self._usage: dict[str, Any] | None = None
+        self._annotations: dict[str, list[dict[str, Any]]] = {}
 
     @property
     def identity(self) -> ResponseSnapshotIdentity | None:
@@ -501,8 +522,22 @@ class ResponseSnapshotBuilder:
             )
             self._settings = dict(event.request_settings)
             return
+        if isinstance(event, HostedCitation):
+            if event.content_index != 0:
+                raise ValueError(
+                    "Responses snapshots support citations only on output_text part zero"
+                )
+            self._annotations.setdefault(event.item_id, []).append(
+                render_url_citation(event)
+            )
+            return
         if isinstance(event, OutputItemCompleted):
-            self._output.append(render_completed_item(event))
+            self._output.append(
+                render_completed_item(
+                    event,
+                    annotations=self._annotations.pop(event.item_id, ()),
+                )
+            )
             return
         if isinstance(event, UsageUpdate):
             self._usage = render_usage(event)

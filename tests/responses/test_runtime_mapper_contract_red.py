@@ -1029,7 +1029,16 @@ def test_owner_bound_compaction_restores_context_before_new_input() -> None:
     assert prepared.materialized_messages[-1]["content"][0]["text"] == "new"
 
 
-@pytest.mark.parametrize("tool_type", ["web_search", "file_search", "computer"])
+@pytest.mark.parametrize(
+    "tool_type",
+    [
+        "web_search_2025_08_26",
+        "web_search_preview",
+        "web_fetch",
+        "file_search",
+        "computer",
+    ],
+)
 def test_hosted_tools_fail_closed_with_stable_error(tool_type: str) -> None:
     mapper, _, _ = _mapper()
 
@@ -1045,6 +1054,92 @@ def test_hosted_tools_fail_closed_with_stable_error(tool_type: str) -> None:
 
     assert error.value.code == "unsupported_tool"
     assert error.value.param == "tools[0].type"
+
+
+def test_exact_web_search_declaration_is_admitted_and_immutable() -> None:
+    mapper, _, _ = _mapper()
+    prepared = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": "search once",
+            "tools": [{"type": "web_search"}],
+        },
+    )
+
+    assert prepared.request.tools == ({"type": "web_search"},)
+    with pytest.raises(TypeError):
+        prepared.request.tools[0]["type"] = "function"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("filters", {"allowed_domains": ["example.com"]}),
+        ("search_context_size", "low"),
+        ("user_location", {"type": "approximate", "country": "PL"}),
+        ("queries", ["one", "two"]),
+        ("open_page", True),
+        ("find_in_page", "needle"),
+    ],
+)
+def test_web_search_options_receive_field_specific_refusals(
+    field: str,
+    value: object,
+) -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "search",
+                "tools": [{"type": "web_search", field: value}],
+            },
+        )
+
+    assert error.value.code == "unsupported_parameter"
+    assert error.value.param == f"tools[0].{field}"
+
+
+def test_hosted_and_client_tools_or_duplicate_hosted_declarations_are_refused() -> None:
+    mapper, _, _ = _mapper()
+    cases = (
+        [
+            {"type": "web_search"},
+            {"type": "function", "name": "lookup"},
+        ],
+        [{"type": "web_search"}, {"type": "web_search"}],
+    )
+
+    for tools in cases:
+        with pytest.raises(ResponsesMappingError) as error:
+            _prepare(
+                mapper,
+                {"model": "flash-next", "input": "search", "tools": tools},
+            )
+        assert error.value.code == "unsupported_capability"
+        assert error.value.param == "tools"
+
+
+def test_custom_web_fetch_function_stays_client_owned_and_no_tools_stays_empty() -> (
+    None
+):
+    mapper, _, _ = _mapper()
+    custom = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": "fetch",
+            "tools": [{"type": "function", "name": "web_fetch"}],
+        },
+    )
+    plain = _prepare(mapper, {"model": "flash-next", "input": "no web"})
+
+    assert custom.request.tools[0]["name"] == "web_fetch"
+    assert custom.request.tools[0]["type"] == "function"
+    assert plain.request.tools == ()
 
 
 def test_unpreserved_reasoning_summary_style_fails_closed() -> None:
