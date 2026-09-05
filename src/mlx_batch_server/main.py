@@ -10,15 +10,28 @@ from mlx_batch_server.utils import compat as _compat  # noqa: F401
 
 import argparse
 import asyncio
+import json
 import os
 import re
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from .provenance import get_runtime_provenance, stamp_runtime_environment
+
+if TYPE_CHECKING:
+    from .responses.errors import OpenAIError
 
 DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:*,http://127.0.0.1:*,http://100.*:*,https://100.*:*"
 )
 PRODUCTION_ROLE_PORTS = frozenset({8100, 8101, 8102})
+_RESPONSES_REQUEST_BODY_PATHS = frozenset(
+    {
+        "/v1/responses",
+        "/v1/responses/compact",
+        "/v1/responses/input_tokens",
+    }
+)
 # NOTE: The `100.*` wildcard covers Tailscale/CGNAT address ranges.
 # In a tightly controlled environment this is acceptable for local/tailnet use;
 # override via the MLX_BATCH_CORS env variable to restrict to localhost-only
@@ -53,6 +66,132 @@ def _build_cors_config(cors_origins: str) -> tuple[list[str], str | None]:
     return exact_origins, allow_origin_regex
 
 
+def _is_responses_request_validation(request: Any) -> bool:
+    if getattr(request, "method", None) != "POST":
+        return False
+    scope = getattr(request, "scope", {})
+    route = scope.get("route") if isinstance(scope, Mapping) else None
+    route_path = getattr(route, "path", None)
+    request_path = getattr(getattr(request, "url", None), "path", None)
+    resolved_path = route_path if isinstance(route_path, str) else request_path
+    return resolved_path in _RESPONSES_REQUEST_BODY_PATHS
+
+
+def _validation_param(error: Mapping[str, Any]) -> str | None:
+    location = error.get("loc", ())
+    if not isinstance(location, Sequence) or isinstance(location, str | bytes):
+        return None
+    transport_parts = {"body", "query", "path", "header", "cookie"}
+    parts = [str(part) for part in location if part not in transport_parts]
+    if parts:
+        return ".".join(parts)
+    return "body" if "body" in location else None
+
+
+def _openai_request_validation_error(exception: Any) -> "OpenAIError":
+    from .responses.errors import OpenAIError
+
+    raw_errors = exception.errors()
+    errors = raw_errors if isinstance(raw_errors, list) else []
+    first = errors[0] if errors and isinstance(errors[0], Mapping) else {}
+    error_kind = first.get("type")
+    param = _validation_param(first)
+
+    if error_kind == "json_invalid":
+        message = "Malformed JSON request body."
+        code = "invalid_json"
+        param = "body"
+    elif error_kind in {"dict_type", "model_attributes_type", "model_type"}:
+        message = "Request body must be a JSON object."
+        code = "invalid_request"
+        param = "body"
+    elif error_kind == "missing" and param == "body":
+        message = "Request body is required."
+        code = "invalid_request"
+    elif error_kind == "missing" and param is not None:
+        message = f"Missing required parameter: '{param}'."
+        code = "invalid_request"
+    elif param is not None and param != "body":
+        message = f"Invalid value for '{param}'."
+        code = "invalid_request"
+    else:
+        message = "Invalid request body."
+        code = "invalid_request"
+
+    return OpenAIError(
+        message=message,
+        type="invalid_request_error",
+        code=code,
+        param=param,
+        status_code=400,
+    )
+
+
+def _openai_raw_body_error(body: bytes) -> "OpenAIError | None":
+    from .responses.errors import OpenAIError
+
+    if not isinstance(body, bytes):
+        raise TypeError("body must be bytes")
+    if not body.strip():
+        return OpenAIError(
+            message="Request body is required.",
+            type="invalid_request_error",
+            code="invalid_request",
+            param="body",
+            status_code=400,
+        )
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return OpenAIError(
+            message="Malformed JSON request body.",
+            type="invalid_request_error",
+            code="invalid_json",
+            param="body",
+            status_code=400,
+        )
+    if isinstance(payload, Mapping):
+        return None
+    return OpenAIError(
+        message="Request body must be a JSON object.",
+        type="invalid_request_error",
+        code="invalid_request",
+        param="body",
+        status_code=400,
+    )
+
+
+async def _responses_request_validation_exception_handler(
+    request: Any,
+    exception: Any,
+) -> Any:
+    """Normalize validation only after routing to a Responses body endpoint."""
+
+    if _is_responses_request_validation(request):
+        from .responses.errors import render_http_error
+
+        return render_http_error(_openai_request_validation_error(exception))
+
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    return await request_validation_exception_handler(request, exception)
+
+
+async def _responses_body_exception_boundary(
+    request: Any,
+    call_next: Any,
+) -> Any:
+    """Reject invalid Responses JSON before generic middleware can inspect it."""
+
+    if _is_responses_request_validation(request):
+        from .responses.errors import render_http_error
+
+        error = _openai_raw_body_error(await request.body())
+        if error is not None:
+            return render_http_error(error)
+    return await call_next(request)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser for the server."""
     parser = argparse.ArgumentParser(
@@ -61,7 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
+        # Intentional, configurable server bind; the local default port is 10240.
+        default="0.0.0.0",  # nosec B104
         help="Host to bind the server to (default: 0.0.0.0)",
     )
     parser.add_argument(
@@ -121,6 +261,7 @@ def create_app(  # noqa: PLR0915
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI
+    from fastapi.exceptions import RequestValidationError
     from fastapi.middleware.cors import CORSMiddleware
 
     from .core.config import get_settings
@@ -198,7 +339,8 @@ def create_app(  # noqa: PLR0915
                         from .auth.session import session_auth
 
                         await session_auth.stop()
-                    except Exception:
+                    # Session shutdown is best-effort while the app is exiting.
+                    except Exception:  # nosec B110
                         pass
                 if legacy_runtime:
                     from .runtime_recycle import stop_idle_process_recycler
@@ -228,6 +370,10 @@ def create_app(  # noqa: PLR0915
     application.state.responses_route_runtime = responses_route_runtime
     application.state.role_control_service = role_control_service
     application.state.worker_count = configured_worker_count
+    application.add_exception_handler(
+        RequestValidationError,
+        _responses_request_validation_exception_handler,
+    )
 
     # Add request/response logging middleware
     application.add_middleware(RequestResponseLoggingMiddleware)
@@ -259,6 +405,10 @@ def create_app(  # noqa: PLR0915
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # This boundary is intentionally added last so Starlette places it outside
+    # generic logging/rate-limit middleware that may inspect the JSON body.
+    application.middleware("http")(_responses_body_exception_boundary)
 
     return application
 
