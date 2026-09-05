@@ -305,11 +305,17 @@ class TurnCompleted:
     finish_reason: str
     usage: UsageUpdate | None = None
     backend_stats: Mapping[str, Any] = field(default_factory=dict)
+    stop_sequence: str | None = None
 
     def __post_init__(self) -> None:
         _require_identity("finish_reason", self.finish_reason)
         if self.usage is not None and not isinstance(self.usage, UsageUpdate):
             raise TypeError("usage must be a UsageUpdate")
+        if self.finish_reason == "stop_sequence":
+            if not isinstance(self.stop_sequence, str) or not self.stop_sequence:
+                raise ValueError("stop_sequence must not be empty")
+        elif self.stop_sequence is not None:
+            raise ValueError("non-stop completion cannot carry stop_sequence")
         object.__setattr__(self, "backend_stats", _freeze_mapping(self.backend_stats))
 
 

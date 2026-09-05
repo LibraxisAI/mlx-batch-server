@@ -333,6 +333,30 @@ class _BlockingExecutor(_Executor):
         )
 
 
+class _StopSequenceExecutor(_Executor):
+    async def execute(self, plan, requests, mtp_policy) -> FusedStepResult:
+        del requests, mtp_policy
+        if plan.prefill_rows:
+            return FusedStepResult(
+                prefill_results=tuple(
+                    PrefillResult(row.request_id, 32, complete=True)
+                    for row in plan.prefill_rows
+                )
+            )
+        return FusedStepResult(
+            decode_results=tuple(
+                DecodeResult(
+                    row.request_id,
+                    33,
+                    finished=True,
+                    finish_reason="stop_sequence",
+                    stop_sequence="Exact END",
+                )
+                for row in plan.decode_rows
+            )
+        )
+
+
 class _TerminalWritingExecutor(_Executor):
     async def execute(self, plan, requests, mtp_policy) -> FusedStepResult:
         del requests, mtp_policy
@@ -512,6 +536,27 @@ async def test_injected_generation_turn_owns_complete_backend_lifecycle() -> Non
     assert handle.capabilities.facts["mtp_rounds"] == 1
     assert handle.capabilities.facts["mtp_acceptance_rate"] == pytest.approx(2 / 3)
     assert "cache_cleanup:completed" in order
+    await handle.close(1.0)
+
+
+@pytest.mark.asyncio
+async def test_exact_stop_sequence_reaches_turn_completed_typed_state() -> None:
+    order: list[str] = []
+    backend, _ = _backend(_StopSequenceExecutor(order), _Cache(order))
+    handle = await backend.load(RUNTIME, LoadConfig())
+    sink = _Sink(order)
+
+    turn = await handle.start_turn(
+        _request("resp_stop_sequence"),
+        sink,
+        _CancelToken(),
+    )
+    await asyncio.wait_for(turn.wait_closed(), timeout=1.0)
+
+    completed = sink.events[-1]
+    assert isinstance(completed, TurnCompleted)
+    assert completed.finish_reason == "stop_sequence"
+    assert completed.stop_sequence == "Exact END"
     await handle.close(1.0)
 
 

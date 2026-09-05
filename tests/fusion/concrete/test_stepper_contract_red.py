@@ -67,7 +67,12 @@ PROVEN_MTP = MtpRuntimeFacts(
 )
 
 
-def _request(response_id: str, *, vision: bool = False) -> GenerationRequest:
+def _request(
+    response_id: str,
+    *,
+    vision: bool = False,
+    stop_sequences: tuple[str, ...] = (),
+) -> GenerationRequest:
     return GenerationRequest(
         response_id=response_id,
         runtime=RUNTIME,
@@ -75,6 +80,7 @@ def _request(response_id: str, *, vision: bool = False) -> GenerationRequest:
         media=({"type": "input_image", "image_url": "file:///patient.png"},)
         if vision
         else (),
+        sampling={"stop": stop_sequences} if stop_sequences else {},
     )
 
 
@@ -265,6 +271,33 @@ def test_only_live_proven_aligned_cohort_enters_exact_mtp_decode() -> None:
     assert step.mtp_decision.enabled is True
     assert step.mtp_decision.exact is True
     assert step.mtp_decision.mode is MtpMode.EXACT_ALIGNED_COHORT
+
+
+def test_stop_constrained_cohort_stays_in_one_shared_ar_step() -> None:
+    stepper, _ = _stepper(facts=PROVEN_MTP)
+    requests = {
+        name: _request(name, stop_sequences=("END",)) for name in ("first", "second")
+    }
+    plan = SchedulerPlan(
+        step_id=11,
+        decode_rows=(
+            ScheduledRequest("first", WorkKind.TEXT, 64),
+            ScheduledRequest("second", WorkKind.TEXT, 64),
+        ),
+    )
+
+    step = stepper.translate_plan(
+        plan,
+        requests,
+        MtpPolicy(allow_proven_multirow=True, max_proven_rows=2),
+    )[0]
+
+    assert step.kind is LowLevelBatchKind.AR_DECODE
+    assert tuple(row.request_id for row in step.rows) == ("first", "second")
+    assert step.mtp_decision is not None
+    assert (
+        step.mtp_decision.disable_reason is MtpDisableReason.STOP_SEQUENCE_CONSTRAINED
+    )
 
 
 def test_aligned_multirow_cohort_stays_ar_without_explicit_multirow_proof() -> None:

@@ -152,10 +152,17 @@ class DecodeResult:
     finished: bool = False
     finish_reason: str | None = None
     failed_reason: str | None = None
+    stop_sequence: str | None = None
 
     def __post_init__(self) -> None:
         if self.finished and self.failed_reason is not None:
             raise ValueError("a decode result cannot be finished and failed")
+        _validate_stop_sequence_terminal(
+            finished=self.finished,
+            finish_reason=self.finish_reason,
+            stop_sequence=self.stop_sequence,
+            label="decode result",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +170,30 @@ class TerminalRequest:
     request_id: str
     phase: RequestPhase
     reason: str
+    stop_sequence: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_stop_sequence_terminal(
+            finished=self.phase is RequestPhase.COMPLETED,
+            finish_reason=self.reason,
+            stop_sequence=self.stop_sequence,
+            label="terminal request",
+        )
+
+
+def _validate_stop_sequence_terminal(
+    *,
+    finished: bool,
+    finish_reason: str | None,
+    stop_sequence: str | None,
+    label: str,
+) -> None:
+    is_stop_sequence = finished and finish_reason == "stop_sequence"
+    if is_stop_sequence:
+        if not isinstance(stop_sequence, str) or not stop_sequence:
+            raise ValueError(f"{label} stop_sequence terminal requires an exact value")
+    elif stop_sequence is not None:
+        raise ValueError(f"{label} non-stop terminal cannot carry stop_sequence")
 
 
 @dataclass(frozen=True, slots=True)

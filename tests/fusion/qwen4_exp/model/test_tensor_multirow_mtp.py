@@ -7,6 +7,11 @@ import numpy as np
 import pytest
 from mlx_lm.models.cache import ArraysCache
 
+from mlx_batch_server.runtime.fusion.mtp import (
+    MtpAlignment,
+    MtpDisableReason,
+    MtpPolicy,
+)
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.sampling import SamplerConfig
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.tensor import (
     _Qwen4ExpTensorRuntime,
@@ -284,6 +289,34 @@ def test_multirow_mtp_batches_recursive_drafts_and_matches_singleton_oracle() ->
         for row in batch_rows
         for attr in ("_qwen4_exp_verify_rows", "_qwen4_exp_verify_ple")
     )
+
+
+def test_stop_constrained_b2_uses_one_ar_target_and_zero_speculation() -> None:
+    model = _FakeBatchModel()
+    runtime = _runtime(model)
+    rows = (_reservation(10), _reservation(20))
+    decision = MtpPolicy(allow_proven_multirow=True, max_proven_rows=2).decide(
+        alignment=MtpAlignment(
+            runtime_keys=("flash@rev", "flash@rev"),
+            cache_positions=(5, 5),
+        ),
+        model_supported=True,
+        head_attached=True,
+        decode_enabled=True,
+        verifier_available=True,
+        stop_sequence_constrained=True,
+    )
+
+    outcomes, fallbacks = runtime._decode_batch(
+        rows,
+        mtp_decision=decision,
+        draft_depth=2,
+    )
+
+    assert tuple(outcome.tokens for outcome in outcomes) == ((10,), (20,))
+    assert model.target_calls == [("decode", ((10,), (20,)))]
+    assert model.draft_calls == []
+    assert fallbacks == (MtpDisableReason.STOP_SEQUENCE_CONSTRAINED,)
 
 
 def test_multirow_mtp_batches_mixed_rejection_corrections() -> None:

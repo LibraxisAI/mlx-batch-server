@@ -597,6 +597,7 @@ class _FusedBackendHandle:
                         finish_reason=terminal.reason,
                         usage=context.usage,
                         backend_stats=dict(self.stats()),
+                        stop_sequence=terminal.stop_sequence,
                     )
                 else:
                     event = TurnFailed(

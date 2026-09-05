@@ -40,6 +40,41 @@ def test_load_time_disable_forces_autoregressive_fallback() -> None:
     assert decision.disable_reason is MtpDisableReason.DECODE_DISABLED
 
 
+def test_text_stop_constraint_forces_truthful_autoregressive_fallback() -> None:
+    policy = MtpPolicy(allow_proven_multirow=True, max_proven_rows=2)
+    decision = policy.decide(
+        alignment=MtpAlignment(
+            runtime_keys=("flash@rev", "flash@rev"),
+            cache_positions=(4096, 4096),
+        ),
+        model_supported=True,
+        head_attached=True,
+        decode_enabled=True,
+        verifier_available=True,
+        stop_sequence_constrained=True,
+    )
+
+    assert decision.enabled is False
+    assert decision.disable_reason is MtpDisableReason.STOP_SEQUENCE_CONSTRAINED
+
+
+def test_text_stop_constraint_is_the_explicit_reason_when_also_grammar_bound() -> None:
+    decision = MtpPolicy().decide(
+        alignment=MtpAlignment(
+            runtime_keys=("flash@rev",),
+            cache_positions=(4096,),
+        ),
+        model_supported=True,
+        head_attached=True,
+        decode_enabled=True,
+        verifier_available=True,
+        grammar_constrained=True,
+        stop_sequence_constrained=True,
+    )
+
+    assert decision.disable_reason is MtpDisableReason.STOP_SEQUENCE_CONSTRAINED
+
+
 def test_multirow_mtp_falls_back_until_live_proof_is_enabled() -> None:
     decision = _decide(
         MtpPolicy(),

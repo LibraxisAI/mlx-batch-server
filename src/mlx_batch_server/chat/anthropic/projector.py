@@ -264,6 +264,7 @@ class AnthropicMessageProjector:
             self._absorb_usage(event.usage)
         self._state.finish_reason = event.finish_reason
         self._state.stop_reason = self._resolve_stop_reason(event.finish_reason)
+        self._state.stop_sequence = event.stop_sequence
         self._stopped = True
         emitted.append(
             MessageDeltaEvent(
