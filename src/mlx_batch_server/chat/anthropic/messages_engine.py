@@ -13,11 +13,11 @@ caller that drives the engine directly — the documented substitution seam —
 gets the ``detached`` profile classified here, so no request can reach the
 turn source unclassified.
 
-Two protocol decisions are resolved here and handed to the projector, which
-is not allowed to guess either of them: whether Anthropic thinking may reach
-the wire (and who signs it), and which capacity lane actually served the
-turn. Both read the admitted profile — never the shape of the runtime events
-that come back.
+Three protocol decisions are resolved here and handed to the projector, which
+is not allowed to guess any of them: whether Anthropic thinking may reach the
+wire (and who signs it), which capacity lane actually served the turn, and
+whether the validated web-fetch tool enabled citations. Runtime events cannot
+widen any of those request and admission decisions.
 """
 
 from __future__ import annotations
@@ -100,6 +100,13 @@ class AnthropicMessagesEngine:
         # StreamingResponse and no SSE byte can exist.
         thinking = self._thinking_projection(request, profile)
         service_tier = _admitted_service_tier(request, profile)
+        citations_enabled = any(
+            tool.type == "web_fetch_20250910"
+            and tool.name == "web_fetch"
+            and tool.citations is not None
+            and tool.citations.enabled is True
+            for tool in request.tools or ()
+        )
         turn = build_turn(request)
         projector = AnthropicMessageProjector(
             message_id=new_message_id(),
@@ -107,6 +114,7 @@ class AnthropicMessagesEngine:
             model_alias=request.model,
             thinking=thinking,
             service_tier=service_tier,
+            citations_enabled=citations_enabled,
         )
         return projector, self._source().stream(turn).__aiter__()
 

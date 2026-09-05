@@ -76,8 +76,25 @@ def _request(**tool_overrides: Any) -> MessagesRequest:
     )
 
 
-def _success_events() -> list[Any]:
-    return [
+def _citation(**overrides: Any) -> HostedCitation:
+    values: dict[str, Any] = {
+        "output_index": 1,
+        "item_id": "text_1",
+        "content_index": 0,
+        "source_call_id": "call_fetch",
+        "source_url": _URL,
+        "cited_text": "grounded",
+        "source_start": _SOURCE_START,
+        "source_end": _SOURCE_START + len("grounded"),
+        "output_start": _OUTPUT_START,
+        "output_end": _OUTPUT_START + len("grounded"),
+    }
+    values.update(overrides)
+    return HostedCitation(**values)
+
+
+def _success_events(*, include_citation: bool = True) -> list[Any]:
+    events = [
         TurnStarted(response_id="resp_fetch", model="physical", created_at=1),
         HostedCallStarted(
             0,
@@ -107,24 +124,63 @@ def _success_events() -> list[Any]:
         ),
         ContentPartStarted(TEXT_CONTENT_KIND, 1, 0, "text_1"),
         TextDelta(_CONTINUATION, "text_1", 1, 0),
-        HostedCitation(
-            output_index=1,
-            item_id="text_1",
-            content_index=0,
-            source_call_id="call_fetch",
-            source_url=_URL,
-            cited_text="grounded",
-            source_start=_SOURCE_START,
-            source_end=_SOURCE_START + len("grounded"),
-            output_start=_OUTPUT_START,
-            output_end=_OUTPUT_START + len("grounded"),
-        ),
-        TextCompleted(_CONTINUATION, "text_1", 1, 0),
-        TurnCompleted(
-            "stop",
-            usage=UsageUpdate(input_tokens=7, output_tokens=5, total_tokens=12),
-        ),
     ]
+    if include_citation:
+        events.append(_citation())
+    events.extend(
+        [
+            TextCompleted(_CONTINUATION, "text_1", 1, 0),
+            TurnCompleted(
+                "stop",
+                usage=UsageUpdate(input_tokens=7, output_tokens=5, total_tokens=12),
+            ),
+        ]
+    )
+    return events
+
+
+def _citation_ready_projector(
+    *,
+    result: dict[str, Any] | None = None,
+    citations_enabled: bool = False,
+) -> AnthropicMessageProjector:
+    stored_result = _RESULT if result is None else result
+    projector = AnthropicMessageProjector(
+        message_id="msg_citation",
+        model_alias="m",
+        citations_enabled=citations_enabled,
+    )
+    projector.observe(
+        HostedCallStarted(
+            0,
+            "hosted_fetch",
+            "call_fetch",
+            "web_fetch",
+            {"url": "https://example.test/start"},
+        )
+    )
+    projector.observe(
+        HostedCallResult(
+            0,
+            "hosted_fetch",
+            "call_fetch",
+            "web_fetch",
+            stored_result,
+        )
+    )
+    projector.observe(
+        HostedCallCompleted(
+            0,
+            "hosted_fetch",
+            "call_fetch",
+            "web_fetch",
+            "completed",
+            {"final_url": _URL, "result_digest": stored_result["digest"]},
+        )
+    )
+    projector.observe(ContentPartStarted(TEXT_CONTENT_KIND, 1, 0, "text_1"))
+    projector.observe(TextDelta(_CONTINUATION, "text_1", 1, 0))
+    return projector
 
 
 class _ScriptedSource:
@@ -242,7 +298,9 @@ def test_mutually_exclusive_domain_filters_are_rejected_at_the_field() -> None:
 
 
 def test_duplicate_result_unknown_citation_and_pdf_success_fail_closed() -> None:
-    projector = AnthropicMessageProjector(message_id="msg_mutation", model_alias="m")
+    projector = AnthropicMessageProjector(
+        message_id="msg_mutation", model_alias="m", citations_enabled=True
+    )
     started = HostedCallStarted(
         0, "hosted_fetch", "call_fetch", "web_fetch", {"url": _URL}
     )
@@ -284,6 +342,40 @@ def test_duplicate_result_unknown_citation_and_pdf_success_fail_closed() -> None
                 {"final_url": _URL, "result_digest": _RESULT["digest"]},
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("result", "citation"),
+    [
+        pytest.param(
+            _RESULT,
+            _citation(source_start=0, source_end=len("grounded")),
+            id="mutated-source-range",
+        ),
+        pytest.param(
+            dict(_RESULT, content="Alpha tampered omega."),
+            _citation(),
+            id="mutated-source-text",
+        ),
+    ],
+)
+def test_citation_requires_exact_fetched_source_slice(
+    result: dict[str, Any], citation: HostedCitation
+) -> None:
+    projector = _citation_ready_projector(
+        result=result,
+        citations_enabled=True,
+    )
+
+    with pytest.raises(AnthropicAPIError, match="not verbatim web_fetch document"):
+        projector.observe(citation)
+
+
+def test_citation_event_fails_closed_when_request_did_not_enable_it() -> None:
+    projector = _citation_ready_projector()
+
+    with pytest.raises(AnthropicAPIError, match="citations were not enabled"):
+        projector.observe(_citation())
 
 
 def test_cancel_is_a_hard_barrier_against_late_result_and_continuation() -> None:
@@ -363,6 +455,12 @@ def test_sdk_parses_unary_and_streamed_success_with_the_same_blocks() -> None:
         assert result.tool_use_id == server_use.id
         assert result.content.url == _URL
         assert result.content.content.source.data == _SOURCE
+        document_citations = result.content.content.citations
+        assert document_citations is not None
+        assert document_citations.model_dump() == {"enabled": True}
+        assert streamed.content[1].content["content"]["citations"] == {
+            "enabled": True
+        }
         assert text.citations[0].start_char_index == _SOURCE_START
         assert text.citations[0].end_char_index == _SOURCE_START + len("grounded")
         assert unary.usage.input_tokens == 7
@@ -375,6 +473,47 @@ def test_sdk_parses_unary_and_streamed_success_with_the_same_blocks() -> None:
             == "web_fetch_result_delta"
             for event in streamed_events
         )
+    finally:
+        clear_turn_source(source)
+
+
+@pytest.mark.parametrize(
+    "citations",
+    [None, {"enabled": False}],
+    ids=["omitted", "false"],
+)
+def test_sdk_does_not_widen_disabled_or_omitted_citations(
+    citations: dict[str, bool] | None,
+) -> None:
+    source = _ScriptedSource(_success_events(include_citation=False))
+    register_turn_source(source)
+    try:
+        client = anthropic.Anthropic(
+            base_url="http://test/anthropic",
+            api_key="not-needed",
+            http_client=TestClient(app),
+        )
+        tool: dict[str, Any] = {
+            "type": "web_fetch_20250910",
+            "name": "web_fetch",
+        }
+        if citations is not None:
+            tool["citations"] = citations
+        kwargs = {
+            "model": "qwen-flash",
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "Fetch the page"}],
+            "tools": [tool],
+        }
+
+        unary = client.messages.create(**kwargs)
+        with client.messages.stream(**kwargs) as stream:
+            streamed = stream.get_final_message()
+
+        assert unary.content[1].content.content.citations is None
+        assert streamed.content[1].content["content"].get("citations") is None
+        assert unary.content[2].citations is None
+        assert streamed.content[2].citations is None
     finally:
         clear_turn_source(source)
 
