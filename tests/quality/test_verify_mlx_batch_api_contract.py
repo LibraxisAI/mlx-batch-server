@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from shutil import copytree
 
 import pytest
 from scripts.quality.verify_mlx_batch_api_contract import evaluate_section
@@ -16,6 +17,7 @@ EXPECTED_MARKERS = (
     "MULTIROW_SOURCE_CONTRACT=green",
 )
 TENSOR_RELATIVE = Path("src/mlx_batch_server/runtime/fusion/qwen4_exp/model/tensor.py")
+ANTHROPIC_RELATIVE = Path("src/mlx_batch_server/chat/anthropic")
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -69,6 +71,73 @@ def test_multirow_green_requires_the_concrete_recursive_mtp_seam() -> None:
     assert "MULTIROW_SOURCE_CONTRACT=green" in result.stdout
     assert "batched-recursive-drafts" in result.stdout
     assert "shared-verify-and-variable-commit" in result.stdout
+
+
+def _mutated_anthropic_result(
+    tmp_path: Path,
+    relative: str,
+    before: str,
+    after: str,
+):
+    target = tmp_path / ANTHROPIC_RELATIVE
+    copytree(ROOT / ANTHROPIC_RELATIVE, target)
+    path = target / relative
+    source = path.read_text(encoding="utf-8")
+    assert before in source
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    return evaluate_section(tmp_path, "anthropic")
+
+
+@pytest.mark.parametrize(
+    ("check_name", "relative", "before", "after"),
+    (
+        (
+            "single-capability-owner",
+            "capabilities.py",
+            "def enforce_capabilities(\n",
+            "def enforce_capabilities_legacy(\n",
+        ),
+        (
+            "pre-sse-capability-rejection",
+            "router.py",
+            "admission = enforce_capabilities(request, profile)",
+            "admission = bypass_capabilities(request, profile)",
+        ),
+        (
+            "thinking-signature-gate",
+            "capabilities.py",
+            '"thinking.enabled",',
+            '"thinking.unverified",',
+        ),
+        (
+            "ordered-rich-content-mapping",
+            "request_mapper.py",
+            "canonical = map_anthropic_content(\n",
+            "canonical = map_anthropic_content_unordered(\n",
+        ),
+        (
+            "explicit-no-silent-ignore",
+            "capabilities.py",
+            '"output_config.format", "structured-output execution"',
+            '"output_config.unclassified", "structured-output execution"',
+        ),
+    ),
+)
+def test_anthropic_verifier_independently_falsifies_each_admission_clause(
+    tmp_path: Path,
+    check_name: str,
+    relative: str,
+    before: str,
+    after: str,
+) -> None:
+    baseline = evaluate_section(ROOT, "anthropic")
+    assert baseline.green, baseline.failures
+
+    result = _mutated_anthropic_result(tmp_path, relative, before, after)
+
+    checks = {check.name: check.passed for check in result.checks}
+    assert checks[check_name] is False
+    assert sum(not passed for passed in checks.values()) == 1, checks
 
 
 def _mutated_multirow_result(tmp_path: Path, source: str):

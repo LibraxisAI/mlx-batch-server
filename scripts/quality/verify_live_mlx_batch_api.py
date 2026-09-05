@@ -48,6 +48,15 @@ DEFAULT_MEDIA_TYPES = (
     "text/html",
     "application/json",
 )
+ANTHROPIC_SDK_VERSION = "0.96.0"
+_TINY_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zg70"
+    "AAAAASUVORK5CYII="
+)
+_DOCUMENT_BASE64 = "V2F2ZSA0IEFudGhyb3BpYyBwdWJsaWMgY29tcGF0aWJpbGl0eSByZWNlaXB0Lg=="
+_THINKING_BLOCK_TYPES = frozenset(
+    {"thinking", "thinking_delta", "signature_delta", "redacted_thinking"}
+)
 
 
 class VerificationError(RuntimeError):
@@ -107,7 +116,187 @@ class ReceivedEvent:
     receive_index: int
 
 
+@dataclass(frozen=True, slots=True)
+class AnthropicMatrixCase:
+    case_id: str
+    overrides: Mapping[str, Any]
+    expected_field: str
+
+
 Probe = Callable[[], Awaitable[dict[str, Any]]]
+
+
+def _unsupported_anthropic_cases() -> tuple[AnthropicMatrixCase, ...]:
+    text = {"type": "text", "text": "matrix probe"}
+    return (
+        AnthropicMatrixCase(
+            "cache_control",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "matrix probe",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "messages.0.content.0.cache_control",
+        ),
+        AnthropicMatrixCase("container", {"container": "container_1"}, "container"),
+        AnthropicMatrixCase("inference_geo", {"inference_geo": "us"}, "inference_geo"),
+        AnthropicMatrixCase(
+            "output_config_format",
+            {
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": {"type": "object"},
+                    }
+                }
+            },
+            "output_config.format",
+        ),
+        AnthropicMatrixCase("effort_high", {"effort": "high"}, "effort"),
+        AnthropicMatrixCase("effort_max", {"effort": "max"}, "effort"),
+        AnthropicMatrixCase(
+            "citations_enabled",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "text/plain",
+                                    "data": _DOCUMENT_BASE64,
+                                },
+                                "citations": {"enabled": True},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "messages.0.content.0.citations.enabled",
+        ),
+        AnthropicMatrixCase(
+            "server_tool_use",
+            {
+                "messages": [
+                    {"role": "user", "content": "search"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "server_tool_use",
+                                "id": "srvtoolu_1",
+                                "name": "web_search",
+                                "input": {"query": "local"},
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "continue"},
+                ]
+            },
+            "messages.1.content.0.type",
+        ),
+        AnthropicMatrixCase(
+            "hosted_tool_definition",
+            {"tools": [{"type": "web_search_20250305", "name": "web_search"}]},
+            "tools.0.type",
+        ),
+        AnthropicMatrixCase(
+            "hosted_tool_result",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "web_search_tool_result",
+                                "tool_use_id": "srvtoolu_1",
+                                "content": [{"title": "result"}],
+                            }
+                        ],
+                    }
+                ]
+            },
+            "messages.0.content.0.type",
+        ),
+        AnthropicMatrixCase(
+            "container_upload",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "container_upload", "file_id": "file_1"}],
+                    }
+                ]
+            },
+            "messages.0.content.0.type",
+        ),
+        AnthropicMatrixCase(
+            "thinking_budget_min",
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+            "thinking.type",
+        ),
+        AnthropicMatrixCase(
+            "thinking_budget_large",
+            {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+            "thinking.type",
+        ),
+        AnthropicMatrixCase(
+            "thinking_continuation",
+            {
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "thinking",
+                                "thinking": "carried reasoning",
+                                "signature": "sig_untrusted",
+                            },
+                            text,
+                        ],
+                    },
+                    {"role": "user", "content": "continue"},
+                ]
+            },
+            "messages.1.content.0.type",
+        ),
+        AnthropicMatrixCase(
+            "redacted_thinking",
+            {
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "redacted_thinking",
+                                "data": "opaque_untrusted",
+                            },
+                            text,
+                        ],
+                    },
+                    {"role": "user", "content": "continue"},
+                ]
+            },
+            "messages.1.content.0.type",
+        ),
+    )
+
+
+def _matrix_cell_id(case_id: str, stream: bool) -> str:
+    return f"{case_id}.{'stream' if stream else 'unary'}"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -142,6 +331,30 @@ def _safe_error(error: Exception) -> str:
     if isinstance(error, SafePublicFetchError):
         return str(error)
     return f"{type(error).__name__}: {error}"
+
+
+def _redact_receipt(
+    receipt: Mapping[str, Any], secrets: Sequence[str]
+) -> dict[str, Any]:
+    active_secrets = tuple(secret for secret in secrets if secret)
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, str):
+            for secret in active_secrets:
+                value = value.replace(secret, "[redacted]")
+            return value
+        if isinstance(value, Mapping):
+            return {key: redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, tuple):
+            return [redact(item) for item in value]
+        return value
+
+    redacted = redact(receipt)
+    if not isinstance(redacted, dict):
+        raise TypeError("receipt redaction changed the root shape")
+    return redacted
 
 
 def _model_dump(value: Any) -> dict[str, Any]:
@@ -525,7 +738,78 @@ def _validate_usage(usage: Any) -> None:
     )
 
 
+def _require_anthropic_sdk_version() -> str:
+    version = str(getattr(anthropic, "__version__", ""))
+    _require(
+        version == ANTHROPIC_SDK_VERSION,
+        f"Anthropic SDK must be {ANTHROPIC_SDK_VERSION}, found {version or 'unknown'}",
+    )
+    return version
+
+
+def _anthropic_block_types(message: Any) -> list[str]:
+    return [
+        str(block_type)
+        for block in getattr(message, "content", ())
+        if (block_type := getattr(block, "type", None)) is not None
+    ]
+
+
+def _anthropic_message_receipt(message: Any, *, model: str) -> dict[str, Any]:
+    text = _anthropic_text(message)
+    block_types = _anthropic_block_types(message)
+    _require(message.model == model, "Anthropic non-stream model alias changed")
+    _require(bool(text), "Anthropic non-stream output is empty")
+    _require(
+        not (_THINKING_BLOCK_TYPES & set(block_types)),
+        "omitted thinking emitted a thinking or signature block",
+    )
+    _validate_usage(message.usage)
+    _require(
+        getattr(message.usage, "service_tier", None) == "standard",
+        "Anthropic response did not report actual service tier standard",
+    )
+    return {
+        "message_id": message.id,
+        "model": message.model,
+        "stop_reason": message.stop_reason,
+        "stop_sequence": message.stop_sequence,
+        "content_block_types": block_types,
+        "output_text": text,
+        "usage": {
+            **_usage_receipt(message.usage),
+            "service_tier": getattr(message.usage, "service_tier", None),
+        },
+    }
+
+
+async def probe_anthropic_sync_non_stream(
+    config: VerificationConfig,
+) -> dict[str, Any]:
+    version = _require_anthropic_sdk_version()
+
+    def run() -> dict[str, Any]:
+        with anthropic.Anthropic(
+            api_key=config.anthropic_api_key,
+            base_url=_anthropic_base(config),
+            timeout=config.timeout_s,
+            max_retries=0,
+        ) as client:
+            message = client.messages.create(
+                model=config.model,
+                max_tokens=config.max_output_tokens,
+                messages=[{"role": "user", "content": config.prompt}],
+            )
+        return _anthropic_message_receipt(message, model=config.model)
+
+    result = await asyncio.to_thread(run)
+    result["sdk_version"] = version
+    result["client_mode"] = "sync"
+    return result
+
+
 async def probe_anthropic_non_stream(config: VerificationConfig) -> dict[str, Any]:
+    version = _require_anthropic_sdk_version()
     async with anthropic.AsyncAnthropic(
         api_key=config.anthropic_api_key,
         base_url=_anthropic_base(config),
@@ -537,17 +821,10 @@ async def probe_anthropic_non_stream(config: VerificationConfig) -> dict[str, An
             max_tokens=config.max_output_tokens,
             messages=[{"role": "user", "content": config.prompt}],
         )
-    text = _anthropic_text(message)
-    _require(message.model == config.model, "Anthropic non-stream model alias changed")
-    _require(bool(text), "Anthropic non-stream output is empty")
-    _validate_usage(message.usage)
-    return {
-        "message_id": message.id,
-        "model": message.model,
-        "stop_reason": message.stop_reason,
-        "output_text": text,
-        "usage": _usage_receipt(message.usage),
-    }
+    result = _anthropic_message_receipt(message, model=config.model)
+    result["sdk_version"] = version
+    result["client_mode"] = "async"
+    return result
 
 
 def _validate_anthropic_lifecycle(events: Sequence[ReceivedEvent]) -> None:
@@ -605,7 +882,145 @@ def _validate_anthropic_lifecycle(events: Sequence[ReceivedEvent]) -> None:
     _require(not open_blocks, "Anthropic stream left a content block open")
 
 
+def _anthropic_stream_receipt(
+    events: Sequence[ReceivedEvent],
+    final_message: Any,
+    *,
+    model: str,
+) -> dict[str, Any]:
+    protocol_types = {
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+        "ping",
+        "error",
+    }
+    protocol_events = [
+        event for event in events if event.payload.get("type") in protocol_types
+    ]
+    _validate_anthropic_lifecycle(protocol_events)
+    starts = [
+        event
+        for event in protocol_events
+        if event.payload.get("type") == "message_start"
+    ]
+    start_message = starts[0].payload.get("message")
+    if not isinstance(start_message, Mapping):
+        raise VerificationError("message_start omitted its message")
+    _require(
+        start_message.get("model") == model, "Anthropic stream model alias changed"
+    )
+    _require(final_message.model == model, "Anthropic final model alias changed")
+    _validate_usage(final_message.usage)
+    _require(
+        getattr(final_message.usage, "service_tier", None) == "standard",
+        "Anthropic final stream message did not report service tier standard",
+    )
+
+    text_deltas: list[str] = []
+    forbidden_types: set[str] = set()
+    for event in protocol_events:
+        payload = event.payload
+        event_type = str(payload.get("type") or "")
+        if event_type in _THINKING_BLOCK_TYPES:
+            forbidden_types.add(event_type)
+        content_block = payload.get("content_block")
+        if isinstance(content_block, Mapping):
+            block_type = str(content_block.get("type") or "")
+            if block_type in _THINKING_BLOCK_TYPES:
+                forbidden_types.add(block_type)
+        delta = payload.get("delta")
+        if not isinstance(delta, Mapping):
+            continue
+        delta_type = str(delta.get("type") or "")
+        if delta_type in _THINKING_BLOCK_TYPES:
+            forbidden_types.add(delta_type)
+        if event_type == "content_block_delta" and delta_type == "text_delta":
+            text = delta.get("text")
+            if isinstance(text, str) and text:
+                text_deltas.append(text)
+    final_block_types = _anthropic_block_types(final_message)
+    forbidden_types.update(_THINKING_BLOCK_TYPES & set(final_block_types))
+    _require(
+        not forbidden_types,
+        f"omitted thinking emitted forbidden block/event types: {sorted(forbidden_types)}",
+    )
+    _require(
+        len(text_deltas) >= 2,
+        f"expected at least two Anthropic text deltas, received {len(text_deltas)}",
+    )
+    reconstructed = "".join(text_deltas)
+    final_text = _anthropic_text(final_message)
+    _require(reconstructed == final_text, "Anthropic delta and final text differ")
+    return {
+        "sdk_event_count": len(events),
+        "protocol_event_count": len(protocol_events),
+        "event_types": [event.payload.get("type") for event in protocol_events],
+        "sdk_synthetic_event_types": [
+            event.payload.get("type")
+            for event in events
+            if event.payload.get("type") not in protocol_types
+        ],
+        "content_block_types": final_block_types,
+        "forbidden_thinking_types": sorted(forbidden_types),
+        "text_delta_count": len(text_deltas),
+        "reconstructed_text": reconstructed,
+        "final_text": final_text,
+        "model": final_message.model,
+        "usage": {
+            **_usage_receipt(final_message.usage),
+            "service_tier": getattr(final_message.usage, "service_tier", None),
+        },
+        "events": _event_receipt(protocol_events),
+    }
+
+
+async def probe_anthropic_sync_sse(config: VerificationConfig) -> dict[str, Any]:
+    version = _require_anthropic_sdk_version()
+
+    def run() -> dict[str, Any]:
+        events: list[ReceivedEvent] = []
+        started_monotonic_ns = time.monotonic_ns()
+        with (
+            anthropic.Anthropic(
+                api_key=config.anthropic_api_key,
+                base_url=_anthropic_base(config),
+                timeout=config.timeout_s,
+                max_retries=0,
+            ) as client,
+            client.messages.stream(
+                model=config.model,
+                max_tokens=config.max_output_tokens,
+                messages=[{"role": "user", "content": config.prompt}],
+            ) as stream,
+        ):
+            for sdk_event in stream:
+                received_ns = time.time_ns()
+                received_monotonic_ns = time.monotonic_ns()
+                events.append(
+                    ReceivedEvent(
+                        payload=_model_dump(sdk_event),
+                        received_at_unix_ns=received_ns,
+                        received_at_monotonic_ns=received_monotonic_ns,
+                        elapsed_ms=(received_monotonic_ns - started_monotonic_ns)
+                        / 1_000_000,
+                        receive_index=len(events) + 1,
+                    )
+                )
+            final_message = stream.get_final_message()
+        return _anthropic_stream_receipt(events, final_message, model=config.model)
+
+    result = await asyncio.to_thread(run)
+    result["sdk_version"] = version
+    result["client_mode"] = "sync"
+    return result
+
+
 async def probe_anthropic_sse(config: VerificationConfig) -> dict[str, Any]:
+    version = _require_anthropic_sdk_version()
     events: list[ReceivedEvent] = []
     started_monotonic_ns = time.monotonic_ns()
     async with (
@@ -635,68 +1050,414 @@ async def probe_anthropic_sse(config: VerificationConfig) -> dict[str, Any]:
                 )
             )
         final_message = await stream.get_final_message()
+    result = _anthropic_stream_receipt(events, final_message, model=config.model)
+    result["sdk_version"] = version
+    result["client_mode"] = "async"
+    return result
 
-    protocol_types = {
-        "message_start",
-        "content_block_start",
-        "content_block_delta",
-        "content_block_stop",
-        "message_delta",
-        "message_stop",
-        "ping",
-        "error",
-    }
-    protocol_events = [
-        event for event in events if event.payload.get("type") in protocol_types
-    ]
-    _validate_anthropic_lifecycle(protocol_events)
-    starts = [
-        event
-        for event in protocol_events
-        if event.payload.get("type") == "message_start"
-    ]
-    start_message = starts[0].payload.get("message")
-    if not isinstance(start_message, Mapping):
-        raise VerificationError("message_start omitted its message")
-    _require(
-        start_message.get("model") == config.model,
-        "Anthropic stream model alias changed",
-    )
-    _require(final_message.model == config.model, "Anthropic final model alias changed")
-    _validate_usage(final_message.usage)
 
-    text_deltas = []
-    for event in protocol_events:
-        if event.payload.get("type") != "content_block_delta":
-            continue
-        delta = event.payload.get("delta")
-        if isinstance(delta, Mapping) and delta.get("type") == "text_delta":
-            text = delta.get("text")
-            if isinstance(text, str) and text:
-                text_deltas.append(text)
-    _require(
-        len(text_deltas) >= 2,
-        f"expected at least two Anthropic text deltas, received {len(text_deltas)}",
-    )
-    reconstructed = "".join(text_deltas)
-    final_text = _anthropic_text(final_message)
-    _require(reconstructed == final_text, "Anthropic delta and final text differ")
+def _anthropic_body(config: VerificationConfig) -> dict[str, Any]:
     return {
-        "sdk_event_count": len(events),
-        "protocol_event_count": len(protocol_events),
-        "event_types": [event.payload.get("type") for event in protocol_events],
-        "sdk_synthetic_event_types": [
-            event.payload.get("type")
-            for event in events
-            if event.payload.get("type") not in protocol_types
-        ],
-        "text_delta_count": len(text_deltas),
-        "reconstructed_text": reconstructed,
-        "final_text": final_text,
-        "model": final_message.model,
-        "usage": _usage_receipt(final_message.usage),
-        "events": _event_receipt(protocol_events),
+        "model": config.model,
+        "max_tokens": config.max_output_tokens,
+        "messages": [{"role": "user", "content": config.prompt}],
     }
+
+
+def _body_with_overrides(
+    config: VerificationConfig,
+    overrides: Mapping[str, Any],
+    *,
+    stream: bool,
+) -> dict[str, Any]:
+    body = _anthropic_body(config)
+    body.update(json.loads(json.dumps(dict(overrides))))
+    body["stream"] = stream
+    return body
+
+
+def _anthropic_headers(config: VerificationConfig) -> dict[str, str]:
+    return {
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "x-api-key": config.anthropic_api_key,
+    }
+
+
+def _sse_payloads(content: bytes) -> tuple[list[dict[str, Any]], int]:
+    normalized = content.replace(b"\r\n", b"\n")
+    payloads: list[dict[str, Any]] = []
+    event_bytes = 0
+    for line in normalized.splitlines(keepends=True):
+        if line.startswith((b"event:", b"data:")):
+            event_bytes += len(line)
+    for block in normalized.split(b"\n\n"):
+        if not block.strip():
+            continue
+        payload = _parse_sse_block(block)
+        if payload is not None and payload.get("type") != "[DONE]":
+            payloads.append(payload)
+    return payloads, event_bytes
+
+
+def _raw_anthropic_success(
+    response: httpx.Response,
+    *,
+    model: str,
+    stream: bool,
+) -> dict[str, Any]:
+    _require(
+        response.status_code == 200, f"expected HTTP 200, got {response.status_code}"
+    )
+    if not stream:
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise VerificationError("Anthropic response is not object-shaped")
+        content = payload.get("content")
+        if not isinstance(content, list) or not content:
+            raise VerificationError("response content is empty")
+        unary_block_types = [
+            str(block.get("type") or "")
+            for block in content
+            if isinstance(block, Mapping)
+        ]
+        _require(
+            not (_THINKING_BLOCK_TYPES & set(unary_block_types)),
+            "supported request emitted thinking/signature content",
+        )
+        usage = payload.get("usage")
+        usage = usage if isinstance(usage, Mapping) else {}
+        return {
+            "http_status": response.status_code,
+            "content_type": response.headers.get("content-type", ""),
+            "model": payload.get("model"),
+            "content_block_types": unary_block_types,
+            "service_tier": usage.get("service_tier"),
+            "stop_reason": payload.get("stop_reason"),
+            "stop_sequence": payload.get("stop_sequence"),
+            "output_text": "".join(
+                str(block.get("text") or "")
+                for block in content
+                if isinstance(block, Mapping) and block.get("type") == "text"
+            ),
+        }
+
+    _require(
+        response.headers.get("content-type", "").startswith("text/event-stream"),
+        "stream=true did not return an SSE content type",
+    )
+    payloads, event_bytes = _sse_payloads(response.content)
+    now = time.monotonic_ns()
+    events = [
+        ReceivedEvent(payload, now + index, now + index, float(index), index + 1)
+        for index, payload in enumerate(payloads)
+    ]
+    _validate_anthropic_lifecycle(events)
+    _require(
+        not any(payload.get("type") == "error" for payload in payloads),
+        "supported Anthropic stream emitted an error event",
+    )
+    starts = [payload for payload in payloads if payload.get("type") == "message_start"]
+    start_message = starts[0].get("message")
+    start_message = start_message if isinstance(start_message, Mapping) else {}
+    usage = start_message.get("usage")
+    usage = usage if isinstance(usage, Mapping) else {}
+    stream_block_types: list[str] = []
+    text_deltas: list[str] = []
+    stop_reason: object = None
+    stop_sequence: object = None
+    for payload in payloads:
+        content_block = payload.get("content_block")
+        if isinstance(content_block, Mapping):
+            stream_block_types.append(str(content_block.get("type") or ""))
+        delta = payload.get("delta")
+        if not isinstance(delta, Mapping):
+            continue
+        delta_type = str(delta.get("type") or "")
+        if delta_type == "text_delta" and isinstance(delta.get("text"), str):
+            text_deltas.append(str(delta["text"]))
+        if payload.get("type") == "message_delta":
+            stop_reason = delta.get("stop_reason")
+            stop_sequence = delta.get("stop_sequence")
+    wire_types = set(stream_block_types)
+    wire_types.update(
+        str(payload.get("delta", {}).get("type") or "")
+        for payload in payloads
+        if isinstance(payload.get("delta"), Mapping)
+    )
+    _require(
+        not (_THINKING_BLOCK_TYPES & wire_types),
+        "supported stream emitted thinking/signature content",
+    )
+    return {
+        "http_status": response.status_code,
+        "content_type": response.headers.get("content-type", ""),
+        "model": start_message.get("model"),
+        "content_block_types": stream_block_types,
+        "service_tier": usage.get("service_tier"),
+        "stop_reason": stop_reason,
+        "stop_sequence": stop_sequence,
+        "output_text": "".join(text_deltas),
+        "event_types": [payload.get("type") for payload in payloads],
+        "sse_event_bytes": event_bytes,
+    }
+
+
+def _supported_anthropic_cells(
+    config: VerificationConfig,
+) -> tuple[tuple[str, dict[str, Any], bool], ...]:
+    rich_content = [
+        {"type": "text", "text": "first"},
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": _TINY_PNG_BASE64,
+            },
+        },
+        {"type": "text", "text": "second"},
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "text/plain",
+                "data": _DOCUMENT_BASE64,
+            },
+            "title": "admission.txt",
+        },
+        {
+            "type": "search_result",
+            "source": "https://must-not-fetch.invalid/result",
+            "title": "caller supplied",
+            "content": [{"type": "text", "text": "third"}],
+        },
+        {"type": "text", "text": "fourth; answer briefly"},
+    ]
+    tool_messages = [
+        {"role": "user", "content": "use the lookup tool"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_admission_1",
+                    "name": "lookup",
+                    "input": {"key": "alpha"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_admission_1",
+                    "is_error": False,
+                    "content": [
+                        {"type": "text", "text": "result-alpha"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": _TINY_PNG_BASE64,
+                            },
+                        },
+                    ],
+                }
+            ],
+        },
+    ]
+    cells: list[tuple[str, dict[str, Any], bool]] = []
+    for tier in ("auto", "standard_only"):
+        cells.append((f"service_tier_{tier}.unary", {"service_tier": tier}, False))
+    for label, overrides in (
+        ("thinking_omitted", {}),
+        ("thinking_disabled", {"thinking": {"type": "disabled"}}),
+        (
+            "rich_content_order",
+            {"messages": [{"role": "user", "content": rich_content}]},
+        ),
+        (
+            "stop_sequence",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Reply exactly: alpha beta gamma delta epsilon.",
+                    }
+                ],
+                "stop_sequences": [" delta"],
+            },
+        ),
+        ("tool_result_fidelity", {"messages": tool_messages}),
+    ):
+        for stream in (False, True):
+            cells.append((_matrix_cell_id(label, stream), dict(overrides), stream))
+    return tuple(cells)
+
+
+async def probe_anthropic_supported_matrix(
+    config: VerificationConfig,
+) -> dict[str, Any]:
+    timeout = httpx.Timeout(config.timeout_s, connect=min(config.timeout_s, 10.0))
+    cells: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        for cell_id, overrides, stream in _supported_anthropic_cells(config):
+            body = _body_with_overrides(config, overrides, stream=stream)
+            response = await client.post(
+                f"{_anthropic_base(config)}/v1/messages",
+                headers=_anthropic_headers(config),
+                json=body,
+            )
+            details = _raw_anthropic_success(
+                response,
+                model=config.model,
+                stream=stream,
+            )
+            if cell_id.startswith("service_tier_"):
+                _require(
+                    details["service_tier"] == "standard",
+                    f"{cell_id} did not report actual tier standard",
+                )
+            if cell_id.startswith("stop_sequence."):
+                _require(
+                    details["stop_reason"] == "stop_sequence"
+                    and details["stop_sequence"] == " delta"
+                    and " delta" not in str(details["output_text"]),
+                    f"{cell_id} did not preserve exact stop-sequence semantics",
+                )
+            cells.append(
+                {
+                    "cell_id": cell_id,
+                    "stream": stream,
+                    "request_content_types": [
+                        block.get("type")
+                        for message in body["messages"]
+                        if isinstance(message.get("content"), list)
+                        for block in message["content"]
+                        if isinstance(block, Mapping)
+                    ],
+                    **details,
+                }
+            )
+    return {
+        "required_cell_ids": [cell[0] for cell in _supported_anthropic_cells(config)],
+        "cells": cells,
+    }
+
+
+def _inference_start_counter(payload: Mapping[str, Any]) -> int:
+    try:
+        executor = payload["role_runtime"]["runtime_stats"]["executor"]
+        active = executor["active_requests"]
+        tombstones = executor["tombstones"]
+    except (KeyError, TypeError) as error:
+        raise VerificationError(
+            "health omits role_runtime.runtime_stats.executor inference counters"
+        ) from error
+    if (
+        not isinstance(active, int)
+        or isinstance(active, bool)
+        or active < 0
+        or not isinstance(tombstones, int)
+        or isinstance(tombstones, bool)
+        or tombstones < 0
+    ):
+        raise VerificationError("health inference counters are invalid")
+    return active + tombstones
+
+
+async def _live_inference_start_counter(
+    client: httpx.AsyncClient,
+    config: VerificationConfig,
+) -> int:
+    response = await client.get(f"{config.base_url.rstrip('/')}/health")
+    _require(
+        response.status_code == 200, "health counter probe did not return HTTP 200"
+    )
+    payload = response.json()
+    if not isinstance(payload, Mapping):
+        raise VerificationError("health counter response is not object-shaped")
+    return _inference_start_counter(payload)
+
+
+async def probe_anthropic_refusal_matrix(
+    config: VerificationConfig,
+) -> dict[str, Any]:
+    timeout = httpx.Timeout(config.timeout_s, connect=min(config.timeout_s, 10.0))
+    cells: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        for case in _unsupported_anthropic_cases():
+            for stream in (False, True):
+                cell_id = _matrix_cell_id(case.case_id, stream)
+                before = await _live_inference_start_counter(client, config)
+                response = await client.post(
+                    f"{_anthropic_base(config)}/v1/messages",
+                    headers=_anthropic_headers(config),
+                    json=_body_with_overrides(config, case.overrides, stream=stream),
+                )
+                after = await _live_inference_start_counter(client, config)
+                payloads, event_bytes = _sse_payloads(response.content)
+                _require(
+                    response.status_code == 400,
+                    f"{cell_id} expected HTTP 400, got {response.status_code}",
+                )
+                _require(
+                    not response.headers.get("content-type", "").startswith(
+                        "text/event-stream"
+                    ),
+                    f"{cell_id} opened an SSE response",
+                )
+                _require(
+                    event_bytes == 0 and not payloads, f"{cell_id} emitted SSE bytes"
+                )
+                body = response.json()
+                _require(
+                    isinstance(body, Mapping)
+                    and body.get("type") == "error"
+                    and isinstance(body.get("error"), Mapping)
+                    and body["error"].get("type") == "invalid_request_error",
+                    f"{cell_id} did not return the structured invalid_request_error envelope",
+                )
+                message = str(body["error"].get("message") or "")
+                _require(
+                    case.expected_field in message,
+                    f"{cell_id} error did not name {case.expected_field}",
+                )
+                header_request_id = response.headers.get("request-id")
+                body_request_id = body.get("request_id")
+                _require(
+                    isinstance(header_request_id, str)
+                    and header_request_id.startswith("req_")
+                    and header_request_id == body_request_id,
+                    f"{cell_id} request-id header/body mismatch",
+                )
+                inference_start_count = after - before
+                _require(
+                    inference_start_count == 0,
+                    f"{cell_id} crossed the inference boundary ({inference_start_count})",
+                )
+                cells.append(
+                    {
+                        "cell_id": cell_id,
+                        "stream": stream,
+                        "http_status": response.status_code,
+                        "error_type": body["error"].get("type"),
+                        "field": case.expected_field,
+                        "request_id": body_request_id,
+                        "request_id_matches_header": True,
+                        "sse_event_bytes": event_bytes,
+                        "inference_start_count": inference_start_count,
+                    }
+                )
+    required = [
+        _matrix_cell_id(case.case_id, stream)
+        for case in _unsupported_anthropic_cases()
+        for stream in (False, True)
+    ]
+    return {"required_cell_ids": required, "cells": cells}
 
 
 async def probe_safe_fetch_public(
@@ -792,6 +1553,7 @@ def _receipt_config(config: VerificationConfig) -> dict[str, Any]:
         "safe_fetch_max_bytes": config.safe_fetch_max_bytes,
         "accepted_media_types": list(config.accepted_media_types),
         "stream_id": config.stream_id,
+        "anthropic_sdk_version": str(getattr(anthropic, "__version__", "unknown")),
         "credentials": "redacted",
     }
 
@@ -804,6 +1566,84 @@ def write_receipt(path: Path, receipt: Mapping[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+_REQUIRED_PROBE_IDS = (
+    "openai_non_stream",
+    "openai_sse",
+    "openai_websocket",
+    "anthropic_sdk_sync_non_stream",
+    "anthropic_sdk_async_non_stream",
+    "anthropic_sdk_sync_sse",
+    "anthropic_sdk_async_sse",
+    "anthropic_supported_matrix",
+    "anthropic_refusal_matrix",
+    "safe_public_fetch_public",
+    "safe_public_fetch_private_redirect",
+)
+
+
+def _receipt_integrity_errors(
+    results: Mapping[str, Any],
+    config: VerificationConfig,
+    *,
+    declared_probe_ids: Sequence[str] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    actual_probe_ids = list(declared_probe_ids or results)
+    if len(actual_probe_ids) != len(set(actual_probe_ids)):
+        errors.append("duplicate probe ids")
+    missing = sorted(set(_REQUIRED_PROBE_IDS) - set(actual_probe_ids))
+    unexpected = sorted(set(actual_probe_ids) - set(_REQUIRED_PROBE_IDS))
+    if missing:
+        errors.append(f"missing required probes: {missing}")
+    if unexpected:
+        errors.append(f"unexpected probes: {unexpected}")
+    skipped = sorted(
+        probe_id
+        for probe_id, result in results.items()
+        if isinstance(result, Mapping) and result.get("status") == "skipped"
+    )
+    if skipped:
+        errors.append(f"required probes were skipped: {skipped}")
+    for probe_id, expected_ids in (
+        (
+            "anthropic_supported_matrix",
+            [cell[0] for cell in _supported_anthropic_cells(config)],
+        ),
+        (
+            "anthropic_refusal_matrix",
+            [
+                _matrix_cell_id(case.case_id, stream)
+                for case in _unsupported_anthropic_cases()
+                for stream in (False, True)
+            ],
+        ),
+    ):
+        result = results.get(probe_id)
+        details = result.get("details") if isinstance(result, Mapping) else None
+        cells = details.get("cells") if isinstance(details, Mapping) else None
+        actual_ids: list[str] = []
+        if isinstance(cells, list):
+            actual_ids = [
+                cell_id
+                for cell in cells
+                if isinstance(cell, Mapping)
+                and isinstance((cell_id := cell.get("cell_id")), str)
+            ]
+        if len(actual_ids) != len(set(actual_ids)):
+            errors.append(f"{probe_id} contains duplicate matrix cells")
+        missing_cells = sorted(set(expected_ids) - set(actual_ids))
+        unexpected_cells = sorted(set(actual_ids) - set(expected_ids))
+        if missing_cells:
+            errors.append(f"{probe_id} missing required cells: {missing_cells}")
+        if unexpected_cells:
+            errors.append(f"{probe_id} contains unexpected cells: {unexpected_cells}")
+        if len(actual_ids) != len(expected_ids):
+            errors.append(
+                f"{probe_id} cell cardinality is {len(actual_ids)}, expected {len(expected_ids)}"
+            )
+    return errors
 
 
 async def run_verification(
@@ -825,8 +1665,24 @@ async def run_verification(
         ("openai_non_stream", lambda: probe_openai_non_stream(config)),
         ("openai_sse", lambda: probe_openai_sse(config)),
         ("openai_websocket", lambda: probe_openai_websocket(config)),
-        ("anthropic_non_stream", lambda: probe_anthropic_non_stream(config)),
-        ("anthropic_sse", lambda: probe_anthropic_sse(config)),
+        (
+            "anthropic_sdk_sync_non_stream",
+            lambda: probe_anthropic_sync_non_stream(config),
+        ),
+        (
+            "anthropic_sdk_async_non_stream",
+            lambda: probe_anthropic_non_stream(config),
+        ),
+        ("anthropic_sdk_sync_sse", lambda: probe_anthropic_sync_sse(config)),
+        ("anthropic_sdk_async_sse", lambda: probe_anthropic_sse(config)),
+        (
+            "anthropic_supported_matrix",
+            lambda: probe_anthropic_supported_matrix(config),
+        ),
+        (
+            "anthropic_refusal_matrix",
+            lambda: probe_anthropic_refusal_matrix(config),
+        ),
         ("safe_public_fetch_public", lambda: probe_safe_fetch_public(config, fetcher)),
         (
             "safe_public_fetch_private_redirect",
@@ -838,17 +1694,32 @@ async def run_verification(
         results[name] = await _run_probe(name, config.timeout_s, probe)
 
     finished_ns = time.time_ns()
-    overall = all(bool(result.get("ok")) for result in results.values())
-    receipt = {
-        "schema_version": SCHEMA_VERSION,
-        "finalized": True,
-        "overall": overall,
-        "started_at_unix_ns": started_ns,
-        "finished_at_unix_ns": finished_ns,
-        "duration_ms": (finished_ns - started_ns) / 1_000_000,
-        "config": _receipt_config(config),
-        "probes": results,
-    }
+    integrity_errors = _receipt_integrity_errors(
+        results,
+        config,
+        declared_probe_ids=[name for name, _probe in probes],
+    )
+    overall = not integrity_errors and all(
+        bool(result.get("ok")) for result in results.values()
+    )
+    receipt = _redact_receipt(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "finalized": True,
+            "overall": overall,
+            "started_at_unix_ns": started_ns,
+            "finished_at_unix_ns": finished_ns,
+            "duration_ms": (finished_ns - started_ns) / 1_000_000,
+            "config": _receipt_config(config),
+            "integrity": {
+                "ok": not integrity_errors,
+                "required_probe_ids": list(_REQUIRED_PROBE_IDS),
+                "errors": integrity_errors,
+            },
+            "probes": results,
+        },
+        (config.api_key, config.anthropic_api_key),
+    )
     write_receipt(config.receipt_path, receipt)
     return receipt
 
