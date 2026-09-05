@@ -407,7 +407,7 @@ def _hostname_is_blocked(hostname: str) -> bool:
 def _addresses_from_addrinfo(
     results: object,
 ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
-    if not isinstance(results, Sequence) or isinstance(results, (str, bytes)):
+    if not isinstance(results, Sequence) or isinstance(results, str | bytes):
         raise SafePublicFetchError(
             "dns_resolution_failed",
             "URL hostname could not be resolved",
