@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 
 from mlx_batch_server.runtime.contracts import (
@@ -67,9 +67,10 @@ class RuntimeAnthropicTurnSource:
         finally:
             if event_turn.state is not TurnState.TERMINAL:
                 reason = "anthropic_client_disconnected"
-                cancel.cancel(reason)
                 if backend:
                     backend[0].cancel(reason)
+                else:
+                    cancel.cancel(reason)
             with suppress(asyncio.CancelledError):
                 await asyncio.shield(driver)
 
@@ -108,7 +109,11 @@ class RuntimeAnthropicTurnSource:
 
         sampling = dict(turn.sampling)
         if turn.tool_choice is not None:
-            sampling["tool_choice"] = dict(turn.tool_choice)
+            sampling["tool_choice"] = (
+                dict(turn.tool_choice)
+                if isinstance(turn.tool_choice, Mapping)
+                else turn.tool_choice
+            )
         return GenerationRequest(
             response_id=f"anthropic_{uuid.uuid4().hex}",
             runtime=runtime,

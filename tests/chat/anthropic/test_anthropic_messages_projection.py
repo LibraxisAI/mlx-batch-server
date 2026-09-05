@@ -146,9 +146,7 @@ def test_tool_arguments_stream_as_partial_json_exactly_once():
             ),
             TurnCompleted(
                 finish_reason="tool_calls",
-                usage=UsageUpdate(
-                    input_tokens=11, output_tokens=7, total_tokens=18
-                ),
+                usage=UsageUpdate(input_tokens=11, output_tokens=7, total_tokens=18),
             ),
         ],
     )
@@ -238,9 +236,7 @@ def test_reasoning_and_text_never_share_a_block():
                 content_index=0,
                 item_id="item_t",
             ),
-            TextDelta(
-                delta="Hello", item_id="item_t", output_index=1, content_index=0
-            ),
+            TextDelta(delta="Hello", item_id="item_t", output_index=1, content_index=0),
             # The completion repeats the whole text; only the unseen tail may
             # be emitted, otherwise the client accumulates "HelloHello there".
             TextCompleted(
@@ -333,9 +329,7 @@ def test_turn_failure_projects_a_documented_error_event():
 def test_error_payload_carries_type_status_and_request_id():
     """Every failure body is correlatable and carries a documented type."""
 
-    error = AnthropicAPIError(
-        "no capacity", error_type="overloaded_error"
-    )
+    error = AnthropicAPIError("no capacity", error_type="overloaded_error")
     payload = error.payload("req_abc")
 
     assert payload["type"] == "error"
@@ -422,6 +416,85 @@ def test_tool_choice_must_name_a_declared_tool():
     assert raised.value.error_type == "invalid_request_error"
 
 
+@pytest.mark.parametrize(
+    ("choice", "expected_choice", "expected_parallel"),
+    [
+        ({"type": "auto"}, "auto", True),
+        ({"type": "any", "disable_parallel_tool_use": True}, "required", False),
+        ({"type": "none"}, "none", True),
+        (
+            {"type": "tool", "name": "get_weather"},
+            {"type": "function", "name": "get_weather"},
+            True,
+        ),
+    ],
+)
+def test_tool_controls_are_normalized_to_the_shared_runtime_abi(
+    choice, expected_choice, expected_parallel
+):
+    request = MessagesRequest.model_validate(
+        {
+            "model": ALIAS,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "description": "Look up weather",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ],
+            "tool_choice": choice,
+        }
+    )
+
+    turn = build_turn(request)
+
+    assert turn.tools == (
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Look up weather",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    )
+    assert turn.tool_choice == expected_choice
+    assert turn.sampling["parallel_tool_calls"] is expected_parallel
+
+
+def test_tool_result_image_is_refused_instead_of_silently_dropped():
+    request = MessagesRequest.model_validate(
+        {
+            "model": ALIAS,
+            "max_tokens": 16,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": "aGk=",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(UnsupportedCapabilityError):
+        build_turn(request)
+
+
 # ---------------------------------------------------------------------------
 # Engine over the seam
 # ---------------------------------------------------------------------------
@@ -464,8 +537,8 @@ async def test_engine_stream_opens_and_closes_the_anthropic_lifecycle():
     assert types.count("message_start") == 1
     assert types.count("message_delta") == 1
     assert types.index("content_block_start") < types.index("content_block_stop")
-    # max_tokens is carried through untouched; no adapter-side ceiling.
-    assert source.turns[0].sampling["max_tokens"] == 32
+    # Anthropic's max_tokens is normalized to the shared runtime ABI.
+    assert source.turns[0].sampling["max_output_tokens"] == 32
 
 
 @pytest.mark.asyncio
@@ -538,6 +611,8 @@ def test_tool_results_map_to_tool_messages_without_losing_the_error_flag():
     turn = build_turn(request)
     roles = [message["role"] for message in turn.messages]
     assert roles == ["tool", "user"]
-    assert turn.messages[0]["tool_call_id"] == "toolu_1"
+    assert turn.messages[0]["type"] == "function_call_output"
+    assert turn.messages[0]["call_id"] == "toolu_1"
+    assert turn.messages[0]["output"] == "boom"
     assert turn.messages[0]["is_error"] is True
-    assert turn.messages[1]["content"] == "what now?"
+    assert turn.messages[1]["content"] == ({"type": "input_text", "text": "what now?"},)

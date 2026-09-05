@@ -114,7 +114,7 @@ async def create_message(
 
     if not request.stream:
         try:
-            engine = _create_anthropic_model(request.model)
+            engine = _create_request_engine(http_request, request.model)
             completion = await _maybe_await(engine.generate(request))
         except AnthropicAPIError as error:
             return _error_response(error, request_id)
@@ -128,7 +128,7 @@ async def create_message(
 
     async def anthropic_event_generator() -> AsyncIterator[str]:
         try:
-            engine = _create_anthropic_model(request.model)
+            engine = _create_request_engine(http_request, request.model)
             async for event in engine.generate_stream(request):
                 yield _encode_event(event)
         except AnthropicAPIError as error:
@@ -224,3 +224,22 @@ def _create_anthropic_model(
 
     del model_id, adapter_path, draft_model
     return AnthropicMessagesEngine()
+
+
+def _create_request_engine(
+    http_request: Request,
+    model_id: str,
+) -> AnthropicMessagesEngine:
+    """Bind canonical apps to their own receipt, never a process-global owner."""
+
+    runtime = getattr(http_request.app.state, "responses_runtime", None)
+    if runtime is None:
+        return _create_anthropic_model(model_id)
+    receipt = getattr(runtime, "responses", runtime)
+    source = getattr(receipt, "anthropic_turn_source", None)
+    if source is None:
+        raise AnthropicAPIError(
+            "the canonical runtime has no Anthropic turn source",
+            error_type="overloaded_error",
+        )
+    return AnthropicMessagesEngine(turn_source=source)
