@@ -39,6 +39,7 @@ class PreparedResponse:
 
     request: GenerationRequest
     materialized_messages: Sequence[Mapping[str, Any]]
+    lineage_messages: Sequence[Mapping[str, Any]] | None = None
     store: bool = True
     cancel_on_disconnect: bool = True
 
@@ -239,7 +240,11 @@ class ResponsesController:
             response_id,
             owner_id=owner,
             store=prepared.store,
-            materialized_messages=prepared.materialized_messages,
+            materialized_messages=(
+                prepared.lineage_messages
+                if prepared.lineage_messages is not None
+                else prepared.materialized_messages
+            ),
             cancel=lifecycle.cancel_token.cancel,
         )
         self._track(self._relay(lifecycle, subscription), "relay", response_id)
@@ -250,6 +255,7 @@ class ResponsesController:
 
         return ResponseEventSource(
             events=lifecycle.mailbox,
+            response_id=response_id,
             cancel=cancel,
             cancel_on_disconnect=prepared.cancel_on_disconnect,
             terminal_response=_TerminalResponseAwaitable(lifecycle.terminal_response),
@@ -411,7 +417,11 @@ class ResponsesController:
                 lifecycle.response_id,
                 envelope,
                 owner_id=lifecycle.owner_id,
-                materialized_messages=lifecycle.prepared.materialized_messages,
+                materialized_messages=(
+                    lifecycle.prepared.lineage_messages
+                    if lifecycle.prepared.lineage_messages is not None
+                    else lifecycle.prepared.materialized_messages
+                ),
             )
             lifecycle.terminal_committed = True
             lifecycle.terminal_response.set_result(envelope)
@@ -453,9 +463,19 @@ class ResponsesController:
             if not isinstance(message, Mapping):
                 raise TypeError("materialized messages must be mappings")
             messages.append(dict(message))
+        lineage_messages: list[Mapping[str, Any]] | None = None
+        if prepared.lineage_messages is not None:
+            lineage_messages = []
+            for message in prepared.lineage_messages:
+                if not isinstance(message, Mapping):
+                    raise TypeError("lineage messages must be mappings")
+                lineage_messages.append(dict(message))
         return PreparedResponse(
             request=prepared.request,
             materialized_messages=tuple(messages),
+            lineage_messages=(
+                tuple(lineage_messages) if lineage_messages is not None else None
+            ),
             store=bool(prepared.store),
             cancel_on_disconnect=bool(prepared.cancel_on_disconnect),
         )

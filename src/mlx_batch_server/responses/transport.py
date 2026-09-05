@@ -69,6 +69,16 @@ class UnsupportedInjectError(UnsupportedClientEventError):
     close_connection = True
 
 
+class ResponseSteerRejectedError(TransportProtocolError):
+    """A steer command could not be accepted for an active response."""
+
+    code = "response_not_found"
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message, param="previous_response_id")
+        self.code = code
+
+
 class TransportSequenceError(TransportProtocolError):
     code = "transport_sequence_error"
     error_type = "server_error"
@@ -202,7 +212,16 @@ class TransportErrorOutcome:
             raise ValueError("transport error stream_id must match its outcome")
 
 
-TransportOutcome: TypeAlias = TransportEnvelope | TransportErrorOutcome
+@dataclass(frozen=True, slots=True)
+class TransportControlOutcome:
+    """A transport-authored event ordered inside one response lane."""
+
+    payload: Mapping[str, Any]
+
+
+TransportOutcome: TypeAlias = (
+    TransportEnvelope | TransportErrorOutcome | TransportControlOutcome
+)
 
 
 CancelCallback: TypeAlias = Callable[[str], Any | Awaitable[Any]]
@@ -217,6 +236,7 @@ class ResponseEventSource:
     cancel: CancelCallback | None = None
     cancel_on_disconnect: bool = True
     terminal_response: Awaitable[Mapping[str, Any]] | None = None
+    response_id: str | None = None
 
 
 ResponseSourceFactory: TypeAlias = Callable[
@@ -237,6 +257,11 @@ class _QueuedTransportError:
     terminal_response: Awaitable[Mapping[str, Any]] | None
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedControl:
+    payload: Mapping[str, Any]
+
+
 @dataclass(slots=True)
 class _PendingResponse:
     source_factory: ResponseSourceFactory
@@ -245,13 +270,16 @@ class _PendingResponse:
 @dataclass(slots=True)
 class _ActiveResponse:
     source: ResponseEventSource | None = None
-    next_sequence_number: int = 0
+    response_id: str | None = None
+    next_source_sequence_number: int = 0
+    next_wire_sequence_number: int = 0
     sequence_mode: str | None = None
     terminal_enqueued: bool = False
     transport_error_enqueued: bool = False
     slot_released: bool = False
     cancel_invoked: bool = False
     cancel_requested_reason: str | None = None
+    steer_pending: bool = False
     startup_complete: asyncio.Event = field(default_factory=asyncio.Event)
     cancellation_complete: asyncio.Event = field(default_factory=asyncio.Event)
     pump: asyncio.Task[None] | None = None
@@ -260,7 +288,7 @@ class _ActiveResponse:
 @dataclass(slots=True)
 class _Lane:
     stream_id: StreamId | None
-    queue: asyncio.Queue[_QueuedEvent | _QueuedTransportError]
+    queue: asyncio.Queue[_QueuedEvent | _QueuedTransportError | _QueuedControl]
     pending: deque[_PendingResponse] = field(default_factory=deque)
     active: _ActiveResponse | None = None
     ready: bool = False
@@ -405,6 +433,70 @@ class MultiplexedTransportSession:
         finally:
             active.cancellation_complete.set()
 
+    async def steer(
+        self,
+        previous_response_id: str,
+        steer_id: str,
+        source_factory: ResponseSourceFactory,
+    ) -> None:
+        """Queue one automatic successor and stop its active parent safely."""
+
+        async with self._lock:
+            match = next(
+                (
+                    (lane, lane.active)
+                    for lane in self._lanes.values()
+                    if lane.active is not None
+                    and lane.active.response_id == previous_response_id
+                ),
+                None,
+            )
+            if match is None:
+                raise ResponseSteerRejectedError(
+                    "the target response is not active on this connection",
+                    code="response_not_found",
+                )
+            lane, active = match
+            if self._has_final_outcome(active):
+                raise ResponseSteerRejectedError(
+                    "the target response is already complete",
+                    code="response_already_completed",
+                )
+            if active.steer_pending or active.cancel_requested_reason is not None:
+                raise ResponseSteerRejectedError(
+                    "the target response already has pending steering input",
+                    code="too_many_pending_steers",
+                )
+            if self._queued_responses >= self.session.max_queued_responses:
+                raise ResponseSteerRejectedError(
+                    "the transport response queue cannot accept a successor",
+                    code="too_many_pending_steers",
+                )
+
+            payload: dict[str, Any] = {
+                "type": "response.steer.accepted",
+                "sequence_number": active.next_wire_sequence_number,
+                "steer": {
+                    "id": steer_id,
+                    "previous_response_id": previous_response_id,
+                },
+            }
+            if lane.stream_id is not None:
+                payload["stream_id"] = lane.stream_id.value
+            lane.queue.put_nowait(_QueuedControl(payload))
+            active.next_wire_sequence_number += 1
+            lane.pending.appendleft(_PendingResponse(source_factory))
+            self._queued_responses += 1
+            active.steer_pending = True
+            active.cancel_requested_reason = "steered"
+            self._events_ready.set()
+
+        await active.startup_complete.wait()
+        try:
+            await self._invoke_cancel(active, "steered")
+        finally:
+            active.cancellation_complete.set()
+
     async def receive(self) -> TransportOutcome:
         """Return the next available event with round-robin lane fairness."""
 
@@ -441,6 +533,12 @@ class MultiplexedTransportSession:
                                 error=queued.error,
                                 terminal_response=queued.terminal_response,
                             )
+                        if isinstance(queued, _QueuedControl):
+                            if any(
+                                not item.queue.empty() for item in self._lanes.values()
+                            ):
+                                self._events_ready.set()
+                            return TransportControlOutcome(payload=queued.payload)
                         if isinstance(queued.event, TERMINAL_EVENT_TYPES):
                             self._release_final_outcome_locked(lane)
                         if any(not item.queue.empty() for item in self._lanes.values()):
@@ -548,6 +646,7 @@ class MultiplexedTransportSession:
             if not isinstance(source, ResponseEventSource):
                 raise TypeError("response starter must return ResponseEventSource")
             active.source = source
+            active.response_id = source.response_id
             active.startup_complete.set()
 
             async with self._lock:
@@ -570,7 +669,7 @@ class MultiplexedTransportSession:
                         event = item.event
                     else:
                         item_mode = "raw"
-                        sequence_number = active.next_sequence_number
+                        sequence_number = active.next_source_sequence_number
                         event = item
 
                     sequence_error = (
@@ -578,7 +677,7 @@ class MultiplexedTransportSession:
                         and active.sequence_mode != item_mode
                     ) or (
                         item_mode == "sequenced"
-                        and sequence_number != active.next_sequence_number
+                        and sequence_number != active.next_source_sequence_number
                     )
                     if sequence_error:
                         self._enqueue_transport_error_locked(
@@ -595,7 +694,7 @@ class MultiplexedTransportSession:
                         lane,
                         active,
                         _QueuedEvent(
-                            sequence_number,
+                            active.next_wire_sequence_number,
                             event,
                             terminal_response=(
                                 source.terminal_response
@@ -615,7 +714,8 @@ class MultiplexedTransportSession:
                         cancel_reason = "transport_backpressure"
                     else:
                         active.sequence_mode = item_mode
-                        active.next_sequence_number = sequence_number + 1
+                        active.next_source_sequence_number = sequence_number + 1
+                        active.next_wire_sequence_number += 1
                         cancel_reason = None
                 if cancel_reason is not None:
                     await self._request_source_cancel(active, cancel_reason)
@@ -867,7 +967,7 @@ def _parse_steer_content_part(part: Any, param: str) -> None:
         )
     part_type = part.get("type")
     allowed_fields = {
-        "input_text": frozenset({"type", "text"}),
+        "input_text": frozenset({"type", "text", "prompt_cache_breakpoint"}),
         "input_image": frozenset({"type", "image_url", "file_id", "detail"}),
         "input_file": frozenset(
             {"type", "file_id", "file_data", "file_url", "filename", "detail"}

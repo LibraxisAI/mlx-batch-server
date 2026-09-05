@@ -404,9 +404,11 @@ class RuntimeResponseProjection:
             error = {"code": event.code, "message": event.error}
             incomplete_details = None
         else:
-            status = "cancelled"
+            status = "incomplete" if event.reason == "steered" else "cancelled"
             error = None
-            incomplete_details = None
+            incomplete_details = (
+                {"reason": "steered"} if event.reason == "steered" else None
+            )
 
         response = {
             "id": self._response_id,

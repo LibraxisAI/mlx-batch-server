@@ -111,7 +111,8 @@ def _source(response_id: str, text: str = "ok") -> ResponseEventSource:
             ),
             OutputItemCompleted(kind="message", index=0, item_id=item_id, text=text),
             TurnCompleted("stop"),
-        )
+        ),
+        response_id=response_id,
     )
 
 
@@ -173,7 +174,11 @@ def test_response_steer_parser_accepts_only_official_user_input_shape() -> None:
                     "type": "message",
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": "look here"},
+                        {
+                            "type": "input_text",
+                            "text": "look here",
+                            "prompt_cache_breakpoint": {"type": "default"},
+                        },
                         {
                             "type": "input_image",
                             "image_url": "data:image/png;base64,AA==",
@@ -1314,7 +1319,7 @@ async def test_response_steer_dispatches_only_through_explicit_runtime_seam() ->
 
 
 @pytest.mark.asyncio
-async def test_response_steer_without_runtime_seam_returns_protocol_error() -> None:
+async def test_response_steer_unknown_response_returns_uncommitted_input() -> None:
     websocket = ResponsesWebSocketSession(_session())
 
     rendered = await websocket.handle_payload(
@@ -1326,7 +1331,109 @@ async def test_response_steer_without_runtime_seam_returns_protocol_error() -> N
     )
 
     assert rendered is not None
-    assert rendered["type"] == "error"
-    assert rendered["status"] == 400
-    assert rendered["error"]["code"] == "unsupported_websocket_event"
+    assert rendered == {
+        "type": "response.steer.failed",
+        "sequence_number": 0,
+        "steer": {"previous_response_id": "resp_active"},
+        "input": "change direction",
+        "error": {
+            "code": "response_not_found",
+            "message": "the target response is not active on this connection",
+        },
+    }
     assert not websocket.closed
+
+
+@pytest.mark.asyncio
+async def test_response_steer_interrupts_parent_and_commits_inherited_successor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+    cancel_reasons: list[str] = []
+    commands: list[ResponseCreateCommand] = []
+
+    async def parent_events() -> AsyncIterator[SequencedTurnEvent]:
+        yield SequencedTurnEvent(
+            0,
+            TurnStarted(response_id="resp_parent", model="buddy", created_at=1),
+        )
+        await cancelled.wait()
+        yield SequencedTurnEvent(1, TurnCancelled("steered"))
+
+    def cancel_parent(reason: str) -> None:
+        cancel_reasons.append(reason)
+        cancelled.set()
+
+    def start(command: ResponseCreateCommand) -> ResponseEventSource:
+        commands.append(command)
+        if len(commands) == 1:
+            return ResponseEventSource(
+                parent_events(),
+                cancel=cancel_parent,
+                response_id="resp_parent",
+            )
+        return _source("resp_successor", "new direction")
+
+    def fixed_uuid() -> object:
+        return type("_UUID", (), {"hex": "fixed"})()
+
+    monkeypatch.setattr(
+        "mlx_batch_server.responses.websocket.uuid.uuid4",
+        fixed_uuid,
+    )
+    websocket = ResponsesWebSocketSession(_session(), start_response=start)
+    await websocket.create(
+        ResponseCreateCommand(
+            response={
+                "model": "buddy",
+                "input": "original",
+                "instructions": "Buddy policy",
+                "temperature": 0.25,
+            },
+            stream_id=StreamId("main"),
+        )
+    )
+
+    created = await websocket.receive_payload()
+    assert created["type"] == "response.created"
+
+    rendered = await websocket.handle_payload(
+        {
+            "type": "response.steer",
+            "previous_response_id": "resp_parent",
+            "input": "change direction",
+        }
+    )
+    assert rendered is None
+
+    accepted = await websocket.receive_payload()
+    incomplete = await websocket.receive_payload()
+    successor_created = await websocket.receive_payload()
+
+    assert accepted == {
+        "type": "response.steer.accepted",
+        "sequence_number": 1,
+        "stream_id": "main",
+        "steer": {
+            "id": "steer_fixed",
+            "previous_response_id": "resp_parent",
+        },
+    }
+    assert incomplete["type"] == "response.incomplete"
+    assert incomplete["sequence_number"] == 2
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": "steered"}
+    assert successor_created["type"] == "response.created"
+    assert successor_created["sequence_number"] == 0
+    assert successor_created["response"]["id"] == "resp_successor"
+    assert cancel_reasons == ["steered"]
+    assert commands[1] == ResponseCreateCommand(
+        response={
+            "model": "buddy",
+            "input": "change direction",
+            "instructions": "Buddy policy",
+            "temperature": 0.25,
+            "previous_response_id": "resp_parent",
+        },
+        stream_id=StreamId("main"),
+    )

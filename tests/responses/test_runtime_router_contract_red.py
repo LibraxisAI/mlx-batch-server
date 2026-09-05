@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import socket
 from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
+import pytest
+import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from openai import AsyncOpenAI, BadRequestError
 
 from mlx_batch_server.auth.dependency import verify_auth, verify_websocket_auth
 from mlx_batch_server.responses.runtime_router import (
@@ -18,6 +24,7 @@ from mlx_batch_server.responses.runtime_router import (
 from mlx_batch_server.responses.transport import ResponseEventSource
 from mlx_batch_server.runtime.events import (
     SequencedTurnEvent,
+    TurnCancelled,
     TurnCompleted,
     TurnStarted,
 )
@@ -170,6 +177,25 @@ def _app(runtime: _Runtime) -> FastAPI:
     return app
 
 
+@asynccontextmanager
+async def _serve(app: FastAPI) -> AsyncIterator[str]:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    sock.setblocking(False)
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="off"))
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    while not server.started:
+        await asyncio.sleep(0.01)
+    try:
+        yield f"http://127.0.0.1:{port}/v1"
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=2)
+
+
 def test_non_stream_returns_controller_terminal_and_verified_owner() -> None:
     runtime = _Runtime()
     client = TestClient(_app(runtime))
@@ -200,6 +226,171 @@ def test_sse_terminal_contains_the_same_full_response() -> None:
     assert '"id":"resp_runtime_router"' in response.text
     assert '"text":"hej"' in response.text
     assert response.text.endswith("data: [DONE]\n\n")
+
+
+@pytest.mark.asyncio
+async def test_official_openai_sdk_parses_http_and_sse_contracts() -> None:
+    runtime = _Runtime()
+    transport = httpx.ASGITransport(app=_app(runtime))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+        )
+        response = await client.responses.create(model="buddy", input="hej")
+        stream = await client.responses.create(
+            model="buddy",
+            input="hej",
+            stream=True,
+        )
+        event_types = [event.type async for event in stream]
+
+    assert response.id == "resp_runtime_router"
+    assert response.status == "completed"
+    assert response.output_text == "hej"
+    assert event_types == ["response.created", "response.completed"]
+
+
+@pytest.mark.asyncio
+async def test_official_openai_sdk_receives_precise_unsupported_field_error() -> None:
+    runtime = _Runtime()
+
+    async def reject(
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> ResponseEventSource:
+        del payload, owner_id
+        from mlx_batch_server.responses.runtime_mapper import ResponsesMappingError
+
+        raise ResponsesMappingError(
+            "unsupported Responses parameter: background",
+            code="unsupported_parameter",
+            param="background",
+        )
+
+    runtime.responses_controller.create = reject  # type: ignore[method-assign]
+    transport = httpx.ASGITransport(app=_app(runtime))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+        )
+        with pytest.raises(BadRequestError) as raised:
+            await client.responses.create(
+                model="buddy",
+                input="hej",
+                extra_body={"background": True},
+            )
+
+    assert raised.value.code == "unsupported_parameter"
+    assert raised.value.param == "background"
+
+
+@pytest.mark.asyncio
+async def test_official_openai_sdk_parses_websocket_steering_lifecycle() -> None:
+    runtime = _Runtime()
+    cancelled = asyncio.Event()
+    create_calls: list[dict[str, Any]] = []
+
+    async def parent_events() -> AsyncIterator[SequencedTurnEvent]:
+        yield SequencedTurnEvent(
+            0,
+            TurnStarted(response_id="resp_parent", model="buddy", created_at=1),
+        )
+        await cancelled.wait()
+        yield SequencedTurnEvent(1, TurnCancelled("steered"))
+
+    async def successor_events() -> AsyncIterator[SequencedTurnEvent]:
+        yield SequencedTurnEvent(
+            0,
+            TurnStarted(response_id="resp_successor", model="buddy", created_at=2),
+        )
+        yield SequencedTurnEvent(1, TurnCompleted("stop"))
+
+    async def terminal(response_id: str, status: str) -> Mapping[str, Any]:
+        result = dict(TERMINAL)
+        result["id"] = response_id
+        result["status"] = status
+        result["output"] = []
+        result["incomplete_details"] = (
+            {"reason": "steered"} if status == "incomplete" else None
+        )
+        return result
+
+    async def create(
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> ResponseEventSource:
+        assert owner_id == OWNER
+        create_calls.append(dict(payload))
+        if len(create_calls) == 1:
+            return ResponseEventSource(
+                parent_events(),
+                cancel=lambda _reason: cancelled.set(),
+                terminal_response=asyncio.create_task(
+                    terminal("resp_parent", "incomplete")
+                ),
+                response_id="resp_parent",
+            )
+        return ResponseEventSource(
+            successor_events(),
+            terminal_response=asyncio.create_task(
+                terminal("resp_successor", "completed")
+            ),
+            response_id="resp_successor",
+        )
+
+    runtime.responses_controller.create = create  # type: ignore[method-assign]
+    async with _serve(_app(runtime)) as base_url:
+        client = AsyncOpenAI(api_key="test", base_url=base_url)
+        try:
+            async with client.responses.connect(max_retries=0) as connection:
+                await connection.send(
+                    {
+                        "type": "response.create",
+                        "stream_id": "studio",
+                        "model": "buddy",
+                        "input": "original",
+                        "instructions": "Buddy policy",
+                    }
+                )
+                created = await connection.recv()
+                await connection.send(
+                    {
+                        "type": "response.steer",
+                        "previous_response_id": "resp_parent",
+                        "input": "change direction",
+                    }
+                )
+                accepted = await connection.recv()
+                incomplete = await connection.recv()
+                successor = await connection.recv()
+        finally:
+            await client.close()
+
+    assert created.type == "response.created"
+    assert accepted.type == "response.steer.accepted"
+    assert accepted.stream_id == "studio"
+    assert incomplete.type == "response.incomplete"
+    assert incomplete.response.incomplete_details.reason == "steered"
+    assert successor.type == "response.created"
+    assert successor.response.id == "resp_successor"
+    assert create_calls[1] == {
+        "model": "buddy",
+        "input": "change direction",
+        "instructions": "Buddy policy",
+        "previous_response_id": "resp_parent",
+    }
 
 
 def test_lifecycle_routes_use_one_verified_owner_and_terminal_writer() -> None:

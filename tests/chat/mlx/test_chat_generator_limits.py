@@ -166,6 +166,54 @@ class TestChatGeneratorLimits:
         assert len(results) == 1
         assert state["kwargs"]["max_tokens"] == 1
 
+    def test_generate_stream_preserves_stateful_unicode_and_terminal_text(
+        self,
+        monkeypatch,
+    ):
+        wrapper = _fake_wrapper(context_length=16)
+
+        def fake_stream_generate(**kwargs):
+            del kwargs
+            common = {
+                "prompt_tokens": 1,
+                "prompt_tps": 10.0,
+                "generation_tps": 20.0,
+                "peak_memory": 1.0,
+                "from_draft": False,
+            }
+            yield SimpleNamespace(
+                token=1,
+                text="Cześć! ",
+                finish_reason=None,
+                generation_tokens=1,
+                **common,
+            )
+            yield SimpleNamespace(
+                token=2,
+                text="😊",
+                finish_reason="stop",
+                generation_tokens=2,
+                **common,
+            )
+
+        monkeypatch.setattr(
+            chat_generator_module,
+            "stream_generate",
+            fake_stream_generate,
+        )
+
+        results = list(
+            wrapper.generate_stream(
+                messages=[{"role": "user", "content": "hello"}],
+                max_tokens=4,
+            )
+        )
+        text = "".join(result.content.text_delta or "" for result in results)
+
+        assert text == "Cześć! 😊"
+        assert "\ufffd" not in text
+        assert results[-1].finish_reason == "stop"
+
     def test_generate_stream_uses_language_model_for_vlm_runtime(self, monkeypatch):
         """Text-only requests on VLM runtimes should use the language tower."""
         wrapper = _fake_wrapper(context_length=8, multimodal=True)

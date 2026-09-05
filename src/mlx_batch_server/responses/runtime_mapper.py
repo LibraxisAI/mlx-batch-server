@@ -17,6 +17,44 @@ _MEDIA_TYPES = frozenset(("input_image", "input_file", "input_audio", "input_vid
 _PART_TYPES = _TEXT_TYPES | _MEDIA_TYPES
 _MESSAGE_ITEM_TYPE = "message"
 _FUNCTION_OUTPUT_ITEM_TYPE = "function_call_output"
+_SUPPORTED_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "adapter_path",
+        "backend",
+        "cancel_on_disconnect",
+        "draft_model",
+        "draft_model_id",
+        "frequency_penalty",
+        "id",
+        "input",
+        "instructions",
+        "max_output_tokens",
+        "max_tokens",
+        "metadata",
+        "model",
+        "model_revision",
+        "owner_id",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "previous_response_id",
+        "reasoning",
+        "response_format",
+        "response_id",
+        "revision",
+        "runtime_role",
+        "seed",
+        "stop",
+        "store",
+        "stream",
+        "system_instruction",
+        "temperature",
+        "text",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p",
+    }
+)
 
 
 class _FrozenDict(dict[str, Any]):
@@ -106,6 +144,7 @@ class CanonicalResponsesMapper:
         owner = _required_string(owner_id, "owner_id")
         raw = _mutable_mapping(payload, "payload")
         _validate_ownership_claims(raw, response_id=response, owner_id=owner)
+        _validate_supported_fields(raw)
         _validate_raw_input(raw.get("input"))
 
         model = _required_string(raw.get("model"), "model")
@@ -143,13 +182,14 @@ class CanonicalResponsesMapper:
             _canonical_message(item, "parent_messages") for item in parent_messages
         )
         instructions = _instruction_messages(raw)
-        materialized = _instructions_first((*instructions, *parents, *current))
+        lineage_messages = _instructions_first((*parents, *current))
+        materialized = _instructions_first((*instructions, *lineage_messages))
 
         messages = tuple(_text_message(item) for item in materialized)
         media = _media_parts(materialized)
         tools = _tools(raw.get("tools"))
         sampling = _sampling(raw, has_tools=bool(tools))
-        reasoning = _mapping_or_empty(raw.get("reasoning"), "reasoning")
+        reasoning = _reasoning(raw.get("reasoning"))
         metadata = _metadata(
             raw,
             model=model,
@@ -175,6 +215,7 @@ class CanonicalResponsesMapper:
         return PreparedResponse(
             request=request,
             materialized_messages=materialized,
+            lineage_messages=lineage_messages,
             store=store,
             cancel_on_disconnect=cancel_on_disconnect,
         )
@@ -222,6 +263,17 @@ def _validate_ownership_claims(
                 code="response_ownership_mismatch",
                 param="metadata.response_id",
             )
+
+
+def _validate_supported_fields(payload: Mapping[str, Any]) -> None:
+    unsupported = sorted(set(payload) - _SUPPORTED_TOP_LEVEL_FIELDS)
+    if unsupported:
+        field = unsupported[0]
+        raise ResponsesMappingError(
+            f"unsupported Responses parameter: {field}",
+            code="unsupported_parameter",
+            param=field,
+        )
 
 
 def _validate_raw_input(raw_input: Any) -> None:
@@ -770,6 +822,41 @@ def _mapping_or_empty(value: Any, param: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise _invalid(f"{param} must be a mapping", param)
     return _freeze_mapping(value)
+
+
+def _reasoning(value: Any) -> Mapping[str, Any]:
+    reasoning = _mapping_or_empty(value, "reasoning")
+    unsupported = sorted(set(reasoning) - {"enabled", "effort", "summary"})
+    if unsupported:
+        field = unsupported[0]
+        raise ResponsesMappingError(
+            f"unsupported Responses reasoning parameter: {field}",
+            code="unsupported_parameter",
+            param=f"reasoning.{field}",
+        )
+    enabled = reasoning.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        raise _invalid("reasoning.enabled must be a boolean", "reasoning.enabled")
+    effort = reasoning.get("effort")
+    if effort is not None and effort not in {
+        "none",
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }:
+        raise _invalid(
+            "reasoning.effort must be one of none, off, low, medium, high, xhigh",
+            "reasoning.effort",
+        )
+    summary = reasoning.get("summary")
+    if summary is not None and summary != "auto":
+        raise _invalid(
+            "reasoning.summary currently supports only auto",
+            "reasoning.summary",
+        )
+    return reasoning
 
 
 def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
