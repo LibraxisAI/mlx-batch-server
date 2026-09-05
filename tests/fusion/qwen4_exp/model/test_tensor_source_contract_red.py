@@ -13,6 +13,11 @@ _SUPPORT_PATH = (
 )
 _EXECUTION_PATH = _ROOT / "src/mlx_batch_server/runtime/fusion/qwen4_exp/execution.py"
 _OWNER_PATH = _ROOT / "src/mlx_batch_server/runtime/fusion/concrete/owner.py"
+_COMPOSITION_PATH = (
+    _ROOT / "src/mlx_batch_server/runtime/fusion/concrete/composition.py"
+)
+_BOOTSTRAP_PATH = _ROOT / "src/mlx_batch_server/responses/runtime_bootstrap.py"
+_RUNTIME_INIT_PATH = _ROOT / "src/mlx_batch_server/runtime/__init__.py"
 _DONOR_COMMIT = "6d0ddf0575faa9acf77e63c57e48ea1602a7e4ab"
 
 
@@ -42,6 +47,25 @@ def _method(class_node: ast.ClassDef, name: str) -> ast.FunctionDef:
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _call_leaf(call: ast.Call) -> str | None:
+    function = call.func
+    if isinstance(function, ast.Name):
+        return function.id
+    if isinstance(function, ast.Attribute):
+        return function.attr
+    return None
 
 
 def test_tensor_source_retains_frozen_provenance_without_donor_imports() -> None:
@@ -116,7 +140,7 @@ def test_weight_loading_uses_exact_index_and_per_module_recipes() -> None:
 def test_factory_prepares_the_single_plan_before_owner_thread_tensor_load() -> None:
     source = _source(_TENSOR_PATH)
     tree = _tree(_TENSOR_PATH)
-    factory = _class(tree, "Qwen4ExpExecutionFactory")
+    factory = _class(tree, "_Qwen4ExpExecutionFactory")
     prepare = _method(factory, "prepare")
     prepared_factory = _class(tree, "_PreparedQwen4ExpExecutionFactory")
     load = _method(prepared_factory, "load")
@@ -142,6 +166,113 @@ def test_factory_prepares_the_single_plan_before_owner_thread_tensor_load() -> N
     assert '"qwen4_exp_plan_sha256": plan.plan_sha256' in source
     assert '"build_facts": build_facts' in source
     assert '"config.json"' not in source
+
+
+def test_materialization_receipt_is_issued_once_after_complete_chunked_eval() -> None:
+    tree = _tree(_TENSOR_PATH)
+    materialize = _function(tree, "_materialize_qwen4_exp_parameters")
+    eval_calls = [
+        node
+        for node in ast.walk(materialize)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "mx"
+        and node.func.attr == "eval"
+    ]
+    receipt_calls = [
+        node
+        for node in ast.walk(materialize)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "TensorMaterializationReceipt"
+    ]
+
+    assert len(eval_calls) == 1
+    assert len(receipt_calls) == 1
+    assert eval_calls[0].lineno < receipt_calls[0].lineno
+    source = ast.unparse(materialize)
+    assert "range(0, len(unique_leaves), _MATERIALIZATION_EVAL_CHUNK_SIZE)" in source
+    assert "model.parameters()" in source
+    assert "vision_tower.parameters()" in source
+    assert "text_mtp.language_model." in source
+    assert "text_mtp.mtp." in source
+    assert "mx.eval(*unique_leaves" in source
+    assert source.index("mx.eval(*unique_leaves") < source.index(
+        "verify_qwen4_exp_shard_content(plan)"
+    )
+    assert source.index("verify_qwen4_exp_shard_content(plan)") < source.index(
+        "TensorMaterializationReceipt("
+    )
+    assert "checkpoint_content_sha256=plan.artifacts.weight_content_sha256" in source
+    assert "_issuer_authority=materialization_authority" in source
+
+
+def test_each_checkpoint_reopen_verifies_exact_shard_bytes_before_mx_load() -> None:
+    tree = _tree(_TENSOR_PATH)
+    source = ast.unparse(_function(tree, "_read_indexed_weights"))
+
+    assert source.count("verify_qwen4_exp_shard_content(plan, shard_name)") == 1
+    assert source.count("mx.load(str(Path(plan.model_dir) / shard_name))") == 1
+    assert source.index("verify_qwen4_exp_shard_content") < source.index("mx.load")
+
+
+def test_prepared_factory_propagates_one_receipt_after_text_mtp_and_vision() -> None:
+    tree = _tree(_TENSOR_PATH)
+    prepared = _class(tree, "_PreparedQwen4ExpExecutionFactory")
+    load_source = ast.unparse(_method(prepared, "load"))
+
+    assert load_source.index("Qwen4ExpVisionTensorTower.from_load_plan") < (
+        load_source.index("_materialize_qwen4_exp_parameters")
+    )
+    assert load_source.index("_materialize_qwen4_exp_parameters") < (
+        load_source.index("Qwen4ExpExecutionBinding")
+    )
+    assert load_source.count("materialization_receipt=materialization_receipt") == 2
+
+
+def test_no_other_production_surface_can_mint_materialization_receipts() -> None:
+    constructors: list[tuple[Path, int]] = []
+    for path in (_ROOT / "src").rglob("*.py"):
+        tree = _tree(path)
+        constructors.extend(
+            (path, node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _call_leaf(node) == "TensorMaterializationReceipt"
+        )
+
+    assert len(constructors) == 1
+    assert constructors[0][0] == _TENSOR_PATH
+
+
+def test_production_composition_owns_the_private_issuer_and_no_injection_seam() -> None:
+    composition_tree = _tree(_COMPOSITION_PATH)
+    compose = _function(composition_tree, "compose_qwen4_exp_backend")
+    bootstrap_tree = _tree(_BOOTSTRAP_PATH)
+    compose_role = _function(bootstrap_tree, "compose_role_responses_runtime")
+    composition_source = ast.unparse(compose)
+    owner_source = _source(_OWNER_PATH)
+    execution_source = _source(_EXECUTION_PATH)
+    runtime_init_source = _source(_RUNTIME_INIT_PATH)
+
+    assert "execution_factory" not in {
+        argument.arg for argument in compose.args.kwonlyargs
+    }
+    assert "execution_factory" not in {
+        argument.arg for argument in compose_role.args.kwonlyargs
+    }
+    assert composition_source.count("_TensorMaterializationIssuerAuthority()") == 1
+    assert composition_source.count("_Qwen4ExpExecutionFactory(") == 1
+    assert "materialization_authority=materialization_authority" in composition_source
+    assert "_TensorMaterializationIssuerAuthority" not in execution_source.split(
+        "__all__ =", 1
+    )[1]
+    assert "TensorMaterializationReceipt" not in runtime_init_source
+    assert owner_source.count(
+        "materialization_receipt = owner.materialization_receipt"
+    ) == 1
+    assert "materialization_receipt=materialization_receipt" in owner_source
 
 
 def test_owner_consumes_prepared_factory_after_strict_pre_mailbox_identity() -> None:

@@ -23,6 +23,7 @@ from mlx_batch_server.runtime.contracts import (
     PreparedGenerationRequest,
     RequestModality,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from mlx_batch_server.runtime.fusion.cache import (
     CacheCleanupReceipt,
@@ -39,6 +40,9 @@ from mlx_batch_server.runtime.fusion.concrete.owner import (
 )
 from mlx_batch_server.runtime.fusion.mtp import MtpPolicy
 from mlx_batch_server.runtime.fusion.qwen4_exp import Qwen4ExpExecutionBinding
+from mlx_batch_server.runtime.fusion.qwen4_exp.execution import (
+    _TensorMaterializationIssuerAuthority,
+)
 from mlx_batch_server.runtime.fusion.scheduler import (
     DecodeResult,
     PrefillResult,
@@ -73,8 +77,34 @@ MODEL = ModelSpec(
     architecture="Qwen4ExpForConditionalGeneration",
     model_type="qwen4_exp",
     quantization="4bit",
-    metadata={"vision_config": {"hidden_size": 1280}},
+    metadata={
+        "vision_config": {"hidden_size": 1280},
+        "qwen4_exp_plan_sha256": "1" * 64,
+        "build_facts": {
+            "artifact_inventory_sha256": "2" * 64,
+            "weight_content_sha256": "4" * 64,
+        },
+    },
 )
+_TEST_MATERIALIZATION_AUTHORITY = _TensorMaterializationIssuerAuthority()
+
+
+def _materialization(runtime: RuntimeKey) -> TensorMaterializationReceipt:
+    return TensorMaterializationReceipt(
+        schema="mlx-tensor-materialization.v1",
+        load_id="load-test",
+        runtime=runtime,
+        qwen4_exp_plan_sha256="1" * 64,
+        artifact_inventory_sha256="2" * 64,
+        parameter_manifest_sha256="3" * 64,
+        parameter_path_count=3,
+        evaluated_leaf_count=3,
+        evaluated_logical_bytes=1024,
+        owner_thread_id=threading.get_ident(),
+        completed_at_monotonic_ns=1,
+        checkpoint_content_sha256="4" * 64,
+        _issuer_authority=_TEST_MATERIALIZATION_AUTHORITY,
+    )
 
 
 def _request(
@@ -121,10 +151,16 @@ class _Driver:
         self.cleanup_failures = 0
         self.foreign_result = False
         self.shutdown_deadlines: list[float] = []
+        self._materialization_receipt: TensorMaterializationReceipt | None = None
 
     @property
     def model_spec(self) -> ModelSpec:
         return self._model
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        assert self._materialization_receipt is not None
+        return self._materialization_receipt
 
     def _record(self, *call: Any) -> None:
         self.thread_ids.append(threading.get_ident())
@@ -206,12 +242,15 @@ class _PreparedDriverFactory:
     def load(self) -> Qwen4ExpExecutionBinding:
         owner = self.factory
         owner.thread_ids.append(threading.get_ident())
+        receipt = _materialization(self.runtime)
+        owner.driver._materialization_receipt = receipt
         binding = Qwen4ExpExecutionBinding(
             execution=owner.driver,
             runtime=self.runtime,
             config=self.config,
             scheduler_config=self.scheduler_config,
             model=owner.driver.model_spec,
+            materialization_receipt=receipt,
         )
         if owner.binding_transform is not None:
             binding = owner.binding_transform(binding)
@@ -249,7 +288,10 @@ async def _binding(
     factory: _DriverFactory | None = None,
 ) -> tuple[Qwen4ExpTensorOwnerLoader, Any, _DriverFactory]:
     factory = factory or _DriverFactory()
-    loader = Qwen4ExpTensorOwnerLoader(factory)
+    loader = Qwen4ExpTensorOwnerLoader(
+        factory,
+        materialization_authority=_TEST_MATERIALIZATION_AUTHORITY,
+    )
     binding = await loader.load(RUNTIME, CONFIG, SCHEDULER)
     return loader, binding, factory
 
@@ -260,6 +302,8 @@ async def test_driver_lifecycle_is_serialized_on_one_inference_thread() -> None:
     loader, binding, factory = await _binding()
     owner = binding.owner
     assert isinstance(owner, Qwen4ExpTensorOwner)
+    assert binding.materialization_receipt is binding.executor.materialization_receipt
+    assert binding.materialization_receipt is owner.materialization_receipt
     request = _request()
     lease = await binding.cache.acquire(_prepared(request))
 
@@ -447,9 +491,50 @@ async def test_driver_binding_mismatch_stops_owner_thread() -> None:
         binding,
         runtime=replace(RUNTIME, revision="foreign"),
     )
-    loader = Qwen4ExpTensorOwnerLoader(factory)
+    loader = Qwen4ExpTensorOwnerLoader(
+        factory,
+        materialization_authority=_TEST_MATERIALIZATION_AUTHORITY,
+    )
 
     with pytest.raises(Qwen4ExpTensorIdentityError, match="runtime identity"):
+        await loader.load(RUNTIME, CONFIG, SCHEDULER)
+    assert factory.driver.shutdown_deadlines == [0.0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("owner_thread_id", 1, "owner thread"),
+        ("qwen4_exp_plan_sha256", "9" * 64, "Qwen4Exp plan"),
+        ("artifact_inventory_sha256", "8" * 64, "artifact inventory"),
+        ("checkpoint_content_sha256", "7" * 64, "checkpoint content"),
+        (
+            "_issuer_authority",
+            _TensorMaterializationIssuerAuthority(),
+            "concrete owner graph",
+        ),
+    ),
+)
+async def test_materialization_receipt_identity_fails_closed(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    factory = _DriverFactory()
+
+    def replace_receipt(binding: Qwen4ExpExecutionBinding) -> Qwen4ExpExecutionBinding:
+        receipt = replace(binding.materialization_receipt, **{field: value})
+        factory.driver._materialization_receipt = receipt
+        return replace(binding, materialization_receipt=receipt)
+
+    factory.binding_transform = replace_receipt
+    loader = Qwen4ExpTensorOwnerLoader(
+        factory,
+        materialization_authority=_TEST_MATERIALIZATION_AUTHORITY,
+    )
+
+    with pytest.raises(Qwen4ExpTensorIdentityError, match=message):
         await loader.load(RUNTIME, CONFIG, SCHEDULER)
     assert factory.driver.shutdown_deadlines == [0.0]
 
@@ -462,7 +547,10 @@ async def test_prepared_factory_identity_fails_before_owner_mailbox() -> None:
         prepared,
         runtime=replace(RUNTIME, revision="foreign"),
     )
-    loader = Qwen4ExpTensorOwnerLoader(factory)
+    loader = Qwen4ExpTensorOwnerLoader(
+        factory,
+        materialization_authority=_TEST_MATERIALIZATION_AUTHORITY,
+    )
 
     with pytest.raises(Qwen4ExpTensorIdentityError, match="prepared factory"):
         await loader.load(RUNTIME, CONFIG, SCHEDULER)

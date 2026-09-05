@@ -38,9 +38,11 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import hashlib
+import json
 import math
 import os
 import re
+import threading
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -69,6 +71,7 @@ from ....contracts import (
     PreparedGenerationRequest,
     RequestModality,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from ....events import UsageUpdate
 from ...cache import CacheCleanupReceipt, CacheReleaseReason, CacheTier
@@ -76,7 +79,10 @@ from ...mtp import MtpAlignment, MtpDecision, MtpDisableReason, MtpPolicy
 from ...output import Qwen4OutputChunk, Qwen4TurnEventEncoderFactory
 from ...scheduler import DecodeResult, PrefillResult, SchedulerConfig, SchedulerPlan
 from ...stop_sequences import IncrementalStopMatcher
-from ..execution import Qwen4ExpExecutionBinding
+from ..execution import (
+    Qwen4ExpExecutionBinding,
+    _TensorMaterializationIssuerAuthority,
+)
 from ..media import (
     PreparedMediaItem,
     PreparedQwen4Prompt,
@@ -104,7 +110,11 @@ from ..vision.tensor_processing import Qwen4ExpTensorPreprocessor
 from ..vision.tensor_splice import Qwen4ExpTensorSplicer
 from ..vision.tensor_tower import Qwen4ExpVisionTensorTower
 from ..vision.tower import VisionTowerRequest
-from .load_plan import Qwen4ExpModelLoadPlan, load_qwen4_exp_plan
+from .load_plan import (
+    Qwen4ExpModelLoadPlan,
+    load_qwen4_exp_plan,
+    verify_qwen4_exp_shard_content,
+)
 from .multirow import MultirowBatchPlan
 from .sampling import (
     Distribution,
@@ -4493,6 +4503,7 @@ def _quantize_for_plan(model: Model, plan: Qwen4ExpModelLoadPlan) -> None:
 def _read_indexed_weights(plan: Qwen4ExpModelLoadPlan) -> dict[str, mx.array]:
     weights: dict[str, mx.array] = {}
     for shard_name in plan.artifacts.weight_shards:
+        verify_qwen4_exp_shard_content(plan, shard_name)
         shard = mx.load(str(Path(plan.model_dir) / shard_name))
         for key, value in shard.items():
             if key in weights:
@@ -4523,6 +4534,96 @@ def load_qwen4_exp_tensor(
             _fuse_resident_ple_embeddings(model)
         model.eval()
     return model
+
+
+_MATERIALIZATION_EVAL_CHUNK_SIZE = 128
+
+
+def _materialize_qwen4_exp_parameters(
+    *,
+    runtime: RuntimeKey,
+    plan: Qwen4ExpModelLoadPlan,
+    model: Model,
+    vision_tower: Qwen4ExpVisionTensorTower | None,
+    materialization_authority: _TensorMaterializationIssuerAuthority,
+) -> TensorMaterializationReceipt:
+    """Force every final checkpoint leaf before issuing the sole load receipt."""
+
+    paths: list[tuple[str, mx.array]] = []
+
+    def collect(prefix: str, value: object) -> None:
+        if isinstance(value, mx.array):
+            paths.append((prefix, value))
+            return
+        if isinstance(value, Mapping):
+            for key in sorted(value, key=str):
+                collect(f"{prefix}.{key}", value[key])
+            return
+        if isinstance(value, tuple | list):
+            for index, item in enumerate(value):
+                collect(f"{prefix}.{index}", item)
+            return
+        raise RuntimeError(
+            "Qwen4Exp materialization found an unsupported parameter leaf at "
+            f"{prefix}: {type(value).__name__}"
+        )
+
+    collect("text_mtp", model.parameters())
+    if vision_tower is not None:
+        collect("vision", vision_tower.parameters())
+    if not paths:
+        raise RuntimeError("Qwen4Exp materialization found no final parameter leaves")
+    if not any(path.startswith("text_mtp.language_model.") for path, _ in paths):
+        raise RuntimeError("Qwen4Exp materialization found no language trunk leaves")
+    if plan.artifacts.has_embedded_mtp and not any(
+        path.startswith("text_mtp.mtp.") for path, _ in paths
+    ):
+        raise RuntimeError("Qwen4Exp materialization found no embedded MTP leaves")
+    if plan.artifacts.has_embedded_vision and not any(
+        path.startswith("vision.") for path, _ in paths
+    ):
+        raise RuntimeError("Qwen4Exp materialization found no vision leaves")
+
+    manifest = tuple(
+        (
+            path,
+            tuple(int(dimension) for dimension in leaf.shape),
+            str(leaf.dtype),
+            int(leaf.nbytes),
+        )
+        for path, leaf in paths
+    )
+    manifest_sha256 = hashlib.sha256(
+        json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    unique_leaves: list[mx.array] = []
+    seen: set[int] = set()
+    for _, leaf in paths:
+        identity = id(leaf)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique_leaves.append(leaf)
+    logical_bytes = sum(int(leaf.nbytes) for leaf in unique_leaves)
+    for offset in range(0, len(unique_leaves), _MATERIALIZATION_EVAL_CHUNK_SIZE):
+        mx.eval(*unique_leaves[offset : offset + _MATERIALIZATION_EVAL_CHUNK_SIZE])
+    verify_qwen4_exp_shard_content(plan)
+
+    return TensorMaterializationReceipt(
+        schema="mlx-tensor-materialization.v1",
+        load_id=str(uuid.uuid4()),
+        runtime=runtime,
+        qwen4_exp_plan_sha256=plan.plan_sha256,
+        artifact_inventory_sha256=plan.artifacts.digest,
+        parameter_manifest_sha256=manifest_sha256,
+        parameter_path_count=len(paths),
+        evaluated_leaf_count=len(unique_leaves),
+        evaluated_logical_bytes=logical_bytes,
+        owner_thread_id=threading.get_ident(),
+        completed_at_monotonic_ns=time.monotonic_ns(),
+        checkpoint_content_sha256=plan.artifacts.weight_content_sha256,
+        _issuer_authority=materialization_authority,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -5209,13 +5310,17 @@ class _Qwen4ExpTensorRuntime:
         model: Model,
         tokenizer: Any,
         model_spec: ModelSpec,
+        materialization_receipt: TensorMaterializationReceipt,
         capabilities: Qwen4ExpTensorCapabilities,
         prefix_config: _TensorPrefixConfig,
+        vision_preprocessor: Qwen4ExpTensorPreprocessor | None,
+        vision_tower: Qwen4ExpVisionTensorTower | None,
     ) -> None:
         self.plan = plan
         self.model = model
         self.tokenizer = tokenizer
         self._model_spec = model_spec
+        self._materialization_receipt = materialization_receipt
         self.capabilities = capabilities
         self._stop_token_ids = _tokenizer_stop_token_ids(
             tokenizer,
@@ -5250,15 +5355,16 @@ class _Qwen4ExpTensorRuntime:
         self._prefill_rows = 0
         self._decode_rows = 0
         self._tensor_forward_telemetry = _TensorForwardTelemetry()
-        self._vision_preprocessor: Qwen4ExpTensorPreprocessor | None = None
-        self._vision_tower: Qwen4ExpVisionTensorTower | None = None
-        if not plan.config.language_model_only:
-            self._vision_preprocessor = Qwen4ExpTensorPreprocessor.from_load_plan(plan)
-            self._vision_tower = Qwen4ExpVisionTensorTower.from_load_plan(plan)
+        self._vision_preprocessor = vision_preprocessor
+        self._vision_tower = vision_tower
 
     @property
     def model_spec(self) -> ModelSpec:
         return self._model_spec
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        return self._materialization_receipt
 
     def reserve(self, request: PreparedGenerationRequest, lease_id: str) -> object:
         self._require_open()
@@ -7515,8 +7621,15 @@ def _is_grammar_constrained(request: GenerationRequest) -> bool:
     return any(request.sampling.get(key) is not None for key in grammar_keys)
 
 
-class Qwen4ExpExecutionFactory:
+class _Qwen4ExpExecutionFactory:
     """Sole concrete Qwen4ExpExecutionFactoryPort implementation."""
+
+    def __init__(
+        self,
+        *,
+        materialization_authority: _TensorMaterializationIssuerAuthority,
+    ) -> None:
+        self._materialization_authority = materialization_authority
 
     def prepare(
         self,
@@ -7547,6 +7660,7 @@ class Qwen4ExpExecutionFactory:
             model_plan=plan,
             capabilities=capabilities,
             prefix_config=_prefix_config(config),
+            materialization_authority=self._materialization_authority,
         )
 
 
@@ -7560,6 +7674,7 @@ class _PreparedQwen4ExpExecutionFactory:
     model_plan: Qwen4ExpModelLoadPlan
     capabilities: Qwen4ExpTensorCapabilities
     prefix_config: _TensorPrefixConfig
+    materialization_authority: _TensorMaterializationIssuerAuthority
 
     def __post_init__(self) -> None:
         plan = self.model_plan
@@ -7578,11 +7693,24 @@ class _PreparedQwen4ExpExecutionFactory:
         with tensor_capability_scope(self.capabilities):
             model = load_qwen4_exp_tensor(plan, self.capabilities)
             tokenizer = load_tokenizer(Path(plan.model_dir))
+            vision_preprocessor = None
+            vision_tower = None
+            if not plan.config.language_model_only:
+                vision_preprocessor = Qwen4ExpTensorPreprocessor.from_load_plan(plan)
+                vision_tower = Qwen4ExpVisionTensorTower.from_load_plan(plan)
+            materialization_receipt = _materialize_qwen4_exp_parameters(
+                runtime=self.runtime,
+                plan=plan,
+                model=model,
+                vision_tower=vision_tower,
+                materialization_authority=self.materialization_authority,
+            )
         build_facts = {
             "qwen4_exp_plan_sha256": plan.plan_sha256,
             "config_sha256": plan.config_sha256,
             "index_sha256": plan.index_sha256,
             "artifact_inventory_sha256": plan.artifacts.digest,
+            "weight_content_sha256": plan.artifacts.weight_content_sha256,
             "tokenizer_fingerprint": plan.tokenizer_fingerprint,
             "tensor_batch_mode": plan.topology.tensor_batch_mode.value,
             "prefix_cache_mode": "whole_boundary_hot",
@@ -7614,8 +7742,11 @@ class _PreparedQwen4ExpExecutionFactory:
             model=model,
             tokenizer=tokenizer,
             model_spec=model_spec,
+            materialization_receipt=materialization_receipt,
             capabilities=self.capabilities,
             prefix_config=self.prefix_config,
+            vision_preprocessor=vision_preprocessor,
+            vision_tower=vision_tower,
         )
         return Qwen4ExpExecutionBinding(
             execution=execution,
@@ -7623,6 +7754,7 @@ class _PreparedQwen4ExpExecutionFactory:
             config=self.config,
             scheduler_config=self.scheduler_config,
             model=model_spec,
+            materialization_receipt=materialization_receipt,
         )
 
 
@@ -7636,7 +7768,6 @@ __all__ = [
     "PLELayer",
     "QSACache",
     "QSAIndexer",
-    "Qwen4ExpExecutionFactory",
     "Qwen4ExpMTP",
     "Qwen4ExpTextModel",
     "SparseMoeBlock",

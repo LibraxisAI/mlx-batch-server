@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fail-closed filesystem plan for loading one Qwen4Exp checkpoint.
 
-This module performs metadata I/O only. It deliberately does not import MLX,
-open safetensor shards, instantiate tokenizers, or select a runtime backend.
+This module performs filesystem planning only. It deliberately does not import
+MLX, instantiate tokenizers, or select a runtime backend. It hashes every
+planned safetensor shard so later reopen and materialization can verify bytes.
 """
 
 from __future__ import annotations
@@ -14,11 +15,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .artifacts import Qwen4ExpArtifactInventory, inspect_qwen4_exp_artifacts
+from .artifacts import (
+    Qwen4ExpArtifactInventory,
+    inspect_qwen4_exp_artifacts,
+    qwen4_exp_weight_shards,
+)
 from .config import Qwen4ExpCheckpointConfig, parse_qwen4_exp_config
 from .topology import Qwen4ExpTopology, build_qwen4_exp_topology
 
 _DEFAULT_MAX_METADATA_BYTES = 64 * 1024 * 1024
+_CONTENT_HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 class Qwen4ExpLoadPlanError(ValueError):
@@ -116,9 +122,10 @@ def load_qwen4_exp_plan(
         "preprocessor_config.json",
         preprocessor_bytes,
     )
-    weight_map = index_raw.get("weight_map")
-    if not isinstance(weight_map, Mapping):
+    raw_weight_map = index_raw.get("weight_map")
+    if not isinstance(raw_weight_map, Mapping):
         raise Qwen4ExpLoadPlanError("model index requires a weight_map")
+    weight_map = _string_mapping("weight_map", raw_weight_map)
 
     config = parse_qwen4_exp_config(config_raw)
     topology = build_qwen4_exp_topology(config)
@@ -129,10 +136,16 @@ def load_qwen4_exp_plan(
             if item.is_file() and not item.name.startswith(".")
         )
     )
+    weight_shards = qwen4_exp_weight_shards(weight_map)
+    shard_sha256 = {
+        shard_name: _stable_file_sha256(root / shard_name)
+        for shard_name in weight_shards
+    }
     artifacts = inspect_qwen4_exp_artifacts(
         config=config,
         file_names=files,
-        weight_map=_string_mapping("weight_map", weight_map),
+        weight_map=weight_map,
+        weight_shard_sha256=shard_sha256,
     )
     config_digest = hashlib.sha256(config_bytes).hexdigest()
     index_digest = hashlib.sha256(index_bytes).hexdigest()
@@ -159,6 +172,7 @@ def load_qwen4_exp_plan(
         "preprocessor_sha256": preprocessor_digest,
         "tokenizer_fingerprint": tokenizer_fingerprint,
         "artifact_inventory_sha256": artifacts.digest,
+        "weight_content_sha256": artifacts.weight_content_sha256,
         "tensor_batch_mode": topology.tensor_batch_mode.value,
         "max_qsa_batch_rows": topology.max_qsa_batch_rows,
         "max_verified_mtp_rows": topology.max_verified_mtp_rows,
@@ -180,6 +194,62 @@ def load_qwen4_exp_plan(
         tokenizer_fingerprint=tokenizer_fingerprint,
         plan_sha256=plan_digest,
     )
+
+
+def verify_qwen4_exp_shard_content(
+    plan: Qwen4ExpModelLoadPlan,
+    shard_name: str | None = None,
+) -> None:
+    """Fail closed when a planned shard no longer has its admitted bytes."""
+
+    expected = dict(plan.artifacts.weight_shard_sha256)
+    names = plan.artifacts.weight_shards if shard_name is None else (shard_name,)
+    for name in names:
+        planned = expected.get(name)
+        if planned is None:
+            raise Qwen4ExpLoadPlanError(f"unplanned checkpoint shard: {name}")
+        observed = _stable_file_sha256(Path(plan.model_dir) / name)
+        if observed != planned:
+            raise Qwen4ExpLoadPlanError(
+                f"checkpoint shard content changed after planning: {name}"
+            )
+
+
+def _stable_file_sha256(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise Qwen4ExpLoadPlanError(
+            f"checkpoint shard must be a regular non-symlink file: {path.name}"
+        )
+    try:
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(_CONTENT_HASH_CHUNK_BYTES):
+                digest.update(chunk)
+        after = path.stat()
+    except OSError as error:
+        raise Qwen4ExpLoadPlanError(
+            f"cannot hash checkpoint shard: {path.name}"
+        ) from error
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before.st_size < 1 or identity_before != identity_after:
+        raise Qwen4ExpLoadPlanError(
+            f"checkpoint shard changed while hashing: {path.name}"
+        )
+    return digest.hexdigest()
 
 
 def _read_bounded(path: Path, limit: int) -> bytes:
@@ -247,4 +317,5 @@ __all__ = [
     "Qwen4ExpLoadPlanError",
     "Qwen4ExpModelLoadPlan",
     "load_qwen4_exp_plan",
+    "verify_qwen4_exp_shard_content",
 ]

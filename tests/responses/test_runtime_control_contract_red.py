@@ -18,11 +18,35 @@ from mlx_batch_server.runtime.contracts import (
     CapabilityReport,
     RoleName,
     RoleSpec,
+    RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.roles import RoleDirectory
 
 FLASH = "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit"
+
+
+def _materialization() -> TensorMaterializationReceipt:
+    return TensorMaterializationReceipt(
+        schema="mlx-tensor-materialization.v1",
+        load_id="load-test",
+        runtime=RuntimeKey(
+            model_id=FLASH,
+            revision="snapshot-sha",
+            backend=BackendKind.FUSED_MTP_MLX,
+        ),
+        qwen4_exp_plan_sha256="1" * 64,
+        artifact_inventory_sha256="2" * 64,
+        parameter_manifest_sha256="3" * 64,
+        parameter_path_count=3,
+        evaluated_leaf_count=3,
+        evaluated_logical_bytes=1024,
+        owner_thread_id=1,
+        completed_at_monotonic_ns=1,
+        checkpoint_content_sha256="4" * 64,
+        _issuer_authority=object(),
+    )
 
 
 class _Manager:
@@ -49,6 +73,7 @@ class _Manager:
             loaded_model=FLASH,
             backend=BackendKind.FUSED_MTP_MLX,
             capabilities=self.capabilities,
+            materialization=_materialization(),
         )
         return object()
 
@@ -191,6 +216,20 @@ async def test_load_and_unload_drive_the_same_role_readiness_owner() -> None:
         "multimodal",
     ]
     assert resident["runtime_contract"]["model_state"] == "ready"
+    assert service.role_status()["receipt"] == {
+        "role_manifest_sha256": "manifest-sha"
+    }
+    assert service.role_status()["materialization"]["schema"] == (
+        "mlx-tensor-materialization.v1"
+    )
+    assert service.role_status()["materialization"]["runtime"] == {
+        "model_id": FLASH,
+        "revision": "snapshot-sha",
+        "backend": "fused_mtp_mlx",
+    }
+    assert resident["runtime_contract"]["materialization"] == (
+        service.role_status()["materialization"]
+    )
 
     unloaded = await service.unload_model(ModelUnloadRequest(model=FLASH))
 

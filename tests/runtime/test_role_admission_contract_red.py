@@ -21,12 +21,31 @@ from mlx_batch_server.runtime.contracts import (
     RoleName,
     RoleSpec,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from mlx_batch_server.runtime.manager import RuntimeManager
 from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.roles import RoleDirectory
 
 FLASH_MODEL = "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit"
+
+
+def _receipt(runtime: RuntimeKey) -> TensorMaterializationReceipt:
+    return TensorMaterializationReceipt(
+        schema="mlx-tensor-materialization.v1",
+        load_id="load-test",
+        runtime=runtime,
+        qwen4_exp_plan_sha256="1" * 64,
+        artifact_inventory_sha256="2" * 64,
+        parameter_manifest_sha256="3" * 64,
+        parameter_path_count=3,
+        evaluated_leaf_count=3,
+        evaluated_logical_bytes=1024,
+        owner_thread_id=1,
+        completed_at_monotonic_ns=1,
+        checkpoint_content_sha256="4" * 64,
+        _issuer_authority=object(),
+    )
 
 
 class FakeHandle:
@@ -41,6 +60,7 @@ class FakeHandle:
         )
         self.close_calls = 0
         self.close_failure: Exception | None = None
+        self.materialization_receipt = _receipt(runtime_key)
 
     @property
     def runtime_key(self) -> RuntimeKey:
@@ -196,6 +216,7 @@ async def test_load_failure_is_truthful_and_successful_retry_clears_it() -> None
         "loaded": False,
         "loading": False,
         "unloading": False,
+        "cleaning": False,
         "error": "RuntimeError: load exploded",
     }
 
@@ -268,6 +289,7 @@ async def test_unload_failure_retains_handle_and_reports_exact_transition() -> N
         "loaded": True,
         "loading": False,
         "unloading": False,
+        "cleaning": False,
         "error": "RuntimeError: close exploded",
     }
     snapshot = readiness.snapshot(RoleName.MAIN)

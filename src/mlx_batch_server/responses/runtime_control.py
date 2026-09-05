@@ -18,7 +18,7 @@ from ..runtime.contracts import (
     ModelState,
     ProcessState,
     RoleName,
-    RoleSnapshot,
+    TensorMaterializationReceipt,
 )
 from .runtime_mapper import ResponsesMappingError
 
@@ -69,7 +69,7 @@ class RoleControlService:
     def role_status(self) -> dict[str, Any]:
         snapshot = self._runtime.readiness_service.snapshot(self._spec.name)
         declared = frozenset(self._spec.capabilities)
-        model_ready = _model_ready(snapshot)
+        model_ready = self._runtime.readiness_service.is_ready(self._spec.name)
         available = self._runtime.readiness_service.is_available(self._spec.name)
         observed = self._runtime.runtime_manager.role_capabilities(self._spec.name)
         if observed is None:
@@ -97,6 +97,7 @@ class RoleControlService:
             "transition": snapshot.transition,
             "error": snapshot.error,
             "receipt": _json_value(snapshot.receipt),
+            "materialization": _materialization_payload(snapshot.materialization),
             "role_manifest_sha256": self._runtime.role_manifest_sha256,
         }
 
@@ -129,6 +130,7 @@ class RoleControlService:
             "loaded_model": status["loaded_model"],
             "backend": status["backend"],
             "revision": status["revision"],
+            "materialization": status["materialization"],
             "mtp": {
                 "capable": mtp_capable,
                 "enabled": mtp_enabled,
@@ -225,7 +227,7 @@ class RoleControlService:
             adapter_path=request.adapter_path,
             draft_model_id=request.draft_model_id,
         )
-        before = self._runtime.readiness_service.snapshot(self._spec.name)
+        already_loaded = self._runtime.readiness_service.is_ready(self._spec.name)
         await self._runtime.runtime_manager.acquire_role(self._spec.name)
         if request.alias is not None:
             self._runtime.runtime_resolver.register_alias(
@@ -233,7 +235,6 @@ class RoleControlService:
                 self._spec.requested_model,
             )
         status = self.role_status()
-        already_loaded = _model_ready(before)
         return {
             "id": self._spec.requested_model,
             "object": "model",
@@ -455,13 +456,31 @@ def build_role_control_router(service: RoleControlService) -> APIRouter:
     return router
 
 
-def _model_ready(snapshot: RoleSnapshot) -> bool:
-    return (
-        snapshot.process_state is ProcessState.ALIVE
-        and snapshot.model_state is ModelState.READY
-        and snapshot.loaded_model == snapshot.requested_model
-        and snapshot.error is None
-    )
+def _materialization_payload(
+    receipt: TensorMaterializationReceipt | None,
+) -> dict[str, object] | None:
+    if receipt is None:
+        return None
+    runtime = receipt.runtime
+    return {
+        "schema": receipt.schema,
+        "load_id": receipt.load_id,
+        "runtime": {
+            "model_id": runtime.model_id,
+            "revision": runtime.revision,
+            "backend": runtime.backend.value,
+        },
+        "qwen4_exp_plan_sha256": receipt.qwen4_exp_plan_sha256,
+        "artifact_inventory_sha256": receipt.artifact_inventory_sha256,
+        "parameter_manifest_sha256": receipt.parameter_manifest_sha256,
+        "checkpoint_content_sha256": receipt.checkpoint_content_sha256,
+        "parameter_path_count": receipt.parameter_path_count,
+        "evaluated_leaf_count": receipt.evaluated_leaf_count,
+        "evaluated_logical_bytes": receipt.evaluated_logical_bytes,
+        "owner_thread_id": receipt.owner_thread_id,
+        "completed_at_monotonic_ns": receipt.completed_at_monotonic_ns,
+        "barrier": receipt.barrier,
+    }
 
 
 def _capability_payload(value: CapabilityReport | None) -> dict[str, Any] | None:

@@ -25,6 +25,7 @@ from mlx_batch_server.runtime.contracts import (
     RoleName,
     RoleSpec,
     RuntimeKey,
+    TensorMaterializationReceipt,
     TurnSink,
 )
 from mlx_batch_server.runtime.manager import RuntimeManager, RuntimeManagerError
@@ -37,6 +38,24 @@ from mlx_batch_server.runtime.service import (
 
 FLASH_MODEL = "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit"
 VISION_MODEL = "mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit"
+
+
+def _receipt(runtime: RuntimeKey) -> TensorMaterializationReceipt:
+    return TensorMaterializationReceipt(
+        schema="mlx-tensor-materialization.v1",
+        load_id="load-test",
+        runtime=runtime,
+        qwen4_exp_plan_sha256="1" * 64,
+        artifact_inventory_sha256="2" * 64,
+        parameter_manifest_sha256="3" * 64,
+        parameter_path_count=3,
+        evaluated_leaf_count=3,
+        evaluated_logical_bytes=1024,
+        owner_thread_id=1,
+        completed_at_monotonic_ns=1,
+        checkpoint_content_sha256="4" * 64,
+        _issuer_authority=object(),
+    )
 
 
 class _Sink:
@@ -81,6 +100,11 @@ class _BackendTurn:
 class _Handle:
     def __init__(self, runtime_key: RuntimeKey) -> None:
         self._runtime_key = runtime_key
+        self.materialization_receipt = (
+            _receipt(runtime_key)
+            if runtime_key.backend is BackendKind.FUSED_MTP_MLX
+            else None
+        )
         self.start_calls: list[tuple[GenerationRequest, TurnSink, CancelToken]] = []
         self.turns: list[_BackendTurn] = []
         self.start_failure: BaseException | None = None

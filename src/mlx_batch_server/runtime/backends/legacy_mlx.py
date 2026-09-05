@@ -181,6 +181,10 @@ class _LegacyBackendHandle:
     def runtime_key(self) -> RuntimeKey:
         return self._port.runtime_key
 
+    @property
+    def materialization_receipt(self) -> None:
+        return None
+
     async def start_turn(
         self,
         request: GenerationRequest,

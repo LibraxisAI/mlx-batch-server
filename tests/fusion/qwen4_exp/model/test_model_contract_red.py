@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 
 import pytest
@@ -209,11 +210,13 @@ def test_embedded_flash_artifact_pack_is_complete_and_deterministic() -> None:
         config=config,
         file_names=files,
         weight_map=weight_map,
+        weight_shard_sha256=_content_digests(weight_map),
     )
     second = inspect_qwen4_exp_artifacts(
         config=config,
         file_names=tuple(reversed(files)),
         weight_map=dict(reversed(tuple(weight_map.items()))),
+        weight_shard_sha256=_content_digests(weight_map),
     )
 
     assert first == second
@@ -246,6 +249,7 @@ def test_artifact_inventory_rejects_unindexed_or_missing_components() -> None:
                 name for name in files if name != "model-00002-of-00002.safetensors"
             ),
             weight_map=incomplete,
+            weight_shard_sha256=_content_digests(incomplete),
         )
 
     complete = dict(incomplete)
@@ -265,6 +269,7 @@ def test_artifact_inventory_rejects_unindexed_or_missing_components() -> None:
             config=config,
             file_names=files,
             weight_map=complete,
+            weight_shard_sha256=_content_digests(complete),
         )
 
 
@@ -292,7 +297,15 @@ def test_artifact_inventory_rejects_duplicate_snapshot_names() -> None:
             config=config,
             file_names=files,
             weight_map=weight_map,
+            weight_shard_sha256=_content_digests(weight_map),
         )
+
+
+def _content_digests(weight_map: dict[str, str]) -> dict[str, str]:
+    return {
+        shard: hashlib.sha256(shard.encode("utf-8")).hexdigest()
+        for shard in set(weight_map.values())
+    }
 
 
 def test_qsa_capacity_preserves_unaligned_staging_row() -> None:

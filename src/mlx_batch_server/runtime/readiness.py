@@ -14,6 +14,8 @@ from .contracts import (
     ProcessState,
     RoleName,
     RoleSnapshot,
+    RoleSpec,
+    TensorMaterializationReceipt,
 )
 
 if TYPE_CHECKING:
@@ -78,12 +80,14 @@ class ReadinessService:
         )
 
     def is_ready(self, role: RoleName | str) -> bool:
-        snapshot = self.snapshot(role)
+        spec = self._roles.resolve(role)
+        snapshot = self.snapshot(spec.name)
         return (
             snapshot.process_state is ProcessState.ALIVE
             and snapshot.model_state is ModelState.READY
             and snapshot.loaded_model == snapshot.requested_model
             and snapshot.error is None
+            and self._materialization_matches(spec, snapshot.materialization)
         )
 
     def mark_loading(self, role: RoleName | str) -> RoleSnapshot:
@@ -99,6 +103,7 @@ class ReadinessService:
                     model_state=ModelState.LOADING,
                     loaded_model=None,
                     capabilities=None,
+                    materialization=None,
                     transition="loading",
                     error=None,
                 ),
@@ -111,7 +116,7 @@ class ReadinessService:
         loaded_model: str,
         backend: BackendKind,
         capabilities: CapabilityReport | None = None,
-        receipt: Mapping[str, Any] | None = None,
+        materialization: TensorMaterializationReceipt | None = None,
     ) -> RoleSnapshot:
         name = self._roles.resolve(role).name
         with self._lock:
@@ -123,6 +128,15 @@ class ReadinessService:
                     f"role {name.value!r} requested {current.requested_model!r}, "
                     f"loaded {loaded_model!r}"
                 )
+            spec = self._roles.resolve(name)
+            if backend is not spec.backend:
+                raise ValueError(
+                    f"role {name.value!r} requires backend {spec.backend.value!r}"
+                )
+            if not self._materialization_matches(spec, materialization):
+                raise ValueError(
+                    f"role {name.value!r} lacks an exact materialization receipt"
+                )
             return self._store(
                 name,
                 replace(
@@ -133,7 +147,7 @@ class ReadinessService:
                     capabilities=capabilities,
                     transition="ready",
                     error=None,
-                    receipt=current.receipt if receipt is None else dict(receipt),
+                    materialization=materialization,
                 ),
             )
 
@@ -150,10 +164,16 @@ class ReadinessService:
                     model_state=ModelState.UNLOADING,
                     transition="unloading",
                     error=None,
+                    materialization=None,
                 ),
             )
 
-    def mark_cold(self, role: RoleName | str) -> RoleSnapshot:
+    def mark_cold(
+        self,
+        role: RoleName | str,
+        *,
+        transition: str = "cold",
+    ) -> RoleSnapshot:
         name = self._roles.resolve(role).name
         with self._lock:
             current = self._snapshots[name]
@@ -164,8 +184,9 @@ class ReadinessService:
                     model_state=ModelState.COLD,
                     loaded_model=None,
                     capabilities=None,
-                    transition="cold",
+                    transition=transition,
                     error=None,
+                    materialization=None,
                 ),
             )
 
@@ -190,6 +211,7 @@ class ReadinessService:
                     model_state=ModelState.DEGRADED,
                     transition=transition,
                     error=error,
+                    materialization=None,
                 ),
             )
 
@@ -209,6 +231,7 @@ class ReadinessService:
                     capabilities=None,
                     transition="process_dead",
                     error=error,
+                    materialization=None,
                 ),
             )
 
@@ -226,12 +249,30 @@ class ReadinessService:
                     capabilities=None,
                     transition="process_alive",
                     error=None,
+                    materialization=None,
                 ),
             )
 
     def _store(self, name: RoleName, snapshot: RoleSnapshot) -> RoleSnapshot:
         self._snapshots[name] = snapshot
         return snapshot
+
+    @staticmethod
+    def _materialization_matches(
+        spec: RoleSpec,
+        receipt: TensorMaterializationReceipt | None,
+    ) -> bool:
+        backend = spec.backend
+        if backend is not BackendKind.FUSED_MTP_MLX:
+            return receipt is None
+        if not isinstance(receipt, TensorMaterializationReceipt):
+            return False
+        runtime = receipt.runtime
+        return (
+            runtime.backend is backend
+            and runtime.model_id == spec.requested_model
+            and runtime.revision == spec.revision
+        )
 
 
 __all__ = [

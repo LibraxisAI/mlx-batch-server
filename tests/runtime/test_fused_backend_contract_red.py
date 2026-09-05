@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from mlx_batch_server.runtime.backends.fused_mtp_mlx import (
+    FusedBackendError,
     FusedStepResult,
     MtpMlxBackend,
 )
@@ -23,6 +24,7 @@ from mlx_batch_server.runtime.contracts import (
     PreparedGenerationRequest,
     RequestModality,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from mlx_batch_server.runtime.events import (
     REASONING_CONTENT_KIND,
@@ -67,6 +69,23 @@ MODEL = ModelSpec(
     architecture="Qwen4ExpForConditionalGeneration",
     model_type="qwen4_exp",
     quantization="4bit",
+)
+
+
+MATERIALIZATION = TensorMaterializationReceipt(
+    schema="mlx-tensor-materialization.v1",
+    load_id="load-test",
+    runtime=RUNTIME,
+    qwen4_exp_plan_sha256="1" * 64,
+    artifact_inventory_sha256="2" * 64,
+    parameter_manifest_sha256="3" * 64,
+    parameter_path_count=3,
+    evaluated_leaf_count=3,
+    evaluated_logical_bytes=1024,
+    owner_thread_id=1,
+    completed_at_monotonic_ns=1,
+    checkpoint_content_sha256="4" * 64,
+    _issuer_authority=object(),
 )
 
 
@@ -264,6 +283,10 @@ class _Executor:
     def model_spec(self) -> ModelSpec:
         return MODEL
 
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        return MATERIALIZATION
+
     async def prepare_request(self, request, cancel) -> PreparedGenerationRequest:
         del cancel
         modality = RequestModality.VISION if request.media else RequestModality.TEXT
@@ -337,6 +360,12 @@ class _BlockingExecutor(_Executor):
                 DecodeResult(row.request_id, row.position) for row in plan.decode_rows
             ),
         )
+
+
+class _ReceiptlessExecutor(_Executor):
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        raise AttributeError("missing materialization")
 
 
 class _StopSequenceExecutor(_Executor):
@@ -479,6 +508,18 @@ async def test_load_maps_public_limits_and_reports_only_observed_mtp_work() -> N
         "fallback_counts": {},
     }
     await handle.close(1.0)
+
+
+@pytest.mark.asyncio
+async def test_load_rejects_executor_without_materialization_receipt() -> None:
+    order: list[str] = []
+    executor = _ReceiptlessExecutor(order)
+    backend, _ = _backend(executor, _Cache(order))
+
+    with pytest.raises(FusedBackendError, match="materialization receipt"):
+        await backend.load(RUNTIME, LoadConfig())
+
+    assert order == ["executor_close"]
 
 
 @pytest.mark.asyncio

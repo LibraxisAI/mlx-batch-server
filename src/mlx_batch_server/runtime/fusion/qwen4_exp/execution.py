@@ -21,11 +21,18 @@ if TYPE_CHECKING:
         ModelSpec,
         PreparedGenerationRequest,
         RuntimeKey,
+        TensorMaterializationReceipt,
     )
     from ..cache import CacheCleanupReceipt, CacheReleaseReason
     from ..mtp import MtpPolicy
     from ..scheduler import SchedulerConfig, SchedulerPlan
     from .model.load_plan import Qwen4ExpModelLoadPlan
+
+
+class _TensorMaterializationIssuerAuthority:
+    """Unserializable per-composition seal shared only by tensor issuer and owner."""
+
+    __slots__ = ()
 
 
 @runtime_checkable
@@ -34,6 +41,9 @@ class Qwen4ExpExecutionPort(Protocol):
 
     @property
     def model_spec(self) -> ModelSpec: ...
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt: ...
 
     def reserve(self, request: PreparedGenerationRequest, lease_id: str) -> object: ...
 
@@ -67,6 +77,7 @@ class Qwen4ExpExecutionBinding:
     config: LoadConfig
     scheduler_config: SchedulerConfig
     model: ModelSpec
+    materialization_receipt: TensorMaterializationReceipt
 
 
 @runtime_checkable

@@ -78,20 +78,6 @@ class _DormantRequestPreparer:
         raise AssertionError("composition must not prepare requests")
 
 
-class _DormantExecutionFactory:
-    def __init__(self) -> None:
-        self.calls: list[tuple[object, object, object]] = []
-
-    def prepare(
-        self,
-        runtime: object,
-        config: object,
-        scheduler_config: object,
-    ) -> Any:
-        self.calls.append((runtime, config, scheduler_config))
-        raise AssertionError("composition must not prepare checkpoint loads")
-
-
 class _DormantLegacyProvider:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
@@ -239,7 +225,6 @@ def test_build_receipt_is_bound_to_the_same_readiness_graph() -> None:
 
 def test_role_composition_places_only_the_selected_backend_behind_manager() -> None:
     request_preparer = _DormantRequestPreparer()
-    execution_factory = _DormantExecutionFactory()
     scheduler = SchedulerConfig()
     mtp_policy = MtpPolicy()
 
@@ -251,14 +236,12 @@ def test_role_composition_places_only_the_selected_backend_behind_manager() -> N
         scheduler_config=scheduler,
         mtp_policy=mtp_policy,
         fused_capacity=2,
-        execution_factory=execution_factory,
     )
 
     assert isinstance(receipt, RoleRuntimeCompositionReceipt)
     assert receipt.responses.process_role is RoleName.MAIN
     assert receipt.qwen4_exp is not None
     assert receipt.qwen4_exp.request_preparer is request_preparer
-    assert receipt.qwen4_exp.execution_factory is execution_factory
     assert receipt.qwen4_exp.scheduler_config is scheduler
     assert receipt.qwen4_exp.mtp_policy is mtp_policy
     assert receipt.legacy_provider is None
@@ -270,16 +253,12 @@ def test_role_composition_places_only_the_selected_backend_behind_manager() -> N
         receipt.responses.runtime_start_service
     )
     assert request_preparer.calls == []
-    assert execution_factory.calls == []
 
 
 def test_default_fused_composition_publishes_exact_inert_media_sources() -> None:
-    execution_factory = _DormantExecutionFactory()
-
     receipt = compose_role_responses_runtime(
         process_role=RoleName.MAIN,
         role_manifest_path=ROLE_MANIFEST,
-        execution_factory=execution_factory,
     )
 
     assert receipt.responses.media_source_fields == {
@@ -291,7 +270,6 @@ def test_default_fused_composition_publishes_exact_inert_media_sources() -> None
             }
         )
     }
-    assert execution_factory.calls == []
     with pytest.raises(TypeError):
         receipt.responses.media_source_fields[RoleName.MAIN] = frozenset()  # type: ignore[index]
 
@@ -303,7 +281,6 @@ def test_fused_media_receipt_comes_only_from_canonical_composition_inputs() -> N
         role_manifest_path=ROLE_MANIFEST,
         allowed_url_origins=("https://media.example",),
         file_id_resolver=resolver,
-        execution_factory=_DormantExecutionFactory(),
     )
 
     assert receipt.responses.media_source_fields[RoleName.MAIN] == frozenset(
@@ -322,7 +299,6 @@ def test_injected_preparer_and_generic_composition_fail_closed_to_text_only() ->
         process_role=RoleName.MAIN,
         role_manifest_path=ROLE_MANIFEST,
         request_preparer=_DormantRequestPreparer(),
-        execution_factory=_DormantExecutionFactory(),
     )
     generic = compose_responses_runtime(
         process_role=RoleName.MAIN,
@@ -361,7 +337,6 @@ async def test_role_composition_shutdown_closes_both_owned_graphs_once() -> None
         role_manifest_path=ROLE_MANIFEST,
         public_aliases={"buddy": RoleName.MAIN},
         request_preparer=_DormantRequestPreparer(),
-        execution_factory=_DormantExecutionFactory(),
     )
 
     await receipt.shutdown(deadline_s=1.0)
@@ -603,7 +578,6 @@ def test_role_composition_preserves_exact_production_catalog_identity() -> None:
         process_role=RoleName.MAIN,
         role_manifest_path=ROLE_MANIFEST,
         request_preparer=_DormantRequestPreparer(),
-        execution_factory=_DormantExecutionFactory(),
         hosted_tools=catalog,
     )
     try:

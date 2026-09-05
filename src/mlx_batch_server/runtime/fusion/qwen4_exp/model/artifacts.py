@@ -23,6 +23,8 @@ class Qwen4ExpArtifactInventory:
     weight_shards: tuple[str, ...]
     weight_keys: tuple[str, ...]
     weight_map: tuple[tuple[str, str], ...]
+    weight_shard_sha256: tuple[tuple[str, str], ...]
+    weight_content_sha256: str
     has_language_trunk: bool
     has_embedded_mtp: bool
     has_embedded_vision: bool
@@ -41,8 +43,17 @@ class Qwen4ExpArtifactInventory:
             raise Qwen4ExpArtifactError("weight map must cover every weight key")
         if any(shard not in self.weight_shards for _, shard in self.weight_map):
             raise Qwen4ExpArtifactError("weight map names an unknown shard")
-        if len(self.digest) != 64:
-            raise Qwen4ExpArtifactError("inventory digest must be SHA-256")
+        if tuple(name for name, _ in self.weight_shard_sha256) != self.weight_shards:
+            raise Qwen4ExpArtifactError("content digest map must cover every shard")
+        for name, digest in (
+            *self.weight_shard_sha256,
+            ("combined shard content", self.weight_content_sha256),
+            ("inventory", self.digest),
+        ):
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise Qwen4ExpArtifactError(f"{name} digest must be SHA-256")
 
     def shards_for_prefix(self, prefix: str) -> tuple[str, ...]:
         if not prefix:
@@ -57,8 +68,9 @@ def inspect_qwen4_exp_artifacts(
     config: Qwen4ExpCheckpointConfig,
     file_names: Sequence[str],
     weight_map: Mapping[str, str],
+    weight_shard_sha256: Mapping[str, str],
 ) -> Qwen4ExpArtifactInventory:
-    """Validate an already parsed model index without opening model shards."""
+    """Bind parsed index topology to one verified content digest per shard."""
 
     files = _normalized_names(
         "file_names",
@@ -80,16 +92,9 @@ def inspect_qwen4_exp_artifacts(
         raise Qwen4ExpArtifactError("weight_map must be a non-empty mapping")
     if any(not isinstance(key, str) or not key for key in weight_map):
         raise Qwen4ExpArtifactError("weight_map keys must be non-empty strings")
-    if any(not isinstance(value, str) or not value for value in weight_map.values()):
-        raise Qwen4ExpArtifactError("weight_map shard names must be non-empty strings")
-
     weight_keys = tuple(sorted(weight_map))
     frozen_weight_map = tuple(sorted(weight_map.items()))
-    shards = _normalized_names(
-        "weight shards",
-        tuple(weight_map.values()),
-        allow_duplicates=True,
-    )
+    shards = qwen4_exp_weight_shards(weight_map)
     missing_shards = sorted(set(shards) - set(files))
     if missing_shards:
         raise Qwen4ExpArtifactError(
@@ -106,6 +111,24 @@ def inspect_qwen4_exp_artifacts(
         raise Qwen4ExpArtifactError(
             f"unindexed model shards are present: {unexpected_shards!r}"
         )
+    if not isinstance(weight_shard_sha256, Mapping):
+        raise Qwen4ExpArtifactError("weight_shard_sha256 must be a mapping")
+    frozen_shard_sha256 = tuple(sorted(weight_shard_sha256.items()))
+    if tuple(name for name, _ in frozen_shard_sha256) != shards:
+        raise Qwen4ExpArtifactError("content digest map must cover every shard")
+    if any(
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        for _, digest in frozen_shard_sha256
+    ):
+        raise Qwen4ExpArtifactError("shard content digests must be lowercase SHA-256")
+    weight_content_sha256 = hashlib.sha256(
+        json.dumps(
+            ("qwen4-exp-weight-content-v1", frozen_shard_sha256),
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
     has_language = any(key.startswith("language_model.") for key in weight_keys)
     has_mtp = any(key.startswith("mtp.") for key in weight_keys)
@@ -126,11 +149,13 @@ def inspect_qwen4_exp_artifacts(
         )
 
     payload = {
-        "schema": "qwen4-exp-artifact-inventory-v1",
+        "schema": "qwen4-exp-artifact-inventory-v2",
         "files": files,
         "weight_shards": shards,
         "weight_keys": weight_keys,
         "weight_map": frozen_weight_map,
+        "weight_shard_sha256": frozen_shard_sha256,
+        "weight_content_sha256": weight_content_sha256,
         "components": required_components,
     }
     digest = hashlib.sha256(
@@ -141,11 +166,27 @@ def inspect_qwen4_exp_artifacts(
         weight_shards=shards,
         weight_keys=weight_keys,
         weight_map=frozen_weight_map,
+        weight_shard_sha256=frozen_shard_sha256,
+        weight_content_sha256=weight_content_sha256,
         has_language_trunk=has_language,
         has_embedded_mtp=has_mtp,
         has_embedded_vision=has_vision,
         has_embedded_ple=has_ple,
         digest=digest,
+    )
+
+
+def qwen4_exp_weight_shards(weight_map: Mapping[str, str]) -> tuple[str, ...]:
+    """Return the sole normalized shard-name set for planning and inventory."""
+
+    if not isinstance(weight_map, Mapping) or not weight_map:
+        raise Qwen4ExpArtifactError("weight_map must be a non-empty mapping")
+    if any(not isinstance(value, str) or not value for value in weight_map.values()):
+        raise Qwen4ExpArtifactError("weight_map shard names must be non-empty strings")
+    return _normalized_names(
+        "weight shards",
+        tuple(weight_map.values()),
+        allow_duplicates=True,
     )
 
 
@@ -173,4 +214,5 @@ __all__ = [
     "Qwen4ExpArtifactError",
     "Qwen4ExpArtifactInventory",
     "inspect_qwen4_exp_artifacts",
+    "qwen4_exp_weight_shards",
 ]

@@ -32,6 +32,9 @@ from mlx_batch_server.runtime.fusion.concrete.provider import (
     OmlxMtplxCacheFactory,
     OmlxMtplxExecutorFactory,
 )
+from mlx_batch_server.runtime.fusion.qwen4_exp.execution import (
+    Qwen4ExpExecutionFactoryPort,
+)
 from mlx_batch_server.runtime.fusion.mtp import MtpPolicy
 from mlx_batch_server.runtime.fusion.scheduler import SchedulerConfig
 
@@ -68,30 +71,6 @@ CONFIG = LoadConfig(
 )
 
 
-class _PreparedFactory:
-    runtime = RUNTIME
-    config = CONFIG
-    scheduler_config = SCHEDULER
-    model_plan = object()
-
-    def load(self) -> Any:
-        raise AssertionError("composition must not load tensors")
-
-
-class _ExecutionFactory:
-    def __init__(self) -> None:
-        self.calls: list[tuple[RuntimeKey, LoadConfig, SchedulerConfig]] = []
-
-    def prepare(
-        self,
-        runtime: RuntimeKey,
-        config: LoadConfig,
-        scheduler_config: SchedulerConfig,
-    ) -> _PreparedFactory:
-        self.calls.append((runtime, config, scheduler_config))
-        return _PreparedFactory()
-
-
 class _RequestPreparer:
     def __init__(self) -> None:
         self.calls: list[GenerationRequest] = []
@@ -106,42 +85,42 @@ class _RequestPreparer:
         raise AssertionError("composition must not prepare requests")
 
 
-def _compose() -> tuple[Any, _ExecutionFactory, _RequestPreparer]:
-    execution_factory = _ExecutionFactory()
+def _compose() -> tuple[Any, _RequestPreparer]:
     request_preparer = _RequestPreparer()
     receipt = compose_qwen4_exp_backend(
-        execution_factory=execution_factory,
         request_preparer=request_preparer,
         scheduler_config=SCHEDULER,
         mtp_policy=MTP_POLICY,
         capacity=2,
     )
-    return receipt, execution_factory, request_preparer
+    return receipt, request_preparer
 
 
 def test_composition_wires_one_inert_fused_qwen4_exp_graph() -> None:
-    receipt, execution_factory, request_preparer = _compose()
+    receipt, request_preparer = _compose()
 
     assert isinstance(receipt.owner_loader, Qwen4ExpTensorOwnerLoader)
     assert isinstance(receipt.registry, FusedTensorRuntimeRegistry)
     assert isinstance(receipt.executor_factory, OmlxMtplxExecutorFactory)
     assert isinstance(receipt.cache_factory, OmlxMtplxCacheFactory)
     assert isinstance(receipt.backend, MtpMlxBackend)
-    assert receipt.execution_factory is execution_factory
+    assert isinstance(receipt.execution_factory, Qwen4ExpExecutionFactoryPort)
     assert receipt.request_preparer is request_preparer
     assert receipt.scheduler_config is SCHEDULER
     assert receipt.mtp_policy is MTP_POLICY
     assert receipt.capacity == 2
     assert receipt.registry.max_entries == 2
 
-    assert receipt.owner_loader._execution_factory is execution_factory
+    assert receipt.owner_loader._execution_factory is receipt.execution_factory
+    assert receipt.owner_loader._materialization_authority is (
+        receipt.execution_factory._materialization_authority
+    )
     assert receipt.owner_loader._request_preparer is request_preparer
     assert receipt.registry._owner_loader is receipt.owner_loader
     assert receipt.executor_factory._registry is receipt.registry
     assert receipt.cache_factory._registry is receipt.registry
     assert receipt.backend._executor_factory is receipt.executor_factory
     assert receipt.backend._cache_factory is receipt.cache_factory
-    assert execution_factory.calls == []
     assert request_preparer.calls == []
     assert receipt.registry.entry_count == 0
 
@@ -153,7 +132,7 @@ def test_composition_wires_one_inert_fused_qwen4_exp_graph() -> None:
 async def test_receipt_shutdown_delegates_to_registry_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    receipt, _, _ = _compose()
+    receipt, _ = _compose()
     calls: list[float] = []
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -177,7 +156,7 @@ async def test_receipt_shutdown_delegates_to_registry_exactly_once(
 
 @pytest.mark.asyncio
 async def test_backend_rejects_identity_and_option_drift_before_prepare() -> None:
-    receipt, execution_factory, _ = _compose()
+    receipt, _ = _compose()
 
     with pytest.raises(ValueError, match="exact revision"):
         await receipt.backend.load(replace(RUNTIME, revision=None), CONFIG)
@@ -202,14 +181,13 @@ async def test_backend_rejects_identity_and_option_drift_before_prepare() -> Non
             replace(CONFIG, options={}),
         )
 
-    assert execution_factory.calls == []
+    assert receipt.registry.entry_count == 0
 
 
 @pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
 def test_composition_rejects_invalid_capacity(capacity: Any) -> None:
     with pytest.raises(ValueError, match="capacity"):
         compose_qwen4_exp_backend(
-            execution_factory=_ExecutionFactory(),
             request_preparer=_RequestPreparer(),
             scheduler_config=SCHEDULER,
             mtp_policy=MTP_POLICY,
@@ -221,7 +199,6 @@ def test_composition_rejects_invalid_capacity(capacity: Any) -> None:
 def test_composition_rejects_invalid_mtp_draft_depth(draft_depth: Any) -> None:
     with pytest.raises(ValueError, match="draft_depth"):
         compose_qwen4_exp_backend(
-            execution_factory=_ExecutionFactory(),
             request_preparer=_RequestPreparer(),
             scheduler_config=SCHEDULER,
             mtp_policy=replace(MTP_POLICY, draft_depth=draft_depth),
@@ -282,13 +259,15 @@ def test_composition_has_no_singleton_or_donor_control_plane_imports() -> None:
         if isinstance(node, ast.FunctionDef)
         and node.name == "compose_qwen4_exp_backend"
     )
+    parameter_names = {argument.arg for argument in compose_node.args.kwonlyargs}
+    assert "execution_factory" not in parameter_names
     called_names = [
         node.func.id
         for node in ast.walk(compose_node)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
     for required in (
-        "Qwen4ExpExecutionFactory",
+        "_Qwen4ExpExecutionFactory",
         "Qwen4ExpTensorOwnerLoader",
         "FusedTensorRuntimeRegistry",
         "OmlxMtplxExecutorFactory",

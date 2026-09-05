@@ -27,6 +27,7 @@ from mlx_batch_server.runtime.contracts import (
     PreparedGenerationRequest,
     RequestModality,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from mlx_batch_server.runtime.fusion.concrete import (
     FusedTensorCapacityError,
@@ -75,14 +76,41 @@ MODEL = ModelSpec(
 )
 
 
+def _materialization(runtime: RuntimeKey) -> TensorMaterializationReceipt:
+    return TensorMaterializationReceipt(
+        schema="mlx-tensor-materialization.v1",
+        load_id="load-test",
+        runtime=runtime,
+        qwen4_exp_plan_sha256="1" * 64,
+        artifact_inventory_sha256="2" * 64,
+        parameter_manifest_sha256="3" * 64,
+        parameter_path_count=3,
+        evaluated_leaf_count=3,
+        evaluated_logical_bytes=1024,
+        owner_thread_id=1,
+        completed_at_monotonic_ns=1,
+        checkpoint_content_sha256="4" * 64,
+        _issuer_authority=object(),
+    )
+
+
 class _Executor:
-    def __init__(self, model: ModelSpec) -> None:
+    def __init__(
+        self,
+        model: ModelSpec,
+        materialization_receipt: TensorMaterializationReceipt,
+    ) -> None:
         self._model = model
+        self._materialization_receipt = materialization_receipt
         self.prepared: list[tuple[GenerationRequest, FirstWriterCancelToken]] = []
 
     @property
     def model_spec(self) -> ModelSpec:
         return self._model
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        return self._materialization_receipt
 
     async def prepare_request(
         self,
@@ -109,6 +137,26 @@ class _Executor:
 
     async def close(self, deadline_s: float) -> None:
         raise AssertionError(f"registry bypassed owner close: {deadline_s}")
+
+
+class _ChangingReceiptExecutor(_Executor):
+    def __init__(
+        self,
+        model: ModelSpec,
+        materialization_receipt: TensorMaterializationReceipt,
+    ) -> None:
+        super().__init__(model, materialization_receipt)
+        self.receipt_reads = 0
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        self.receipt_reads += 1
+        if self.receipt_reads == 1:
+            return self._materialization_receipt
+        return replace(
+            self._materialization_receipt,
+            load_id=f"load-read-{self.receipt_reads}",
+        )
 
 
 class _CacheLease:
@@ -160,13 +208,15 @@ class _OwnerLoader:
             model_id=runtime.model_id,
             revision=runtime.revision,
         )
+        receipt = _materialization(runtime)
         binding = FusedTensorOwnerBinding(
             owner=owner,
             runtime=runtime,
             config=config,
             scheduler_config=scheduler_config,
             model=model,
-            executor=_Executor(model),
+            materialization_receipt=receipt,
+            executor=_Executor(model, receipt),
             cache=_Cache(),
         )
         if self.binding_transform is not None:
@@ -284,6 +334,47 @@ async def test_loader_identity_mismatch_is_closed_and_not_cached() -> None:
 
 
 @pytest.mark.asyncio
+async def test_replaced_materialization_receipt_is_closed_and_not_cached() -> None:
+    registry, executor_factory, _, loader = _factories()
+    loader.binding_transform = lambda binding: replace(
+        binding,
+        materialization_receipt=_materialization(
+            replace(RUNTIME, revision="foreign-revision")
+        ),
+    )
+
+    with pytest.raises(FusedTensorIdentityError, match="canonical receipt"):
+        await executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
+
+    assert loader.closed == [(loader.owners[0], 0.0)]
+    assert registry.entry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_lease_captures_binding_receipt_without_dynamic_reread() -> None:
+    _, executor_factory, _, loader = _factories()
+    changing: list[_ChangingReceiptExecutor] = []
+
+    def replace_executor(
+        binding: FusedTensorOwnerBinding,
+    ) -> FusedTensorOwnerBinding:
+        executor = _ChangingReceiptExecutor(
+            binding.model,
+            binding.materialization_receipt,
+        )
+        changing.append(executor)
+        return replace(binding, executor=executor)
+
+    loader.binding_transform = replace_executor
+    lease = await executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
+
+    assert changing[0].receipt_reads == 1
+    assert lease.materialization_receipt is changing[0]._materialization_receipt
+    assert changing[0].receipt_reads == 1
+    await lease.close(0.0)
+
+
+@pytest.mark.asyncio
 async def test_loader_failure_is_single_flight_and_next_attempt_retries() -> None:
     registry, executor_factory, _, loader = _factories()
     loader.proceed.clear()
@@ -358,6 +449,49 @@ async def test_shutdown_closes_active_owner_once_and_rejects_future_work() -> No
     await executor.close(0.0)
     await cache.close(0.0)
     assert len(loader.closed) == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_leaves_eventual_owner_cleanup_tracked() -> None:
+    registry, executor_factory, _, loader = _factories()
+    loader.proceed.clear()
+    acquisition = asyncio.create_task(
+        executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
+    )
+    await loader.started.wait()
+
+    with pytest.raises(FusedTensorRegistryError, match="eventual cleanup"):
+        await registry.shutdown(0.0)
+    assert registry.closed
+    assert registry.entry_count == 1
+
+    loader.proceed.set()
+    result = await asyncio.gather(acquisition, return_exceptions=True)
+    assert isinstance(result[0], FusedTensorRegistryClosedError)
+    await registry.shutdown(1.0)
+    assert loader.closed == [(loader.owners[0], 0.0)]
+    assert registry.entry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_spends_one_positive_budget_across_load_and_owner_close() -> None:
+    registry, executor_factory, _, loader = _factories()
+    loader.proceed.clear()
+    acquisition = asyncio.create_task(
+        executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
+    )
+    await loader.started.wait()
+
+    shutdown = asyncio.create_task(registry.shutdown(5.0))
+    await asyncio.sleep(0)
+    loader.proceed.set()
+    await shutdown
+
+    result = await asyncio.gather(acquisition, return_exceptions=True)
+    assert isinstance(result[0], FusedTensorRegistryClosedError)
+    assert len(loader.closed) == 1
+    _, remaining_budget = loader.closed[0]
+    assert 0.0 < remaining_budget < 5.0
 
 
 def test_provider_import_graph_has_no_tensor_or_donor_runtime_dependency() -> None:

@@ -12,7 +12,10 @@ from types import MappingProxyType
 from ...backends.fused_mtp_mlx import MtpMlxBackend
 from ...contracts import BackendHandle, BackendKind, LoadConfig, RuntimeKey
 from ..mtp import MtpPolicy
-from ..qwen4_exp.execution import Qwen4ExpExecutionFactoryPort
+from ..qwen4_exp.execution import (
+    Qwen4ExpExecutionFactoryPort,
+    _TensorMaterializationIssuerAuthority,
+)
 from ..qwen4_exp.request_preparation import Qwen4ExpRequestPreparerPort
 from ..scheduler import SchedulerConfig
 from .owner import Qwen4ExpTensorOwnerLoader
@@ -89,7 +92,6 @@ def compose_qwen4_exp_backend(
     scheduler_config: SchedulerConfig,
     mtp_policy: MtpPolicy,
     capacity: int,
-    execution_factory: Qwen4ExpExecutionFactoryPort | None = None,
 ) -> Qwen4ExpBackendCompositionReceipt:
     """Build one inert, target-owned Qwen4Exp backend graph.
 
@@ -105,17 +107,18 @@ def compose_qwen4_exp_backend(
         raise TypeError("mtp_policy must be an MtpPolicy")
     _validate_composition_options(scheduler_config, mtp_policy, capacity)
 
-    if execution_factory is None:
-        from ..qwen4_exp.model.tensor import Qwen4ExpExecutionFactory
+    from ..qwen4_exp.model.tensor import _Qwen4ExpExecutionFactory
 
-        resolved_execution_factory = Qwen4ExpExecutionFactory()
-    else:
-        resolved_execution_factory = execution_factory
+    materialization_authority = _TensorMaterializationIssuerAuthority()
+    resolved_execution_factory = _Qwen4ExpExecutionFactory(
+        materialization_authority=materialization_authority
+    )
     if not isinstance(resolved_execution_factory, Qwen4ExpExecutionFactoryPort):
         raise TypeError("execution_factory must satisfy Qwen4ExpExecutionFactoryPort")
 
     owner_loader = Qwen4ExpTensorOwnerLoader(
         resolved_execution_factory,
+        materialization_authority=materialization_authority,
         request_preparer=request_preparer,
     )
     registry = FusedTensorRuntimeRegistry(

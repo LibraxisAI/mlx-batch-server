@@ -21,6 +21,7 @@ from .contracts import (
     RoleName,
     RoleSpec,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +48,8 @@ class _RuntimeRecord:
     error: str | None = None
     load_task: asyncio.Task[BackendHandle] | None = None
     unload_task: asyncio.Task[bool] | None = None
+    cleanup_task: asyncio.Task[None] | None = None
+    materialization: TensorMaterializationReceipt | None = None
 
 
 class RuntimeManager:
@@ -95,6 +98,7 @@ class RuntimeManager:
         self._closing = False
         self._closed = False
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._shutdown_deadline_at: float | None = None
 
     async def acquire(
         self,
@@ -117,6 +121,7 @@ class RuntimeManager:
                 else:
                     record.state = ModelState.LOADING
                     record.error = None
+                    record.materialization = None
                     load_task = asyncio.create_task(
                         self._load_and_publish(
                             runtime,
@@ -139,8 +144,6 @@ class RuntimeManager:
         *,
         runtime: RuntimeKey | None = None,
         config: LoadConfig | None = None,
-        capabilities: CapabilityReport | None = None,
-        receipt: Mapping[str, Any] | None = None,
     ) -> BackendHandle:
         """Wake one configured role and publish its exact readiness transition."""
         if self._roles is None or self._readiness is None:
@@ -186,17 +189,6 @@ class RuntimeManager:
                 raise
             self._readiness.mark_degraded(spec.name, self._error_text(exc))
             raise
-        self._readiness.mark_ready(
-            spec.name,
-            loaded_model=runtime_key.model_id,
-            backend=runtime_key.backend,
-            capabilities=(
-                capabilities
-                if capabilities is not None
-                else self._handle_capabilities(handle)
-            ),
-            receipt=receipt,
-        )
         return handle
 
     def role_capabilities(
@@ -265,14 +257,18 @@ class RuntimeManager:
 
         if deadline_s < 0:
             raise ValueError("deadline_s must be non-negative")
+        loop = asyncio.get_running_loop()
         async with self._lock:
             if self._closed:
                 return
             self._closing = True
+            if self._shutdown_deadline_at is None:
+                self._shutdown_deadline_at = loop.time() + deadline_s
+            deadline_at = self._shutdown_deadline_at
             shutdown_task = self._shutdown_task
             if shutdown_task is None:
                 shutdown_task = asyncio.create_task(
-                    self._shutdown_and_publish(deadline_s),
+                    self._shutdown_and_publish(deadline_at),
                     name="runtime-manager-shutdown",
                 )
                 self._shutdown_task = shutdown_task
@@ -284,12 +280,16 @@ class RuntimeManager:
             raise ValueError("deadline_s must be non-negative")
         while True:
             wait_for_load: asyncio.Task[BackendHandle] | None = None
+            wait_for_cleanup: asyncio.Task[None] | None = None
             async with self._lock:
                 record = self._records.get(runtime)
                 if record is None:
                     return False
                 if record.load_task is not None:
                     wait_for_load = record.load_task
+                    unload_task = None
+                elif record.cleanup_task is not None:
+                    wait_for_cleanup = record.cleanup_task
                     unload_task = None
                 elif record.unload_task is not None:
                     unload_task = record.unload_task
@@ -298,6 +298,7 @@ class RuntimeManager:
                 else:
                     record.state = ModelState.UNLOADING
                     record.error = None
+                    record.materialization = None
                     self._mark_roles_unloading(runtime)
                     unload_task = asyncio.create_task(
                         self._unload_and_publish(runtime, record, deadline_s),
@@ -307,6 +308,9 @@ class RuntimeManager:
 
             if wait_for_load is not None:
                 await asyncio.shield(wait_for_load)
+                continue
+            if wait_for_cleanup is not None:
+                await asyncio.shield(wait_for_cleanup)
                 continue
             assert unload_task is not None
             return await asyncio.shield(unload_task)
@@ -320,6 +324,7 @@ class RuntimeManager:
                 "loaded": False,
                 "loading": False,
                 "unloading": False,
+                "cleaning": False,
                 "error": None,
             }
         return {
@@ -327,6 +332,7 @@ class RuntimeManager:
             "loaded": record.handle is not None,
             "loading": record.load_task is not None,
             "unloading": record.unload_task is not None,
+            "cleaning": record.cleanup_task is not None,
             "error": record.error,
         }
 
@@ -353,9 +359,8 @@ class RuntimeManager:
         if self._closing or self._closed:
             raise RuntimeUnavailableError("runtime manager is shutting down")
 
-    async def _shutdown_and_publish(self, deadline_s: float) -> None:
+    async def _shutdown_and_publish(self, deadline_at: float) -> None:
         loop = asyncio.get_running_loop()
-        deadline_at = loop.time() + deadline_s
         failures: list[str] = []
         try:
             async with self._lock:
@@ -364,19 +369,23 @@ class RuntimeManager:
             for runtime in runtimes:
                 async with self._lock:
                     record = self._records[runtime]
-                    load_task = record.load_task
-                if load_task is not None:
+                    lifecycle_task = record.load_task or record.cleanup_task
+                if lifecycle_task is not None:
                     remaining = deadline_at - loop.time()
                     if remaining <= 0:
-                        failures.append(f"{runtime.model_id}: load drain timed out")
+                        failures.append(
+                            f"{runtime.model_id}: lifecycle drain timed out"
+                        )
                         continue
                     try:
                         await asyncio.wait_for(
-                            asyncio.shield(load_task),
+                            asyncio.shield(lifecycle_task),
                             timeout=remaining,
                         )
                     except TimeoutError:
-                        failures.append(f"{runtime.model_id}: load drain timed out")
+                        failures.append(
+                            f"{runtime.model_id}: lifecycle drain timed out"
+                        )
                         continue
                     except Exception:
                         pass
@@ -394,6 +403,7 @@ class RuntimeManager:
                     if record.handle is not None
                     or record.load_task is not None
                     or record.unload_task is not None
+                    or record.cleanup_task is not None
                 )
                 if not failures and not live:
                     self._closed = True
@@ -435,21 +445,151 @@ class RuntimeManager:
                         f"{self._error_text(close_error)}"
                     ) from close_error
                 raise mismatch
+            try:
+                materialization = self._validated_materialization(handle, runtime)
+            except Exception as receipt_error:
+                try:
+                    await handle.close(self._rejected_handle_close_deadline_s)
+                except Exception as close_error:
+                    raise RuntimeManagerError(
+                        f"{self._error_text(receipt_error)}; invalid materialization "
+                        f"handle cleanup failed: {self._error_text(close_error)}"
+                    ) from close_error
+                raise receipt_error
         except Exception as exc:
             async with self._lock:
                 if record.load_task is asyncio.current_task():
                     record.load_task = None
                     record.state = ModelState.DEGRADED
                     record.error = self._error_text(exc)
+                    record.materialization = None
+            self._mark_roles_degraded(
+                runtime,
+                self._error_text(exc),
+                transition="load_failed",
+            )
             raise
 
+        cleanup_task: asyncio.Task[None] | None = None
+        publication_error: BaseException | None = None
         async with self._lock:
             if record.load_task is asyncio.current_task():
-                record.handle = handle
-                record.load_task = None
-                record.state = ModelState.READY
-                record.error = None
+                if self._closing or self._closed:
+                    deadline_at = self._shutdown_deadline_at
+                    if deadline_at is None:
+                        deadline_at = asyncio.get_running_loop().time()
+                    record.load_task = None
+                    record.state = ModelState.UNLOADING
+                    record.materialization = None
+                    cleanup_task = self._begin_unpublished_cleanup_locked(
+                        runtime,
+                        record,
+                        handle,
+                        deadline_at=deadline_at,
+                        success_error=None,
+                    )
+                else:
+                    try:
+                        self._mark_roles_ready(runtime, handle, materialization)
+                    except BaseException as error:
+                        publication_error = error
+                        error_text = self._error_text(error)
+                        record.load_task = None
+                        record.state = ModelState.DEGRADED
+                        record.error = error_text
+                        record.materialization = None
+                        cleanup_task = self._begin_unpublished_cleanup_locked(
+                            runtime,
+                            record,
+                            handle,
+                            deadline_at=(
+                                asyncio.get_running_loop().time()
+                                + self._rejected_handle_close_deadline_s
+                            ),
+                            success_error=error_text,
+                        )
+                    else:
+                        record.load_task = None
+                        record.handle = handle
+                        record.state = ModelState.READY
+                        record.error = None
+                        record.materialization = materialization
+        if cleanup_task is not None:
+            await asyncio.shield(cleanup_task)
+            if publication_error is not None:
+                raise publication_error
+            raise RuntimeUnavailableError("runtime load completed during shutdown")
         return handle
+
+    def _begin_unpublished_cleanup_locked(
+        self,
+        runtime: RuntimeKey,
+        record: _RuntimeRecord,
+        handle: BackendHandle,
+        *,
+        deadline_at: float,
+        success_error: str | None,
+    ) -> asyncio.Task[None]:
+        if record.cleanup_task is not None:
+            raise RuntimeManagerError("unpublished handle cleanup is already tracked")
+        task = asyncio.create_task(
+            self._close_unpublished_handle(
+                runtime,
+                record,
+                handle,
+                deadline_at=deadline_at,
+                success_error=success_error,
+            ),
+            name=f"runtime-unpublished-cleanup:{runtime.model_id}",
+        )
+        record.cleanup_task = task
+        return task
+
+    async def _close_unpublished_handle(
+        self,
+        runtime: RuntimeKey,
+        record: _RuntimeRecord,
+        handle: BackendHandle,
+        *,
+        deadline_at: float,
+        success_error: str | None,
+    ) -> None:
+        remaining = max(0.0, deadline_at - asyncio.get_running_loop().time())
+        try:
+            await handle.close(remaining)
+        except Exception as close_error:
+            error = self._error_text(close_error)
+            async with self._lock:
+                record.state = ModelState.DEGRADED
+                record.error = error
+                record.materialization = None
+            self._mark_roles_degraded(
+                runtime,
+                error,
+                transition="unpublished_handle_cleanup_failed",
+            )
+            raise RuntimeManagerError(
+                "unpublished handle cleanup failed: " + error
+            ) from close_error
+
+        async with self._lock:
+            if record.cleanup_task is asyncio.current_task():
+                record.cleanup_task = None
+                record.materialization = None
+                if success_error is None:
+                    record.state = ModelState.COLD
+                    record.error = None
+                else:
+                    record.state = ModelState.DEGRADED
+                    record.error = success_error
+        if success_error is None:
+            self._mark_roles_cold(runtime, transition="shutdown_during_load")
+        else:
+            self._mark_roles_degraded(
+                runtime,
+                success_error,
+                transition="ready_publication_failed",
+            )
 
     async def _unload_and_publish(
         self,
@@ -468,6 +608,7 @@ class RuntimeManager:
                     record.unload_task = None
                     record.state = ModelState.DEGRADED
                     record.error = error
+                    record.materialization = None
             self._mark_roles_degraded(runtime, error)
             raise
 
@@ -477,6 +618,7 @@ class RuntimeManager:
                 record.unload_task = None
                 record.state = ModelState.COLD
                 record.error = None
+                record.materialization = None
         self._mark_roles_cold(runtime)
         return True
 
@@ -493,21 +635,71 @@ class RuntimeManager:
         for role in self._role_names_for(runtime):
             self._readiness.mark_unloading(role)
 
-    def _mark_roles_degraded(self, runtime: RuntimeKey, error: str) -> None:
+    def _mark_roles_ready(
+        self,
+        runtime: RuntimeKey,
+        handle: BackendHandle,
+        materialization: TensorMaterializationReceipt | None,
+    ) -> None:
+        if self._readiness is None:
+            return
+        for role in self._role_names_for(runtime):
+            self._readiness.mark_ready(
+                role,
+                loaded_model=runtime.model_id,
+                backend=runtime.backend,
+                capabilities=self._handle_capabilities(handle),
+                materialization=materialization,
+            )
+
+    def _mark_roles_degraded(
+        self,
+        runtime: RuntimeKey,
+        error: str,
+        *,
+        transition: str = "unload_failed",
+    ) -> None:
         if self._readiness is None:
             return
         for role in self._role_names_for(runtime):
             self._readiness.mark_degraded(
                 role,
                 error,
-                transition="unload_failed",
+                transition=transition,
             )
 
-    def _mark_roles_cold(self, runtime: RuntimeKey) -> None:
+    def _mark_roles_cold(
+        self,
+        runtime: RuntimeKey,
+        *,
+        transition: str = "cold",
+    ) -> None:
         if self._readiness is None:
             return
         for role in self._role_names_for(runtime):
-            self._readiness.mark_cold(role)
+            self._readiness.mark_cold(role, transition=transition)
+
+    @staticmethod
+    def _validated_materialization(
+        handle: BackendHandle,
+        runtime: RuntimeKey,
+    ) -> TensorMaterializationReceipt | None:
+        receipt = handle.materialization_receipt
+        if runtime.backend is not BackendKind.FUSED_MTP_MLX:
+            if receipt is not None:
+                raise RuntimeManagerError(
+                    "legacy backend returned a fused materialization receipt"
+                )
+            return None
+        if not isinstance(receipt, TensorMaterializationReceipt):
+            raise RuntimeManagerError(
+                "fused backend returned no tensor materialization receipt"
+            )
+        if receipt.runtime != runtime:
+            raise RuntimeManagerError(
+                "fused backend materialization receipt has a different runtime"
+            )
+        return receipt
 
     @staticmethod
     def _error_text(exc: BaseException) -> str:

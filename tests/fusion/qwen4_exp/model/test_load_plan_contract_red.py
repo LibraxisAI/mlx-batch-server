@@ -8,6 +8,7 @@ import pytest
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.load_plan import (
     Qwen4ExpLoadPlanError,
     load_qwen4_exp_plan,
+    verify_qwen4_exp_shard_content,
 )
 
 
@@ -209,6 +210,33 @@ def test_load_plan_digest_changes_with_active_tokenizer_surface(
     )
 
     assert first.tokenizer_fingerprint != second.tokenizer_fingerprint
+    assert first.plan_sha256 != second.plan_sha256
+
+
+def test_load_plan_and_materialization_reject_checkpoint_content_drift(
+    tmp_path: Path,
+) -> None:
+    _write_snapshot(tmp_path)
+    first = load_qwen4_exp_plan(
+        model_dir=tmp_path,
+        model_id="grant-ai/flash",
+        revision="revision-a",
+    )
+
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    shard.write_bytes(b"different-checkpoint-bytes")
+    with pytest.raises(Qwen4ExpLoadPlanError, match="content changed"):
+        verify_qwen4_exp_shard_content(first)
+
+    second = load_qwen4_exp_plan(
+        model_dir=tmp_path,
+        model_id="grant-ai/flash",
+        revision="revision-a",
+    )
+    assert first.artifacts.weight_content_sha256 != (
+        second.artifacts.weight_content_sha256
+    )
+    assert first.artifacts.digest != second.artifacts.digest
     assert first.plan_sha256 != second.plan_sha256
 
 

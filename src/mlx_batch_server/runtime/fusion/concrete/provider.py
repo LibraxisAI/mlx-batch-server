@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         ModelSpec,
         PreparedGenerationRequest,
         RuntimeKey,
+        TensorMaterializationReceipt,
     )
     from ..mtp import MtpPolicy
     from ..scheduler import SchedulerConfig, SchedulerPlan
@@ -58,6 +59,7 @@ class FusedTensorOwnerBinding:
     config: LoadConfig
     scheduler_config: SchedulerConfig
     model: ModelSpec
+    materialization_receipt: TensorMaterializationReceipt
     executor: FusedExecutorPort
     cache: FusedCachePort
 
@@ -148,7 +150,12 @@ class FusedTensorRuntimeRegistry:
             config,
             scheduler_config=scheduler_config,
         )
-        return _ExecutorLease(self, entry, binding.executor)
+        return _ExecutorLease(
+            self,
+            entry,
+            binding.executor,
+            binding.materialization_receipt,
+        )
 
     async def acquire_cache(
         self,
@@ -167,19 +174,29 @@ class FusedTensorRuntimeRegistry:
     async def shutdown(self, deadline_s: float) -> None:
         """Reject new leases and close every loading or loaded owner once."""
         _validate_deadline(deadline_s)
+        deadline_at = _deadline_at(deadline_s)
         async with self._lock:
             self._closed = True
             closing = tuple(
-                self._begin_close_locked(entry, deadline_s)
+                self._begin_close_locked(entry, deadline_at)
                 for entry in self._entries.values()
             )
         if not closing:
             return
-        results = await asyncio.gather(
-            *(asyncio.shield(task) for task in closing),
-            return_exceptions=True,
+        done, pending = await asyncio.wait(
+            closing,
+            timeout=_remaining(deadline_at),
         )
-        failures = [result for result in results if isinstance(result, BaseException)]
+        failures = [
+            task.exception()
+            for task in done
+            if not task.cancelled() and task.exception() is not None
+        ]
+        if pending:
+            raise FusedTensorRegistryError(
+                f"timed out closing {len(pending)} tensor owner(s); "
+                "eventual cleanup remains tracked"
+            )
         if failures:
             raise FusedTensorRegistryError(
                 f"failed to close {len(failures)} tensor owner(s)"
@@ -255,7 +272,10 @@ class FusedTensorRuntimeRegistry:
                     or entry.closing_task is not None
                 ):
                     if entry.waiters == 0 and entry.lease_count == 0:
-                        close_task = self._begin_close_locked(entry, 0.0)
+                        close_task = self._begin_close_locked(
+                            entry,
+                            _deadline_at(0.0),
+                        )
                     raise FusedTensorRegistryClosedError(
                         "tensor owner closed while its lease was loading"
                     )
@@ -263,7 +283,10 @@ class FusedTensorRuntimeRegistry:
                     binding.model
                 ):
                     if entry.waiters == 0 and entry.lease_count == 0:
-                        close_task = self._begin_close_locked(entry, 0.0)
+                        close_task = self._begin_close_locked(
+                            entry,
+                            _deadline_at(0.0),
+                        )
                     raise FusedTensorIdentityError(
                         "cache model does not match the loaded tensor owner"
                     )
@@ -323,6 +346,16 @@ class FusedTensorRuntimeRegistry:
             raise FusedTensorIdentityError(
                 "executor model must be the binding's canonical model object"
             )
+        if binding.executor.materialization_receipt is not (
+            binding.materialization_receipt
+        ):
+            raise FusedTensorIdentityError(
+                "executor receipt must be the binding's canonical receipt object"
+            )
+        if binding.materialization_receipt.runtime != binding.runtime:
+            raise FusedTensorIdentityError(
+                "loader returned a different materialization runtime"
+            )
 
     async def _leave_failed_waiter(self, entry: _Entry) -> None:
         async with self._lock:
@@ -337,7 +370,7 @@ class FusedTensorRuntimeRegistry:
             ):
                 self._entries.pop(entry.identity, None)
                 return
-            self._begin_close_locked(entry, 0.0)
+            self._begin_close_locked(entry, _deadline_at(0.0))
 
     async def _release(
         self,
@@ -346,6 +379,7 @@ class FusedTensorRuntimeRegistry:
         deadline_s: float,
     ) -> None:
         _validate_deadline(deadline_s)
+        deadline_at = _deadline_at(deadline_s)
         close_task: asyncio.Task[None] | None = None
         async with self._lock:
             current = self._entries.get(entry.identity)
@@ -362,29 +396,29 @@ class FusedTensorRuntimeRegistry:
                     raise FusedTensorRegistryError("cache lease accounting underflow")
                 entry.cache_leases -= 1
             if entry.lease_count == 0 and entry.waiters == 0:
-                close_task = self._begin_close_locked(entry, deadline_s)
+                close_task = self._begin_close_locked(entry, deadline_at)
         if close_task is not None:
             await asyncio.shield(close_task)
 
     def _begin_close_locked(
         self,
         entry: _Entry,
-        deadline_s: float,
+        deadline_at: float,
     ) -> asyncio.Task[None]:
         if entry.closing_task is None:
             entry.closing_task = asyncio.create_task(
-                self._close_entry(entry, deadline_s),
+                self._close_entry(entry, deadline_at),
                 name=f"tensor-owner-close:{entry.runtime.model_id}",
             )
         return entry.closing_task
 
-    async def _close_entry(self, entry: _Entry, deadline_s: float) -> None:
+    async def _close_entry(self, entry: _Entry, deadline_at: float) -> None:
         try:
             try:
                 binding = await entry.load_task
             except Exception:
                 return
-            await self._owner_loader.close(binding.owner, deadline_s)
+            await self._owner_loader.close(binding.owner, _remaining(deadline_at))
         finally:
             async with self._lock:
                 if self._entries.get(entry.identity) is entry:
@@ -397,16 +431,23 @@ class _ExecutorLease:
         registry: FusedTensorRuntimeRegistry,
         entry: _Entry,
         executor: FusedExecutorPort,
+        materialization_receipt: TensorMaterializationReceipt,
     ) -> None:
         self._registry = registry
         self._entry = entry
         self._executor = executor
+        self._materialization_receipt = materialization_receipt
         self._closed = False
 
     @property
     def model_spec(self) -> ModelSpec:
         self._require_open()
         return self._executor.model_spec
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        self._require_open()
+        return self._materialization_receipt
 
     async def prepare_request(
         self,
@@ -574,6 +615,14 @@ def _freeze_identity(value: Any) -> _IdentityAtom:
 def _validate_deadline(deadline_s: float) -> None:
     if deadline_s < 0:
         raise ValueError("deadline_s must be non-negative")
+
+
+def _deadline_at(deadline_s: float) -> float:
+    return asyncio.get_running_loop().time() + deadline_s
+
+
+def _remaining(deadline_at: float) -> float:
+    return max(0.0, deadline_at - asyncio.get_running_loop().time())
 
 
 __all__ = [

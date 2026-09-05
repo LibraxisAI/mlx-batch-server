@@ -64,7 +64,6 @@ from .runtime_projection import create_runtime_projection
 from .runtime_resolver import ManifestRuntimeResolver
 
 if TYPE_CHECKING:
-    from ..runtime.fusion.qwen4_exp.execution import Qwen4ExpExecutionFactoryPort
     from ..runtime.fusion.qwen4_exp.media_resolver import FileIdResolverPort
 
 
@@ -349,7 +348,6 @@ def compose_role_responses_runtime(
     scheduler_config: SchedulerConfig | None = None,
     mtp_policy: MtpPolicy | None = None,
     fused_capacity: int = 2,
-    execution_factory: Qwen4ExpExecutionFactoryPort | None = None,
     allowed_url_origins: Iterable[str] = (),
     file_id_resolver: FileIdResolverPort | None = None,
     build_receipt: BuildReceipt | None = None,
@@ -395,13 +393,12 @@ def compose_role_responses_runtime(
             scheduler_config=scheduler_config or SchedulerConfig(),
             mtp_policy=mtp_policy or MtpPolicy(),
             capacity=fused_capacity,
-            execution_factory=execution_factory,
         )
         factories: Mapping[BackendKind, BackendFactory] = {
             BackendKind.FUSED_MTP_MLX: qwen4_exp.backend,
         }
     else:
-        if request_preparer is not None or execution_factory is not None:
+        if request_preparer is not None:
             raise ValueError("a legacy process cannot register fused runtime ports")
         if scheduler_config is not None or mtp_policy is not None:
             raise ValueError("a legacy process cannot register fused runtime policy")

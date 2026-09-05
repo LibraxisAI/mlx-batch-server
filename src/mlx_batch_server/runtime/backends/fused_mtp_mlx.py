@@ -27,6 +27,7 @@ from ..contracts import (
     PreparedGenerationRequest,
     RequestModality,
     RuntimeKey,
+    TensorMaterializationReceipt,
     TurnSink,
 )
 from ..events import (
@@ -113,6 +114,9 @@ class FusedExecutorPort(Protocol):
 
     @property
     def model_spec(self) -> ModelSpec: ...
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt: ...
 
     async def prepare_request(
         self,
@@ -212,6 +216,7 @@ class _FusedBackendHandle:
         self,
         *,
         runtime: RuntimeKey,
+        materialization_receipt: TensorMaterializationReceipt,
         capabilities: CapabilityReport,
         scheduler_config: SchedulerConfig,
         executor: FusedExecutorPort,
@@ -219,6 +224,7 @@ class _FusedBackendHandle:
         mtp_policy: MtpPolicy,
     ) -> None:
         self._runtime = runtime
+        self._materialization_receipt = materialization_receipt
         self._capabilities = capabilities
         self._scheduler = SchedulerChassis(scheduler_config)
         self._executor = executor
@@ -237,6 +243,10 @@ class _FusedBackendHandle:
     @property
     def runtime_key(self) -> RuntimeKey:
         return self._runtime
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        return self._materialization_receipt
 
     @property
     def capabilities(self) -> CapabilityReport:
@@ -664,6 +674,23 @@ class MtpMlxBackend:
             config,
             scheduler_config,
         )
+        try:
+            materialization_receipt = executor.materialization_receipt
+        except Exception as error:
+            await executor.close(0.0)
+            raise FusedBackendError(
+                "executor returned no tensor materialization receipt"
+            ) from error
+        if not isinstance(materialization_receipt, TensorMaterializationReceipt):
+            await executor.close(0.0)
+            raise FusedBackendError(
+                "executor returned an invalid tensor materialization receipt"
+            )
+        if materialization_receipt.runtime != runtime:
+            await executor.close(0.0)
+            raise FusedBackendError(
+                "executor materialized a different runtime identity"
+            )
         model = executor.model_spec
         report = self.probe(model)
         if model.model_id != runtime.model_id or (
@@ -684,6 +711,7 @@ class MtpMlxBackend:
             raise
         return _FusedBackendHandle(
             runtime=runtime,
+            materialization_receipt=materialization_receipt,
             capabilities=report,
             scheduler_config=scheduler_config,
             executor=executor,

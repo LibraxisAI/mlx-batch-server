@@ -41,6 +41,7 @@ from ...contracts import (
     PreparedGenerationRequest,
     RequestModality,
     RuntimeKey,
+    TensorMaterializationReceipt,
 )
 from ..cache import CacheCleanupReceipt, CacheReleaseReason
 from ..qwen4_exp import (
@@ -50,6 +51,7 @@ from ..qwen4_exp import (
     Qwen4ExpRequestPreparerPort,
     probe_qwen4_exp,
 )
+from ..qwen4_exp.execution import _TensorMaterializationIssuerAuthority
 from ..scheduler import (
     SchedulerConfig,
     SchedulerPlan,
@@ -236,6 +238,7 @@ class Qwen4ExpTensorOwner:
         runtime: RuntimeKey,
         config: LoadConfig,
         scheduler_config: SchedulerConfig,
+        materialization_authority: _TensorMaterializationIssuerAuthority,
         request_preparer: Qwen4ExpRequestPreparerPort | None = None,
     ) -> None:
         if runtime.backend is not BackendKind.FUSED_MTP_MLX:
@@ -247,12 +250,14 @@ class Qwen4ExpTensorOwner:
         self._config = config
         self._config_identity = _freeze_value(config)
         self._scheduler_config = scheduler_config
+        self._materialization_authority = materialization_authority
         self._request_preparer = request_preparer
         self._mailbox = _InferenceMailbox(
             f"qwen4-exp-owner:{_thread_name(runtime.model_id)}"
         )
         self._execution: Qwen4ExpExecutionPort | None = None
         self._model: ModelSpec | None = None
+        self._materialization_receipt: TensorMaterializationReceipt | None = None
         self._owner_identity: _IdentityAtom | None = None
         self._requests: dict[str, _RequestState] = {}
         self._tombstones: OrderedDict[str, _Tombstone] = OrderedDict()
@@ -283,6 +288,7 @@ class Qwen4ExpTensorOwner:
         runtime: RuntimeKey,
         config: LoadConfig,
         scheduler_config: SchedulerConfig,
+        materialization_authority: _TensorMaterializationIssuerAuthority,
         request_preparer: Qwen4ExpRequestPreparerPort | None = None,
     ) -> Qwen4ExpTensorOwner:
         prepared_factory = execution_factory.prepare(
@@ -301,6 +307,7 @@ class Qwen4ExpTensorOwner:
             runtime=runtime,
             config=config,
             scheduler_config=scheduler_config,
+            materialization_authority=materialization_authority,
             request_preparer=request_preparer,
         )
         future = owner._mailbox.submit(owner._open_on_thread)
@@ -347,6 +354,15 @@ class Qwen4ExpTensorOwner:
         if model is None:
             raise Qwen4ExpTensorOwnerClosedError("tensor owner is not open")
         return model
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        receipt = self._materialization_receipt
+        if receipt is None:
+            raise Qwen4ExpTensorOwnerClosedError(
+                "tensor owner has no materialization receipt"
+            )
+        return receipt
 
     @property
     def owner_thread_id(self) -> int | None:
@@ -480,6 +496,7 @@ class Qwen4ExpTensorOwner:
             self._closed = True
 
     def _open_on_thread(self) -> None:
+        self._publish_stats("materializing")
         binding = self._prepared_execution_factory.load()
         try:
             self._validate_driver_binding(binding)
@@ -488,6 +505,7 @@ class Qwen4ExpTensorOwner:
             raise
         self._execution = binding.execution
         self._model = binding.model
+        self._materialization_receipt = binding.materialization_receipt
         self._owner_identity = self._current_owner_identity()
         self._publish_stats("open")
 
@@ -520,6 +538,47 @@ class Qwen4ExpTensorOwner:
         if binding.execution.model_spec is not binding.model:
             raise Qwen4ExpTensorIdentityError(
                 "driver must expose the canonical binding model object"
+            )
+        receipt = binding.materialization_receipt
+        if not receipt._issued_by(self._materialization_authority):
+            raise Qwen4ExpTensorIdentityError(
+                "materialization receipt was not issued by this concrete owner graph"
+            )
+        if binding.execution.materialization_receipt is not receipt:
+            raise Qwen4ExpTensorIdentityError(
+                "driver must expose the canonical materialization receipt object"
+            )
+        if receipt.runtime != self._runtime:
+            raise Qwen4ExpTensorIdentityError(
+                "materialization receipt has a different runtime identity"
+            )
+        if receipt.owner_thread_id != threading.get_ident():
+            raise Qwen4ExpTensorIdentityError(
+                "materialization receipt belongs to a different owner thread"
+            )
+        plan_sha256 = binding.model.metadata.get("qwen4_exp_plan_sha256")
+        build_facts = binding.model.metadata.get("build_facts")
+        inventory_sha256 = (
+            build_facts.get("artifact_inventory_sha256")
+            if isinstance(build_facts, Mapping)
+            else None
+        )
+        checkpoint_content_sha256 = (
+            build_facts.get("weight_content_sha256")
+            if isinstance(build_facts, Mapping)
+            else None
+        )
+        if receipt.qwen4_exp_plan_sha256 != plan_sha256:
+            raise Qwen4ExpTensorIdentityError(
+                "materialization receipt has a different Qwen4Exp plan"
+            )
+        if receipt.artifact_inventory_sha256 != inventory_sha256:
+            raise Qwen4ExpTensorIdentityError(
+                "materialization receipt has a different artifact inventory"
+            )
+        if receipt.checkpoint_content_sha256 != checkpoint_content_sha256:
+            raise Qwen4ExpTensorIdentityError(
+                "materialization receipt has different checkpoint content"
             )
 
     def _reserve_on_thread(
@@ -884,6 +943,7 @@ class Qwen4ExpTensorOwner:
         execution = self._require_driver()
         execution.shutdown(_remaining(deadline_at) or 0.0)
         self._execution = None
+        self._materialization_receipt = None
         self._publish_stats("closed")
 
     def _require_driver(self) -> Qwen4ExpExecutionPort:
@@ -963,12 +1023,24 @@ class Qwen4ExpTensorOwner:
 
 
 class _Qwen4ExpExecutorFacade:
-    def __init__(self, owner: Qwen4ExpTensorOwner) -> None:
+    def __init__(
+        self,
+        owner: Qwen4ExpTensorOwner,
+        *,
+        model: ModelSpec,
+        materialization_receipt: TensorMaterializationReceipt,
+    ) -> None:
         self._owner = owner
+        self._model = model
+        self._materialization_receipt = materialization_receipt
 
     @property
     def model_spec(self) -> ModelSpec:
-        return self._owner.model_spec
+        return self._model
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt:
+        return self._materialization_receipt
 
     async def prepare_request(
         self,
@@ -1048,9 +1120,11 @@ class Qwen4ExpTensorOwnerLoader:
         self,
         execution_factory: Qwen4ExpExecutionFactoryPort,
         *,
+        materialization_authority: _TensorMaterializationIssuerAuthority,
         request_preparer: Qwen4ExpRequestPreparerPort | None = None,
     ) -> None:
         self._execution_factory = execution_factory
+        self._materialization_authority = materialization_authority
         self._request_preparer = request_preparer
 
     async def load(
@@ -1064,10 +1138,16 @@ class Qwen4ExpTensorOwnerLoader:
             runtime=runtime,
             config=config,
             scheduler_config=scheduler_config,
+            materialization_authority=self._materialization_authority,
             request_preparer=self._request_preparer,
         )
         model = owner.model_spec
-        executor: FusedExecutorPort = _Qwen4ExpExecutorFacade(owner)
+        materialization_receipt = owner.materialization_receipt
+        executor: FusedExecutorPort = _Qwen4ExpExecutorFacade(
+            owner,
+            model=model,
+            materialization_receipt=materialization_receipt,
+        )
         cache: FusedCachePort = _Qwen4ExpCacheFacade(owner)
         return FusedTensorOwnerBinding(
             owner=owner,
@@ -1075,6 +1155,7 @@ class Qwen4ExpTensorOwnerLoader:
             config=config,
             scheduler_config=scheduler_config,
             model=model,
+            materialization_receipt=materialization_receipt,
             executor=executor,
             cache=cache,
         )

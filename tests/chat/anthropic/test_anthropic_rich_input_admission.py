@@ -32,20 +32,6 @@ MESSAGES_PATH = "/anthropic/v1/messages"
 ALIAS = "flash-main"
 
 
-class _DormantExecutionFactory:
-    def __init__(self) -> None:
-        self.calls: list[tuple[object, object, object]] = []
-
-    def prepare(
-        self,
-        runtime: object,
-        config: object,
-        scheduler_config: object,
-    ) -> Any:
-        self.calls.append((runtime, config, scheduler_config))
-        raise AssertionError("HTTP preflight must not acquire a model")
-
-
 class _DormantFileIdResolver:
     def __init__(self) -> None:
         self.calls: list[object] = []
@@ -95,17 +81,15 @@ def _runtime(
     *,
     allowed_url_origins: tuple[str, ...] = (),
     file_id_resolver: _DormantFileIdResolver | None = None,
-) -> tuple[RoleRuntimeCompositionReceipt, _DormantExecutionFactory]:
-    execution = _DormantExecutionFactory()
+) -> RoleRuntimeCompositionReceipt:
     composed = compose_role_responses_runtime(
         process_role=RoleName.MAIN,
         public_aliases={ALIAS: RoleName.MAIN},
         allowed_url_origins=allowed_url_origins,
         file_id_resolver=file_id_resolver,
-        execution_factory=execution,
     )
     responses = replace(composed.responses, anthropic_turn_source=source)
-    return replace(composed, responses=responses), execution
+    return replace(composed, responses=responses)
 
 
 @contextmanager
@@ -178,7 +162,7 @@ def test_default_composition_admits_only_its_exact_source_field(
     stream: bool,
 ) -> None:
     source = _RecordingTurnSource()
-    runtime, execution = _runtime(source)
+    runtime = _runtime(source)
 
     with _client(runtime) as client:
         response = client.post(MESSAGES_PATH, json=_body([block], stream=stream))
@@ -186,7 +170,6 @@ def test_default_composition_admits_only_its_exact_source_field(
     assert response.status_code == 200, (case_id, response.text)
     assert len(source.entries) == 1
     assert canonical_field in source.entries[0].media[0]
-    assert execution.calls == []
     if stream:
         assert response.headers["content-type"].startswith("text/event-stream")
         assert "event: message_stop" in response.text
@@ -239,7 +222,7 @@ def test_unsupported_source_fails_before_mapper_model_and_sse(
     stream: bool,
 ) -> None:
     source = _RecordingTurnSource()
-    runtime, execution = _runtime(source)
+    runtime = _runtime(source)
     mapper_calls: list[object] = []
 
     def forbidden_mapper(request: object) -> Any:
@@ -258,14 +241,13 @@ def test_unsupported_source_fails_before_mapper_model_and_sse(
     assert wire_path in response.json()["error"]["message"]
     assert mapper_calls == []
     assert source.entries == []
-    assert execution.calls == []
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
 def test_url_and_file_id_forms_require_their_canonical_wiring(stream: bool) -> None:
     file_resolver = _DormantFileIdResolver()
     source = _RecordingTurnSource()
-    runtime, execution = _runtime(
+    runtime = _runtime(
         source,
         allowed_url_origins=("https://x",),
         file_id_resolver=file_resolver,
@@ -294,13 +276,12 @@ def test_url_and_file_id_forms_require_their_canonical_wiring(stream: bool) -> N
         {"file_id"},
     ]
     assert file_resolver.calls == []
-    assert execution.calls == []
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
 def test_search_result_is_only_delimited_untrusted_text(stream: bool) -> None:
     source = _RecordingTurnSource()
-    runtime, execution = _runtime(source)
+    runtime = _runtime(source)
     search_url = "https://must-not-fetch.example/result"
     block = {
         "type": "search_result",
@@ -318,7 +299,6 @@ def test_search_result_is_only_delimited_untrusted_text(stream: bool) -> None:
     assert turn.media == ()
     assert "CALLER-SUPPLIED UNTRUSTED SEARCH RESULT" in str(turn.messages)
     assert search_url in str(turn.messages)
-    assert execution.calls == []
 
 
 UNHONOURED_RICH_CONTROLS: tuple[tuple[dict[str, Any], str], ...] = (
@@ -366,7 +346,7 @@ def test_rich_controls_remain_pre_sse_field_specific_refusals(
     block: dict[str, Any], wire_path: str, stream: bool
 ) -> None:
     source = _RecordingTurnSource()
-    runtime, execution = _runtime(source)
+    runtime = _runtime(source)
 
     with _client(runtime) as client:
         response = client.post(MESSAGES_PATH, json=_body([block], stream=stream))
@@ -376,12 +356,11 @@ def test_rich_controls_remain_pre_sse_field_specific_refusals(
     assert "event:" not in response.text
     assert wire_path in response.json()["error"]["message"]
     assert source.entries == []
-    assert execution.calls == []
 
 
 def test_coarse_image_capability_cannot_admit_an_unreceipted_source() -> None:
     source = _RecordingTurnSource()
-    runtime, _ = _runtime(source)
+    runtime = _runtime(source)
     receipt = anthropic_router.role_receipt(runtime)
     assert receipt is not None
     profile = anthropic_router.resolve_capability_profile(ALIAS, receipt=receipt)

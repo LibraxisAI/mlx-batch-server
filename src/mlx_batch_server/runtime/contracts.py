@@ -60,6 +60,61 @@ class RuntimeKey:
 
 
 @dataclass(frozen=True, slots=True)
+class TensorMaterializationReceipt:
+    """Immutable proof that one exact runtime crossed its MLX eval barrier."""
+
+    schema: str
+    load_id: str
+    runtime: RuntimeKey
+    qwen4_exp_plan_sha256: str
+    artifact_inventory_sha256: str
+    parameter_manifest_sha256: str
+    parameter_path_count: int
+    evaluated_leaf_count: int
+    evaluated_logical_bytes: int
+    owner_thread_id: int
+    completed_at_monotonic_ns: int
+    checkpoint_content_sha256: str
+    _issuer_authority: object = field(repr=False, compare=False)
+    barrier: str = "mx.eval"
+
+    def __post_init__(self) -> None:
+        if self.schema != "mlx-tensor-materialization.v1":
+            raise ValueError("unsupported tensor materialization receipt schema")
+        if not self.load_id:
+            raise ValueError("tensor materialization load_id must not be empty")
+        if self.runtime.backend is not BackendKind.FUSED_MTP_MLX:
+            raise ValueError("tensor materialization requires the fused backend")
+        for name, digest in (
+            ("Qwen4Exp plan", self.qwen4_exp_plan_sha256),
+            ("artifact inventory", self.artifact_inventory_sha256),
+            ("parameter manifest", self.parameter_manifest_sha256),
+            ("checkpoint content", self.checkpoint_content_sha256),
+        ):
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError(f"{name} digest must be lowercase SHA-256")
+        if self.parameter_path_count < self.evaluated_leaf_count:
+            raise ValueError("parameter paths cannot be fewer than evaluated leaves")
+        if self.evaluated_leaf_count < 1 or self.evaluated_logical_bytes < 1:
+            raise ValueError("tensor materialization must evaluate non-empty leaves")
+        if self.owner_thread_id < 1 or self.completed_at_monotonic_ns < 1:
+            raise ValueError(
+                "tensor materialization owner and completion must be known"
+            )
+        if self.barrier != "mx.eval":
+            raise ValueError("unsupported tensor materialization barrier")
+        if self._issuer_authority is None:
+            raise ValueError("tensor materialization issuer authority is required")
+
+    def _issued_by(self, authority: object) -> bool:
+        """Authenticate the private concrete issuer without serializing its seal."""
+
+        return self._issuer_authority is authority
+
+
+@dataclass(frozen=True, slots=True)
 class ModelSpec:
     model_id: str
     revision: str | None = None
@@ -120,6 +175,7 @@ class RoleSnapshot:
     transition: str | None = None
     error: str | None = None
     receipt: Mapping[str, Any] | None = None
+    materialization: TensorMaterializationReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +259,9 @@ class BackendTurn(Protocol):
 class BackendHandle(Protocol):
     @property
     def runtime_key(self) -> RuntimeKey: ...
+
+    @property
+    def materialization_receipt(self) -> TensorMaterializationReceipt | None: ...
 
     def start_turn(
         self,
