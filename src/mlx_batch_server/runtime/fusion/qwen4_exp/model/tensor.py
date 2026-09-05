@@ -98,6 +98,7 @@ from ..vision.tensor_splice import Qwen4ExpTensorSplicer
 from ..vision.tensor_tower import Qwen4ExpVisionTensorTower
 from ..vision.tower import VisionTowerRequest
 from .load_plan import Qwen4ExpModelLoadPlan, load_qwen4_exp_plan
+from .multirow import MultirowBatchPlan
 from .sampling import (
     Distribution,
     SamplerConfig,
@@ -199,7 +200,7 @@ def _rope_cos_sin(
 ) -> tuple[mx.array, mx.array]:
     """Non-interleaved RoPE tables, including static-YaRN amplitude scaling."""
 
-    angles = positions.astype(mx.float32)[:, None] * inv_freq[None, :]
+    angles = positions.astype(mx.float32)[..., None] * inv_freq
     emb = mx.concatenate([angles, angles], axis=-1)
     cosine = mx.cos(emb)
     sine = mx.sin(emb)
@@ -258,8 +259,14 @@ def _apply_partial_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     x1 = x_rope[..., :half]
     x2 = x_rope[..., half:]
     rotated = mx.concatenate([-x2, x1], axis=-1)
-    cos = cos[:, None, :]
-    sin = sin[:, None, :]
+    if cos.ndim == 2:
+        cos = cos[None, :, None, :]
+        sin = sin[None, :, None, :]
+    elif cos.ndim == 3:
+        cos = cos[:, :, None, :]
+        sin = sin[:, :, None, :]
+    else:
+        raise ValueError(f"RoPE tables must be rank 2 or 3, got {cos.ndim}")
     x_rope = (
         x_rope.astype(mx.float32) * cos + rotated.astype(mx.float32) * sin
     ).astype(x.dtype)
@@ -1567,6 +1574,167 @@ class QSACache:
         self._reserved_pooled_capacity = 0 if pooled is None else int(pooled.shape[1])
 
 
+class _QSAKVBatch:
+    """Transient right-padded KV view over independent QSA row caches.
+
+    Logical offsets stay on the host as one integer per row. The physical
+    tensor is shared only for the duration of one model forward; every write
+    is scattered at that row's own frontier and the owner cache is restored
+    immediately afterwards.
+    """
+
+    def __init__(self, rows: Sequence[QSACache]) -> None:
+        if not rows:
+            raise ValueError("QSA batch requires at least one row")
+        self._rows = tuple(rows)
+        self.offsets = tuple(int(row.kv.offset) for row in rows)
+        self.keys = self._pack_leaf("keys")
+        self.values = self._pack_leaf("values")
+
+    def _pack_leaf(self, name: str) -> mx.array | None:
+        source = next(
+            (
+                getattr(row.kv, name)
+                for row in self._rows
+                if getattr(row.kv, name) is not None
+            ),
+            None,
+        )
+        if source is None:
+            if any(self.offsets):
+                raise RuntimeError("non-empty QSA row is missing its KV backing")
+            return None
+        width = max(self.offsets)
+        packed = mx.zeros(
+            (len(self._rows), source.shape[1], width, source.shape[3]),
+            dtype=source.dtype,
+        )
+        for index, (row, offset) in enumerate(zip(self._rows, self.offsets, strict=True)):
+            leaf = getattr(row.kv, name)
+            if offset:
+                if leaf is None:
+                    raise RuntimeError("non-empty QSA row is missing its KV backing")
+                packed[index : index + 1, :, :offset, :] = leaf[..., :offset, :]
+        return packed
+
+    def update_and_fetch(
+        self,
+        keys: mx.array,
+        values: mx.array,
+    ) -> tuple[mx.array, mx.array]:
+        batch, heads, rows, key_width = keys.shape
+        if batch != len(self.offsets):
+            raise ValueError("QSA KV update batch size changed")
+        starts = self.offsets
+        ends = tuple(offset + rows for offset in starts)
+        capacity = max(ends)
+
+        if self.keys is None:
+            self.keys = mx.zeros((batch, heads, capacity, key_width), keys.dtype)
+            self.values = mx.zeros(
+                (batch, values.shape[1], capacity, values.shape[3]),
+                values.dtype,
+            )
+        elif capacity > int(self.keys.shape[2]):
+            grown_keys = mx.zeros((batch, heads, capacity, key_width), keys.dtype)
+            grown_values = mx.zeros(
+                (batch, values.shape[1], capacity, values.shape[3]),
+                values.dtype,
+            )
+            grown_keys[..., : self.keys.shape[2], :] = self.keys
+            grown_values[..., : self.values.shape[2], :] = self.values
+            self.keys = grown_keys
+            self.values = grown_values
+
+        indices = mx.array(starts, dtype=mx.int32)[:, None, None, None]
+        indices = indices + mx.arange(rows, dtype=mx.int32)[None, None, :, None]
+        key_indices = mx.broadcast_to(indices, keys.shape)
+        value_indices = mx.broadcast_to(indices, values.shape)
+        self.keys = mx.put_along_axis(self.keys, key_indices, keys, axis=2)
+        self.values = mx.put_along_axis(self.values, value_indices, values, axis=2)
+        self.offsets = ends
+        return self.keys[..., :capacity, :], self.values[..., :capacity, :]
+
+
+class _QSABatchCache:
+    """Ephemeral ragged QSA cache used by one multi-row tensor call."""
+
+    def __init__(self, rows: Sequence[QSACache]) -> None:
+        if not rows:
+            raise ValueError("QSA batch requires at least one row")
+        ratios = {row.ratio for row in rows}
+        if len(ratios) != 1:
+            raise ValueError("QSA rows must share one compression ratio")
+        self._rows = tuple(rows)
+        self.ratio = ratios.pop()
+        self.kv = _QSAKVBatch(rows)
+        self.raw_keys = self._pack_raw()
+        self.pooled: mx.array | None = None
+
+    @property
+    def offsets(self) -> tuple[int, ...]:
+        return self.kv.offsets
+
+    def _pack_raw(self) -> mx.array | None:
+        source = next(
+            (row.raw_keys for row in self._rows if row.raw_keys is not None),
+            None,
+        )
+        if source is None:
+            if any(self.offsets):
+                raise RuntimeError("non-empty QSA row is missing indexer keys")
+            return None
+        width = max(self.offsets)
+        packed = mx.zeros(
+            (len(self._rows), width, source.shape[2]),
+            dtype=source.dtype,
+        )
+        for index, (row, offset) in enumerate(zip(self._rows, self.offsets, strict=True)):
+            if offset:
+                if row.raw_keys is None:
+                    raise RuntimeError("non-empty QSA row is missing indexer keys")
+                packed[index : index + 1, :offset, :] = row.raw_keys[:, :offset, :]
+        return packed
+
+    def write_raw(self, keys: mx.array) -> None:
+        batch, rows, width = keys.shape
+        if batch != len(self.offsets):
+            raise ValueError("QSA index update batch size changed")
+        starts = self.offsets
+        capacity = max(offset + rows for offset in starts)
+        if self.raw_keys is None:
+            self.raw_keys = mx.zeros((batch, capacity, width), keys.dtype)
+        elif capacity > int(self.raw_keys.shape[1]):
+            grown = mx.zeros((batch, capacity, width), keys.dtype)
+            grown[:, : self.raw_keys.shape[1], :] = self.raw_keys
+            self.raw_keys = grown
+        indices = mx.array(starts, dtype=mx.int32)[:, None, None]
+        indices = indices + mx.arange(rows, dtype=mx.int32)[None, :, None]
+        indices = mx.broadcast_to(indices, keys.shape)
+        self.raw_keys = mx.put_along_axis(self.raw_keys, indices, keys, axis=1)
+
+    def scatter_rows(self) -> None:
+        """Return the evaluated batch leaves to their identity-stable owners."""
+
+        for index, (row, offset) in enumerate(
+            zip(self._rows, self.offsets, strict=True)
+        ):
+            row.kv.keys = self.kv.keys[index : index + 1, :, :offset, :]
+            row.kv.values = self.kv.values[index : index + 1, :, :offset, :]
+            row.kv.offset = offset
+            row.raw_keys = self.raw_keys[index : index + 1, :offset, :]
+            pooled_len = offset // self.ratio
+            row.pooled = (
+                None
+                if pooled_len == 0 or self.pooled is None
+                else self.pooled[index : index + 1, :pooled_len, :]
+            )
+            row.pooled_len = pooled_len
+            row.pooled_f32_t = None
+            row._reserved_raw_capacity = offset
+            row._reserved_pooled_capacity = pooled_len
+
+
 class QSAIndexer(nn.Module):
     """Vectorized exact port of the reference indexer for the single-sequence
     causal case (B=1, no padding): every query selects its top
@@ -2475,6 +2643,109 @@ class QSAIndexer(nn.Module):
             "dense_mask",
         )
 
+    def _call_batch(
+        self,
+        hidden: mx.array,
+        cache: _QSABatchCache,
+        qk_rows: mx.array | None,
+    ) -> mx.array:
+        """Vectorized QSA selection for right-padded independent rows.
+
+        The batch dimension is request identity. Sequence width is shared for
+        the current forward, while absolute positions and visible key lengths
+        remain per-row. Custom B=1 kernels deliberately stay out of this path.
+        """
+
+        batch, rows, _ = hidden.shape
+        if batch != len(cache.offsets):
+            raise ValueError("QSA hidden/cache batch size changed")
+        source = self.index_qk_proj(hidden) if qk_rows is None else qk_rows
+        q, k = mx.split(source, [self.n_heads * self.head_dim], axis=-1)
+        q = q.reshape(batch, rows, self.n_heads, self.head_dim)
+        k = k.reshape(batch, rows, self.head_dim)
+        q = self.q_layernorm(q)
+
+        starts = mx.array(cache.offsets, dtype=mx.int32)
+        positions = starts[:, None] + mx.arange(rows, dtype=mx.int32)[None, :]
+        cos, sin = _rope_cos_sin(
+            positions,
+            self._inv_freq,
+            self._rope_attention_scaling,
+        )
+        q = _apply_partial_rope(q, cos, sin)
+        cache.write_raw(k)
+
+        ends = tuple(offset + rows for offset in cache.offsets)
+        total = max(ends)
+        block_count = total // self.ratio
+        pooled: mx.array | None = None
+        if block_count:
+            pooled_source = cache.raw_keys[:, : block_count * self.ratio, :]
+            pooled_source = pooled_source.reshape(
+                batch,
+                block_count,
+                self.ratio,
+                self.head_dim,
+            )
+            pooled = mx.mean(pooled_source.astype(mx.float32), axis=2).astype(
+                pooled_source.dtype
+            )
+            pooled = self.k_layernorm(pooled)
+            block_starts = mx.arange(block_count, dtype=mx.int32) * self.ratio
+            block_cos, block_sin = _rope_cos_sin(
+                block_starts,
+                self._inv_freq,
+                self._rope_attention_scaling,
+            )
+            pooled = _apply_partial_rope(
+                pooled[:, :, None, :], block_cos, block_sin
+            )[:, :, 0, :]
+        cache.pooled = pooled
+
+        tpos = mx.arange(total, dtype=mx.int32)
+        causal = tpos[None, None, :] <= positions[:, :, None]
+        complete_for_query = (positions + 1) // self.ratio
+        if block_count <= self.block_topk:
+            return causal[:, None]
+
+        block_ids = mx.arange(block_count, dtype=mx.int32)
+        valid = block_ids[None, None, :] < complete_for_query[:, :, None]
+        pooled_t = mx.swapaxes(pooled.astype(mx.float32), 1, 2)[:, None]
+        scores = mx.matmul(q.astype(mx.float32), pooled_t)
+        scores = mx.maximum(scores, 0.0).sum(axis=2) / math.sqrt(self.head_dim)
+        neg = mx.array(-mx.inf, dtype=mx.float32)
+        ranked = mx.where(valid, scores, neg)
+        ranked = ranked - block_ids.astype(mx.float32)[None, None, :] * 1e-12
+        keep = min(self.block_topk, block_count)
+        selected_ids = mx.argpartition(
+            ranked,
+            kth=block_count - keep,
+            axis=-1,
+        )[..., block_count - keep :]
+        selected = mx.zeros((batch, rows, block_count), dtype=mx.bool_)
+        selected = mx.put_along_axis(
+            selected,
+            selected_ids.astype(mx.int64),
+            mx.array(True),
+            axis=-1,
+        )
+        selected = selected & valid
+        token_selected = mx.repeat(selected, self.ratio, axis=-1)
+        if token_selected.shape[-1] < total:
+            token_selected = mx.concatenate(
+                (
+                    token_selected,
+                    mx.zeros(
+                        (batch, rows, total - token_selected.shape[-1]),
+                        dtype=mx.bool_,
+                    ),
+                ),
+                axis=-1,
+            )
+        tail_start = complete_for_query * self.ratio
+        tail = tpos[None, None, :] >= tail_start[:, :, None]
+        return ((token_selected | tail) & causal)[:, None]
+
     def _call_decode(
         self,
         hidden: mx.array,
@@ -2496,13 +2767,15 @@ class QSAIndexer(nn.Module):
     def __call__(
         self,
         hidden: mx.array,
-        pos_start: int,
-        cache: QSACache,
+        pos_start: int | tuple[int, ...],
+        cache: QSACache | _QSABatchCache,
         qk_rows: mx.array | None = None,
     ) -> mx.array | None:
         B, S, _ = hidden.shape
-        if B != 1:
-            raise NotImplementedError("qwen4_exp QSA serves single sequences (B=1)")
+        if isinstance(cache, _QSABatchCache):
+            return self._call_batch(hidden, cache, qk_rows)
+        if B != 1 or not isinstance(pos_start, int):
+            raise ValueError("multi-row QSA requires an explicit batch cache")
         if S == 1:
             return self._call_decode(hidden, pos_start, cache, qk_rows)
         return self._call_prefill(hidden, pos_start, cache, qk_rows)
@@ -2722,10 +2995,17 @@ class Attention(nn.Module):
             else None
         )
 
-    def __call__(self, x: mx.array, cache: QSACache) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        cache: QSACache | _QSABatchCache,
+    ) -> mx.array:
         B, S, _ = x.shape
-        pos_start = cache.offset
+        is_multirow = isinstance(cache, _QSABatchCache)
+        pos_start = cache.offsets if is_multirow else cache.offset
         vrope = vision_rope_state()
+        if is_multirow and vrope is not None:
+            raise ValueError("multi-row QSA does not flatten request-local M-RoPE")
 
         fused = getattr(self, "qkv_fused", None)
         if fused is not None:
@@ -2778,6 +3058,12 @@ class Attention(nn.Module):
                 cos, sin = _rope_cos_sin(
                     positions, self._inv_freq, self._rope_attention_scaling
                 )
+        elif is_multirow:
+            positions = mx.array(pos_start, dtype=mx.int32)[:, None]
+            positions = positions + mx.arange(S, dtype=mx.int32)[None, :]
+            cos, sin = _rope_cos_sin(
+                positions, self._inv_freq, self._rope_attention_scaling
+            )
         else:
             positions = mx.arange(pos_start, pos_start + S, dtype=mx.int32)
             cos, sin = _rope_cos_sin(
@@ -3360,6 +3646,7 @@ class Qwen4ExpTextModel(nn.Module):
             # GDN states are S-invariant so the same run fns serve all
             # widths. Prefill and masked/padded forwards stay eager.
             1 <= h.shape[1] <= 4
+            and h.shape[0] == 1
             and ssm_mask is None
             and not self._gdn_compile_explicit_off
             and (self._gdn_compiled_enabled or self._gdn_compiled_lane)
@@ -3744,9 +4031,11 @@ class Model(nn.Module):
         emit_logits: bool = True,
         logits_keep: int = 0,
     ):
-        _require_b1(inputs, "text inputs")
+        _require_supported_batch(inputs, "text inputs", cache)
         if input_embeddings is not None:
-            _require_b1(input_embeddings, "text input embeddings")
+            _require_supported_batch(input_embeddings, "text input embeddings", cache)
+            if input_embeddings.shape[0] != inputs.shape[0]:
+                raise ValueError("text inputs and embeddings must share batch size")
         with tensor_capability_scope(self.capabilities):
             return self.language_model(
                 inputs,
@@ -3779,8 +4068,10 @@ class Model(nn.Module):
         position_offset: int | None = None,
     ):
         del concat_order, mtp_hidden_variant, position_offset
-        _require_b1(hidden_states, "MTP hidden states")
-        _require_b1(next_token_ids, "MTP token ids")
+        _require_supported_batch(hidden_states, "MTP hidden states", mtp_cache)
+        _require_supported_batch(next_token_ids, "MTP token ids", mtp_cache)
+        if hidden_states.shape[0] != next_token_ids.shape[0]:
+            raise ValueError("MTP hidden states and token ids must share batch size")
         with tensor_capability_scope(self.capabilities):
             emb = self.language_model.model.embed_tokens(next_token_ids)
             hidden = self.mtp.fuse_and_run(
@@ -3806,10 +4097,18 @@ class Model(nn.Module):
         input_embeddings=None,
     ):
         del concat_order, mtp_hidden_variant, position_offset
-        _require_b1(hidden_states, "MTP hidden states")
-        _require_b1(next_token_ids, "MTP token ids")
+        _require_supported_batch(hidden_states, "MTP hidden states", mtp_cache)
+        _require_supported_batch(next_token_ids, "MTP token ids", mtp_cache)
+        if hidden_states.shape[0] != next_token_ids.shape[0]:
+            raise ValueError("MTP hidden states and token ids must share batch size")
         if input_embeddings is not None:
-            _require_b1(input_embeddings, "MTP input embeddings")
+            _require_supported_batch(
+                input_embeddings,
+                "MTP input embeddings",
+                mtp_cache,
+            )
+            if input_embeddings.shape[0] != next_token_ids.shape[0]:
+                raise ValueError("MTP embeddings and token ids must share batch size")
         with tensor_capability_scope(self.capabilities):
             embedding = (
                 input_embeddings
@@ -4009,10 +4308,60 @@ def _eval_tensor_values(*values: object) -> None:
         mx.eval(*leaves)
 
 
-def _require_b1(value: Any, name: str) -> None:
+def _require_supported_batch(value: Any, name: str, cache: object) -> None:
     shape = getattr(value, "shape", None)
-    if shape is None or not shape or shape[0] != 1:
-        raise ValueError(f"{name} must have batch size 1")
+    if shape is None or not shape or shape[0] < 1:
+        raise ValueError(f"{name} must have a positive batch size")
+    if shape[0] == 1:
+        return
+    if not isinstance(cache, list) or not any(
+        isinstance(entry, _QSABatchCache) for entry in cache
+    ):
+        raise ValueError(f"{name} multi-row input requires a packed QSA cache")
+
+
+def _merge_batch_cache(rows: Sequence[list[Any]]) -> list[Any]:
+    """Pack independent semantic caches without changing their owners."""
+
+    if not rows:
+        raise ValueError("cache batch requires at least one row")
+    layer_count = len(rows[0])
+    if any(len(row) != layer_count for row in rows):
+        raise ValueError("cache rows must share one layer topology")
+    merged: list[Any] = []
+    for layer_index in range(layer_count):
+        entries = tuple(row[layer_index] for row in rows)
+        if all(isinstance(entry, QSACache) for entry in entries):
+            merged.append(_QSABatchCache(entries))
+        elif all(isinstance(entry, ArraysCache) for entry in entries):
+            merged.append(ArraysCache.merge(entries))
+        else:
+            kinds = ", ".join(type(entry).__name__ for entry in entries)
+            raise TypeError(
+                f"cache layer {layer_index} cannot form a semantic batch: {kinds}"
+            )
+    return merged
+
+
+def _scatter_batch_cache(batch: list[Any], rows: Sequence[list[Any]]) -> None:
+    """Split a transient cache batch back into the same row identities."""
+
+    for layer_index, entry in enumerate(batch):
+        if isinstance(entry, _QSABatchCache):
+            entry.scatter_rows()
+            continue
+        if not isinstance(entry, ArraysCache):
+            raise TypeError(
+                f"cache layer {layer_index} has unsupported batch type "
+                f"{type(entry).__name__}"
+            )
+        for row_index, row in enumerate(rows):
+            extracted = ArraysCache(len(entry.cache))
+            extracted.cache = [
+                None if leaf is None else leaf[row_index : row_index + 1]
+                for leaf in entry.cache
+            ]
+            row[layer_index] = extracted
 
 
 def _require_cache_bundle(bundle: object) -> list[Any]:
@@ -4524,7 +4873,7 @@ def _prompt_has_open_thinking(
 
 
 class _Qwen4ExpTensorRuntime:
-    """B=1 row-serial baseline over the target scheduler's execution port."""
+    """Identity-stable continuous batch over the target scheduler port."""
 
     def __init__(
         self,
@@ -4809,36 +5158,27 @@ class _Qwen4ExpTensorRuntime:
             if decode_states
             else None
         )
-        use_singleton_mtp = bool(
-            mtp_decision is not None
-            and mtp_decision.enabled
-            and len(decode_states) == 1
-            and self.plan.topology.max_verified_mtp_rows >= 1
-        )
-        fallbacks: tuple[MtpDisableReason, ...] = ()
-        if mtp_decision is not None and not use_singleton_mtp:
-            reason = (
-                MtpDisableReason.MULTIROW_NOT_PROVEN
-                if mtp_decision.enabled
-                else mtp_decision.disable_reason
+        decode_outcomes, fallbacks = (
+            self._decode_batch(
+                decode_states,
+                mtp_decision=mtp_decision,
+                draft_depth=mtp_policy.draft_depth,
             )
-            if reason is None:
-                raise RuntimeError("disabled MTP execution requires a fallback reason")
-            fallbacks = (reason,)
+            if decode_states
+            else ((), ())
+        )
 
         ar_decode_tokens = 0
         mtp_rounds = 0
         mtp_drafted_tokens = 0
         mtp_accepted_tokens = 0
         mtp_rejected_tokens = 0
-        for row, reservation in zip(plan.decode_rows, decode_states, strict=True):
-            if use_singleton_mtp:
-                outcome = self._decode_mtp_one(
-                    reservation,
-                    draft_depth=mtp_policy.draft_depth,
-                )
-            else:
-                outcome = self._decode_ar_one(reservation)
+        for row, reservation, outcome in zip(
+            plan.decode_rows,
+            decode_states,
+            decode_outcomes,
+            strict=True,
+        ):
             ar_decode_tokens += outcome.ar_decode_tokens
             mtp_rounds += outcome.mtp_rounds
             mtp_drafted_tokens += outcome.mtp_drafted_tokens
@@ -5169,6 +5509,198 @@ class _Qwen4ExpTensorRuntime:
             target_state,
             mtp_state,
         )
+
+    def _decode_batch(
+        self,
+        reservations: tuple[_TensorReservation, ...],
+        *,
+        mtp_decision: MtpDecision | None,
+        draft_depth: int,
+    ) -> tuple[tuple[_TensorDecodeOutcome, ...], tuple[MtpDisableReason, ...]]:
+        """Decode one scheduler tick while preserving row-owned state.
+
+        Plain-text AR rows share one ``[B, 1]`` target forward. Sampling and
+        output commit remain host-side per-row operations, so stochastic RNG
+        order, pending-primary semantics, cancellation compaction, and stream
+        identity match the former row-serial oracle.
+
+        Exact recursive MTP remains the singleton oracle in this source cut.
+        A multi-row policy admission therefore fails back explicitly to the
+        batched AR lane rather than issuing hidden model-per-row calls. The
+        aligned multi-row verify/commit window is the remaining integration
+        seam for I1's live Metal proof.
+        """
+
+        if not reservations:
+            return (), ()
+        if len(reservations) == 1:
+            reservation = reservations[0]
+            if mtp_decision is not None and mtp_decision.enabled:
+                return (
+                    (
+                        self._decode_mtp_one(
+                            reservation,
+                            draft_depth=draft_depth,
+                        ),
+                    ),
+                    (),
+                )
+            outcome = self._decode_ar_one(reservation)
+            fallback = self._mtp_fallback(mtp_decision)
+            return (outcome,), fallback
+
+        fallback = self._mtp_fallback(mtp_decision, multirow=True)
+        if any(reservation.position_table is not None for reservation in reservations):
+            # M-RoPE tables are request-local three-axis state. Until a typed
+            # batch representation exists, keep these rows on the exact
+            # singleton oracle instead of flattening their semantics.
+            return (
+                tuple(self._decode_ar_one(reservation) for reservation in reservations),
+                fallback,
+            )
+
+        primaries: list[int] = []
+        primary_is_new: list[bool] = []
+        emitted: list[tuple[int, ...]] = []
+        finished: list[bool] = []
+        for reservation in reservations:
+            primary, is_new = self._take_primary(reservation)
+            row_emitted = (primary,) if is_new else ()
+            if not is_new and self._pending_primary_is_terminal(reservation, primary):
+                raise RuntimeError("terminal pending primary was scheduled for decode")
+            row_finished = self._would_finish(reservation, row_emitted)
+            primaries.append(primary)
+            primary_is_new.append(is_new)
+            emitted.append(row_emitted)
+            finished.append(row_finished)
+        batch_plan = MultirowBatchPlan[tuple[Any, Any]].compact(
+            tuple(not row_finished for row_finished in finished)
+        )
+        forwarded = batch_plan.execute(
+            lambda ordinals: self._target_forward_batch(
+                tuple((primaries[index],) for index in ordinals),
+                tuple(reservations[index] for index in ordinals),
+            )
+        )
+        if batch_plan.active_ordinals:
+            active_rows = tuple(
+                reservations[index] for index in batch_plan.active_ordinals
+            )
+            self._mtp_update_batch(
+                tuple(
+                    reservations[index].hidden for index in batch_plan.active_ordinals
+                ),
+                tuple(primaries[index] for index in batch_plan.active_ordinals),
+                active_rows,
+            )
+            for index in batch_plan.active_ordinals:
+                row_forward = forwarded[index]
+                if row_forward is None:
+                    raise RuntimeError("active tensor row lost its forwarded state")
+                logits, hidden = row_forward
+                reservations[index].logits = logits[:, -1:, :]
+                reservations[index].hidden = hidden[:, -1:, :]
+
+        outcomes: list[_TensorDecodeOutcome] = []
+        for index, reservation in enumerate(reservations):
+            row_emitted = emitted[index]
+            row_finished = finished[index]
+            primary = primaries[index]
+            finish_reason = (
+                self._finish_reason(reservation, primary) if row_finished else None
+            )
+            self._commit_output(reservation, row_emitted)
+            outcomes.append(
+                _TensorDecodeOutcome(
+                    tokens=row_emitted,
+                    finished=row_finished,
+                    finish_reason=finish_reason,
+                    ar_decode_tokens=int(primary_is_new[index]),
+                )
+            )
+        return tuple(outcomes), fallback
+
+    @staticmethod
+    def _mtp_fallback(
+        decision: MtpDecision | None,
+        *,
+        multirow: bool = False,
+    ) -> tuple[MtpDisableReason, ...]:
+        if decision is None:
+            return ()
+        reason = (
+            MtpDisableReason.MULTIROW_NOT_PROVEN
+            if multirow and decision.enabled
+            else decision.disable_reason
+        )
+        if reason is None:
+            return ()
+        return (reason,)
+
+    def _target_forward_batch(
+        self,
+        token_rows: tuple[tuple[int, ...], ...],
+        reservations: tuple[_TensorReservation, ...],
+        *,
+        phase: str = "decode",
+    ) -> tuple[tuple[Any, Any], ...]:
+        """Issue exactly one target/QSA forward for compatible active rows."""
+
+        if not token_rows or len(token_rows) != len(reservations):
+            raise ValueError("target batch requires one token row per reservation")
+        widths = {len(tokens) for tokens in token_rows}
+        if len(widths) != 1 or not next(iter(widths)):
+            raise ValueError("target batch token rows must share a positive width")
+        if any(reservation.position_table is not None for reservation in reservations):
+            raise ValueError("target tensor batch cannot flatten request-local M-RoPE")
+
+        token_array = mx.stack(tuple(mx.array(tokens) for tokens in token_rows))
+        cache_rows = tuple(reservation.cache for reservation in reservations)
+        batch_cache = _merge_batch_cache(cache_rows)
+        with (
+            tensor_capability_scope(self.capabilities),
+            attention_phase_scope(phase),
+        ):
+            logits, hidden = self.model(
+                token_array,
+                cache=batch_cache,
+                return_hidden=True,
+                logits_keep=0,
+            )
+        mx.eval(logits, hidden)
+        _scatter_batch_cache(batch_cache, cache_rows)
+        return tuple(
+            (logits[index : index + 1], hidden[index : index + 1])
+            for index in range(len(reservations))
+        )
+
+    def _mtp_update_batch(
+        self,
+        hidden_rows: tuple[Any, ...],
+        token_ids: tuple[int, ...],
+        reservations: tuple[_TensorReservation, ...],
+    ) -> None:
+        """Advance every row's draft history in one independent-state call."""
+
+        if not hidden_rows or not (
+            len(hidden_rows) == len(token_ids) == len(reservations)
+        ):
+            raise ValueError("MTP batch inputs must have the same positive row count")
+        hidden = mx.concatenate(hidden_rows, axis=0)
+        tokens = mx.stack(tuple(mx.array([token]) for token in token_ids))
+        cache_rows = tuple(reservation.mtp_cache for reservation in reservations)
+        batch_cache = _merge_batch_cache(cache_rows)
+        with (
+            tensor_capability_scope(self.capabilities),
+            attention_phase_scope("decode"),
+        ):
+            mtp_hidden = self.model.mtp_update_cache(
+                hidden,
+                tokens,
+                mtp_cache=batch_cache,
+            )
+        mx.eval(mtp_hidden)
+        _scatter_batch_cache(batch_cache, cache_rows)
 
     def _decode_ar_one(self, reservation: _TensorReservation) -> _TensorDecodeOutcome:
         primary, primary_is_new = self._take_primary(reservation)
