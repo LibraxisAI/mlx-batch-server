@@ -245,7 +245,6 @@ class HostedEvidenceRegistry:
                 raise ValueError("terminal evidence was already prepared")
             now = time.monotonic_ns()
             common = {
-                "state": state,
                 "cancel_reason": cancel_reason,
                 "terminal_usage": (
                     None
@@ -262,11 +261,13 @@ class HostedEvidenceRegistry:
                 token=token,
                 delivered=replace(
                     record.snapshot,
+                    state=state,
                     terminal_delivery_state="delivered",
                     **common,
                 ),
                 delivery_failed=replace(
                     record.snapshot,
+                    state="failed",
                     terminal_delivery_state="delivery_failed",
                     **common,
                 ),
