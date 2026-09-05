@@ -50,7 +50,10 @@ from ..runtime.role_manifest import (
 )
 from ..runtime.roles import RoleDirectory
 from ..runtime.service import RuntimeStartService
+from ..tools.brave_search import BraveSearchProvider
 from ..tools.hosted import HostedToolCatalog, HostedToolExecutor
+from ..tools.hosted_web import HostedWebFetchTool, HostedWebSearchTool
+from ..utils.safe_public_fetch import SafePublicFetch, SafePublicFetchLimits
 from ..vision.input import MediaSourceField, MultimodalInputCapabilities
 from .compaction import LocalCompactionCodec
 from .controller import ResponsesController
@@ -143,6 +146,44 @@ class RoleRuntimeCompositionReceipt:
                 await self.qwen4_exp.shutdown(
                     deadline_s=max(0.0, deadline_at - loop.time())
                 )
+
+
+def compose_production_hosted_catalog(
+    *,
+    brave_api_key: str | None,
+) -> HostedToolCatalog:
+    """Build the one inert, process-local hosted web catalog for role startup."""
+
+    normalized_key = brave_api_key.strip() if brave_api_key is not None else ""
+    search_provider = BraveSearchProvider(normalized_key) if normalized_key else None
+    public_fetch = SafePublicFetch(
+        limits=SafePublicFetchLimits(
+            max_bytes=1_048_576,
+            timeout=20.0,
+            connect_timeout=5.0,
+            write_timeout=5.0,
+            pool_timeout=5.0,
+            max_redirects=3,
+            chunk_bytes=65_536,
+        ),
+        allowed_origins=(),
+    )
+    return HostedToolCatalog(
+        (
+            HostedWebSearchTool(provider=search_provider),
+            HostedWebFetchTool(
+                fetch=public_fetch,
+                accepted_media_types=(
+                    "text/html",
+                    "text/plain",
+                    "text/markdown",
+                    "application/json",
+                ),
+                max_bytes=1_048_576,
+                max_text_chars=262_144,
+            ),
+        )
+    )
 
 
 def compose_responses_runtime(
@@ -462,6 +503,7 @@ def _validated_backend_factories(
 __all__ = [
     "RoleRuntimeCompositionReceipt",
     "RuntimeCompositionReceipt",
+    "compose_production_hosted_catalog",
     "compose_responses_runtime",
     "compose_role_responses_runtime",
 ]

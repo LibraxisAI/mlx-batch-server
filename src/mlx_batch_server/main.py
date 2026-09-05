@@ -460,8 +460,12 @@ def _compose_process_runtime(
             )
         return None
 
+    from .core.config import get_settings
     from .provenance import compose_source_build_receipt
-    from .responses.runtime_bootstrap import compose_role_responses_runtime
+    from .responses.runtime_bootstrap import (
+        compose_production_hosted_catalog,
+        compose_role_responses_runtime,
+    )
     from .runtime.role_manifest import load_role_manifest, packaged_role_manifest_path
 
     manifest = load_role_manifest(packaged_role_manifest_path())
@@ -473,11 +477,18 @@ def _compose_process_runtime(
     build_receipt = compose_source_build_receipt(
         role_manifest_sha256=manifest.role_manifest_sha256
     )
+    settings = get_settings()
+    brave_secret = settings.brave_api_key
+    brave_api_key = (
+        brave_secret.get_secret_value() if brave_secret is not None else None
+    )
+    hosted_tools = compose_production_hosted_catalog(brave_api_key=brave_api_key)
     return compose_role_responses_runtime(
         process_role=spec.name,
         role_manifest_path=manifest.source.path,
         allowed_url_origins=media_url_origins,
         build_receipt=build_receipt,
+        hosted_tools=hosted_tools,
     )
 
 
