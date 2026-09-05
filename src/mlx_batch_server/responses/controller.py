@@ -27,7 +27,14 @@ from ..runtime.events import (
 from ..runtime.service import FirstWriterCancelToken
 from ..runtime.turn import GenerationTurn, TurnState
 from .registry import ResponseRegistry, ResponseRegistryError
-from .transport import ResponseEventSource
+from .request_contract import LOCAL_FIELD_NAMES
+from .transport import (
+    ResponseEventSource,
+    ResponseSnapshotBuilder,
+    ResponseSnapshotIdentity,
+    build_response_snapshot,
+    request_settings_from,
+)
 
 if TYPE_CHECKING:
     from ..runtime.contracts import BackendTurn, GenerationRequest, TurnSink
@@ -164,6 +171,11 @@ class _ResponseLifecycle:
     turn: GenerationTurn
     mailbox: _EventMailbox
     terminal_response: asyncio.Future[Mapping[str, Any]]
+    background: bool
+    created_at: int
+    public_model: str
+    request_settings: Mapping[str, Any]
+    snapshot_builder: ResponseSnapshotBuilder
     terminal_lock: threading.Lock = field(default_factory=threading.Lock)
     terminal_committed: bool = False
     overflow_cancel_requested: bool = False
@@ -202,6 +214,41 @@ class ResponsesController:
     ) -> ResponseEventSource:
         """Register and start one response, returning the shared SSE/WSS source."""
 
+        source, _ = self._start_response(payload, owner_id=owner_id)
+        return source
+
+    async def create_background(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> Mapping[str, Any]:
+        """Start one deferred response and return before its runtime completes."""
+
+        source, lifecycle = self._start_response(
+            payload,
+            owner_id=owner_id,
+            require_background=True,
+        )
+        self._track(
+            self._drain_background(source),
+            "background",
+            lifecycle.response_id,
+        )
+        return self._registry.get(
+            lifecycle.response_id,
+            owner_id=lifecycle.owner_id,
+        )
+
+    def _start_response(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+        require_background: bool = False,
+    ) -> tuple[ResponseEventSource, _ResponseLifecycle]:
+        """Create the single controller-owned lifecycle used by every transport."""
+
         if self._closing or self._closed:
             raise RuntimeError("responses controller is shutting down")
         owner = self._require_owner_id(owner_id)
@@ -214,6 +261,34 @@ class ResponsesController:
             else GenerationTurn(max_pending_events=self._max_pending_events)
         )
         subscription = turn.subscribe(max_pending_events=self._max_pending_events)
+        background = self._background_setting(prepared)
+        if require_background and not background:
+            raise ValueError("create_background requires background=true")
+        created_at = int(time.time())
+        public_model = self._public_model(prepared)
+        request_settings = self._public_request_settings(prepared)
+        snapshot_builder = ResponseSnapshotBuilder()
+        snapshot_builder.observe(
+            TurnStarted(
+                response_id=response_id,
+                model=prepared.request.runtime.model_id,
+                created_at=created_at,
+                requested_model=public_model,
+                request_settings=request_settings,
+            )
+        )
+        initial_snapshot = build_response_snapshot(
+            identity=ResponseSnapshotIdentity(
+                response_id=response_id,
+                created_at=created_at,
+                public_model=public_model,
+                physical_model=prepared.request.runtime.model_id,
+            ),
+            status="queued" if background else "in_progress",
+            request_settings=request_settings,
+        )
+        if background:
+            initial_snapshot["background"] = True
         lifecycle = _ResponseLifecycle(
             response_id=response_id,
             owner_id=owner,
@@ -222,6 +297,11 @@ class ResponsesController:
             turn=turn,
             mailbox=_EventMailbox(self._max_pending_events),
             terminal_response=asyncio.get_running_loop().create_future(),
+            background=background,
+            created_at=created_at,
+            public_model=public_model,
+            request_settings=request_settings,
+            snapshot_builder=snapshot_builder,
         )
 
         self._registry.begin(
@@ -234,6 +314,8 @@ class ResponsesController:
                 else prepared.materialized_messages
             ),
             cancel=lifecycle.cancel_token.cancel,
+            background=True if background else None,
+            public_snapshot=initial_snapshot,
         )
         self._track(self._relay(lifecycle, subscription), "relay", response_id)
         self._track(self._drive_runtime(lifecycle), "runtime", response_id)
@@ -241,13 +323,14 @@ class ResponsesController:
         def cancel(reason: str) -> None:
             self.cancel(response_id, owner_id=owner, reason=reason)
 
-        return ResponseEventSource(
+        source = ResponseEventSource(
             events=lifecycle.mailbox,
             response_id=response_id,
             cancel=cancel,
             cancel_on_disconnect=prepared.cancel_on_disconnect,
             terminal_response=_TerminalResponseAwaitable(lifecycle.terminal_response),
         )
+        return source, lifecycle
 
     def inspect(
         self,
@@ -321,6 +404,7 @@ class ResponsesController:
         try:
             async for item in subscription:
                 lifecycle.projection.observe(item)
+                self._update_live_snapshot(lifecycle, item)
                 if isinstance(item.event, TERMINAL_EVENT_TYPES):
                     self._commit_terminal(lifecycle)
                 if lifecycle.mailbox.publish(item):
@@ -421,7 +505,10 @@ class ResponsesController:
         with lifecycle.terminal_lock:
             if lifecycle.terminal_committed:
                 return
-            envelope = lifecycle.projection.terminal_envelope()
+            envelope = self._normalize_terminal_snapshot(
+                lifecycle,
+                lifecycle.projection.terminal_envelope(),
+            )
             if envelope.get("id") != lifecycle.response_id:
                 raise ValueError("terminal response envelope must preserve response_id")
             status = envelope.get("status")
@@ -439,6 +526,104 @@ class ResponsesController:
             )
             lifecycle.terminal_committed = True
             lifecycle.terminal_response.set_result(envelope)
+
+    async def _drain_background(self, source: ResponseEventSource) -> None:
+        """Consume an unstreamed background mailbox under controller ownership."""
+
+        terminal_seen = False
+        async for item in source.events:
+            if not isinstance(item, SequencedTurnEvent):
+                raise TypeError("controller source must yield sequenced events")
+            if isinstance(item.event, TERMINAL_EVENT_TYPES):
+                terminal_seen = True
+        if not terminal_seen:
+            raise RuntimeError("background response ended without a terminal event")
+        if source.terminal_response is None:
+            raise RuntimeError("background response is missing its terminal receipt")
+        await source.terminal_response
+
+    def _update_live_snapshot(
+        self,
+        lifecycle: _ResponseLifecycle,
+        item: SequencedTurnEvent,
+    ) -> None:
+        event = item.event
+        if isinstance(event, TurnStarted):
+            lifecycle.snapshot_builder.observe(
+                TurnStarted(
+                    response_id=lifecycle.response_id,
+                    model=lifecycle.prepared.request.runtime.model_id,
+                    created_at=lifecycle.created_at,
+                    requested_model=lifecycle.public_model,
+                    request_settings=lifecycle.request_settings,
+                )
+            )
+        else:
+            lifecycle.snapshot_builder.observe(event)
+        if isinstance(event, TERMINAL_EVENT_TYPES):
+            return
+        snapshot = lifecycle.snapshot_builder.snapshot(event)
+        if snapshot is None:
+            return
+        if lifecycle.background:
+            snapshot["background"] = True
+        self._registry.update(
+            lifecycle.response_id,
+            snapshot,
+            owner_id=lifecycle.owner_id,
+        )
+
+    @staticmethod
+    def _background_setting(prepared: PreparedResponse) -> bool:
+        value = prepared.request.metadata.get("background", False)
+        if not isinstance(value, bool):
+            raise TypeError("prepared background setting must be a boolean")
+        return value
+
+    @staticmethod
+    def _public_model(prepared: PreparedResponse) -> str:
+        value = prepared.request.metadata.get("requested_model")
+        if value is None:
+            return prepared.request.runtime.model_id
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("prepared requested_model must not be blank")
+        return value
+
+    @staticmethod
+    def _public_request_settings(prepared: PreparedResponse) -> Mapping[str, Any]:
+        metadata = {
+            key: value
+            for key, value in prepared.request.metadata.items()
+            if key not in LOCAL_FIELD_NAMES
+        }
+        return request_settings_from(
+            tools=prepared.request.tools,
+            sampling=prepared.request.sampling,
+            reasoning=prepared.request.reasoning,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _normalize_terminal_snapshot(
+        lifecycle: _ResponseLifecycle,
+        envelope: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        normalized = dict(envelope)
+        normalized["created_at"] = lifecycle.created_at
+        normalized["model"] = lifecycle.public_model
+        normalized["background"] = lifecycle.background
+        metadata = normalized.get("metadata")
+        if isinstance(metadata, Mapping):
+            public_metadata = {
+                key: value
+                for key, value in metadata.items()
+                if key not in LOCAL_FIELD_NAMES
+            }
+            if public_metadata:
+                normalized["metadata"] = public_metadata
+            else:
+                normalized.pop("metadata", None)
+        return normalized
 
     def _parent_messages(
         self,

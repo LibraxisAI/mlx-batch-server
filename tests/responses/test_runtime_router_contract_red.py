@@ -15,7 +15,7 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI, BadRequestError, OpenAI
 
 from mlx_batch_server.auth.dependency import verify_auth, verify_websocket_auth
 from mlx_batch_server.responses.runtime_router import (
@@ -110,6 +110,15 @@ class _Controller:
         self.create_calls.append((dict(payload), owner_id))
         return self.source_factory()
 
+    async def create_background(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        owner_id: str,
+    ) -> Mapping[str, Any]:
+        self.create_calls.append((dict(payload), owner_id))
+        return {**TERMINAL, "status": "queued", "background": True, "output": []}
+
     def cancel(self, response_id: str, *, owner_id: str, reason: str) -> None:
         self.cancel_calls.append((response_id, owner_id, reason))
 
@@ -117,6 +126,15 @@ class _Controller:
 class _Registry:
     def __init__(self) -> None:
         self.owners: list[str] = []
+        self.background = False
+        self.items: list[dict[str, Any]] = [
+            {
+                "id": "input_stable_0",
+                "type": "message",
+                "role": "user",
+                "content": "hej",
+            }
+        ]
 
     def _owner(self, owner_id: str) -> None:
         self.owners.append(owner_id)
@@ -124,7 +142,10 @@ class _Registry:
 
     def get(self, _response_id: str, *, owner_id: str) -> dict[str, Any]:
         self._owner(owner_id)
-        return dict(TERMINAL)
+        response = dict(TERMINAL)
+        if self.background:
+            response["background"] = True
+        return response
 
     def delete(self, response_id: str, *, owner_id: str) -> dict[str, Any]:
         self._owner(owner_id)
@@ -147,6 +168,15 @@ class _Registry:
     ) -> list[dict[str, Any]]:
         self._owner(owner_id)
         return [{"type": "message", "role": "user", "content": "hej"}]
+
+    def input_items(
+        self,
+        _response_id: str,
+        *,
+        owner_id: str,
+    ) -> list[dict[str, Any]]:
+        self._owner(owner_id)
+        return [dict(item) for item in self.items]
 
     def wait_terminal(
         self,
@@ -298,6 +328,27 @@ async def test_official_openai_sdk_parses_http_and_sse_contracts() -> None:
     assert event_types == ["response.created", "response.completed"]
 
 
+def test_official_sync_openai_sdk_parses_http_and_sse_contracts() -> None:
+    runtime = _Runtime()
+    http_client = TestClient(_app(runtime))
+    client = OpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+        max_retries=0,
+    )
+    try:
+        response = client.responses.create(model="buddy", input="hej")
+        stream = client.responses.create(model="buddy", input="hej", stream=True)
+        event_types = [event.type for event in stream]
+    finally:
+        client.close()
+
+    assert response.id == "resp_runtime_router"
+    assert response.output_text == "hej"
+    assert event_types == ["response.created", "response.completed"]
+
+
 @pytest.mark.asyncio
 async def test_official_openai_sdk_parses_lifecycle_and_local_operations() -> None:
     runtime = _Runtime()
@@ -312,6 +363,7 @@ async def test_official_openai_sdk_parses_lifecycle_and_local_operations() -> No
             http_client=http_client,
         )
         retrieved = await client.responses.retrieve("resp_runtime_router")
+        runtime.response_registry.background = True
         cancelled = await client.responses.cancel("resp_runtime_router")
         input_items = await client.responses.input_items.list("resp_runtime_router")
         deleted = await client.responses.delete("resp_runtime_router")
@@ -351,9 +403,9 @@ async def test_official_openai_sdk_receives_precise_unsupported_field_error() ->
         from mlx_batch_server.responses.runtime_mapper import ResponsesMappingError
 
         raise ResponsesMappingError(
-            "unsupported Responses parameter: background",
+            "unsupported Responses parameter: max_tool_calls",
             code="unsupported_parameter",
-            param="background",
+            param="max_tool_calls",
         )
 
     runtime.responses_controller.create = reject  # type: ignore[method-assign]
@@ -371,11 +423,11 @@ async def test_official_openai_sdk_receives_precise_unsupported_field_error() ->
             await client.responses.create(
                 model="buddy",
                 input="hej",
-                extra_body={"background": True},
+                max_tool_calls=1,
             )
 
     assert raised.value.code == "unsupported_parameter"
-    assert raised.value.param == "background"
+    assert raised.value.param == "max_tool_calls"
 
 
 @pytest.mark.asyncio
@@ -595,12 +647,25 @@ def test_lifecycle_routes_use_one_verified_owner_and_terminal_writer() -> None:
         "data"
     ] == [
         {
-            "id": "input_0",
+            "id": "input_stable_0",
             "type": "message",
             "role": "user",
             "content": "hej",
         }
     ]
+    not_background = client.post("/v1/responses/resp_runtime_router/cancel")
+    assert not_background.status_code == 409
+    assert not_background.json()["error"] == {
+        "message": (
+            "response 'resp_runtime_router' was not created in background mode"
+        ),
+        "type": "invalid_request_error",
+        "param": None,
+        "code": "response_not_cancellable",
+    }
+    assert runtime.responses_controller.cancel_calls == []
+
+    runtime.response_registry.background = True
     assert client.post("/v1/responses/resp_runtime_router/cancel").json() == TERMINAL
     assert client.delete("/v1/responses/resp_runtime_router").json() == {
         "id": "resp_runtime_router",
@@ -610,7 +675,140 @@ def test_lifecycle_routes_use_one_verified_owner_and_terminal_writer() -> None:
     assert runtime.responses_controller.cancel_calls == [
         ("resp_runtime_router", OWNER, "http_cancel_requested")
     ]
-    assert runtime.response_registry.owners == [OWNER, OWNER, OWNER, OWNER]
+    assert runtime.response_registry.owners == [
+        OWNER,
+        OWNER,
+        OWNER,
+        OWNER,
+        OWNER,
+        OWNER,
+    ]
+
+
+def test_static_route_census_precedes_the_dynamic_response_id_route() -> None:
+    runtime = _Runtime()
+    client = TestClient(_app(runtime))
+
+    compacted = client.post(
+        "/v1/responses/compact",
+        json={"model": "buddy", "input": "hej"},
+    )
+    counted = client.post(
+        "/v1/responses/input_tokens",
+        json={"model": "buddy", "input": "hej"},
+    )
+    capabilities = client.get("/v1/responses/capabilities")
+    arbitrary = client.get("/v1/responses/resp_arbitrary")
+
+    assert compacted.status_code == 200
+    assert compacted.json()["object"] == "response.compaction"
+    assert counted.status_code == 200
+    assert counted.json()["object"] == "response.input_tokens"
+    assert capabilities.status_code == 200
+    assert capabilities.json()["version"] == "responses.request.capability/1"
+    assert arbitrary.json()["id"] == "resp_runtime_router"
+
+
+def test_malformed_bodies_and_retrieve_options_use_canonical_errors() -> None:
+    runtime = _Runtime()
+    client = TestClient(_app(runtime))
+
+    malformed = client.post(
+        "/v1/responses",
+        content=b'{"model":',
+        headers={"content-type": "application/json"},
+    )
+    non_object = client.post("/v1/responses", json=["not", "an", "object"])
+    unsupported = client.get(
+        "/v1/responses/resp_runtime_router",
+        params={"starting_after": 1},
+    )
+    unsupported_include = client.get(
+        "/v1/responses/resp_runtime_router",
+        params={"include": "reasoning.encrypted_content"},
+    )
+    ordinary = client.get(
+        "/v1/responses/resp_runtime_router",
+        params={"stream": "false"},
+    )
+
+    assert malformed.status_code == 400
+    assert malformed.json() == {
+        "error": {
+            "message": "request body must contain valid JSON",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_json",
+        }
+    }
+    assert non_object.status_code == 400
+    assert "detail" not in non_object.json()
+    assert non_object.json()["error"]["code"] == "invalid_responses_request"
+    assert unsupported.status_code == 400
+    assert unsupported.json()["error"]["code"] == "unsupported_parameter"
+    assert unsupported.json()["error"]["param"] == "starting_after"
+    assert unsupported_include.status_code == 400
+    assert unsupported_include.json()["error"]["param"] == "include[0]"
+    assert ordinary.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_official_sync_and_async_auto_pagination_is_gap_free() -> None:
+    runtime = _Runtime()
+    runtime.response_registry.items = [
+        {
+            "id": f"input_stable_{index:02d}",
+            "type": "message",
+            "role": "user",
+            "content": f"item {index}",
+        }
+        for index in range(27)
+    ]
+    expected = [item["id"] for item in runtime.response_registry.items]
+
+    sync_http = TestClient(_app(runtime))
+    sync_client = OpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=sync_http,
+        max_retries=0,
+    )
+    try:
+        sync_ids = [
+            item.id
+            for item in sync_client.responses.input_items.list(
+                "resp_runtime_router",
+                limit=7,
+                order="asc",
+            )
+        ]
+    finally:
+        sync_client.close()
+
+    transport = httpx.ASGITransport(app=_app(runtime))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as async_http:
+        async_client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=async_http,
+            max_retries=0,
+        )
+        async_ids = [
+            item.id
+            async for item in async_client.responses.input_items.list(
+                "resp_runtime_router",
+                limit=6,
+                order="desc",
+            )
+        ]
+
+    assert sync_ids == expected
+    assert async_ids == list(reversed(expected))
+    assert len(set(sync_ids)) == len(expected)
+    assert len(set(async_ids)) == len(expected)
 
 
 def test_websocket_uses_the_same_owner_and_full_terminal_response() -> None:
@@ -676,6 +874,17 @@ def test_http_and_sse_fail_closed_without_canonical_terminal_event() -> None:
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "internal_error"
     assert '"code":"responses_transport_failed"' in stream.text
+    error_line = next(
+        line
+        for line in stream.text.splitlines()
+        if line.startswith("data: {") and '"type":"error"' in line
+    )
+    error = httpx.Response(
+        200,
+        content=error_line.removeprefix("data: "),
+    ).json()
+    assert set(error) == {"type", "code", "message", "param", "sequence_number"}
+    assert error["sequence_number"] == 1
     assert "data: [DONE]" not in stream.text
 
 
@@ -965,3 +1174,234 @@ def test_http_successor_rejects_a_tool_result_the_lineage_cannot_explain() -> No
     assert body["code"] == "invalid_responses_request"
     assert body["param"] == "input[0].call_id"
     assert len(runtime.starter.requests) == 1
+
+
+class _DeferredHandle:
+    def __init__(self, response_id: str, sink: Any) -> None:
+        self._response_id = response_id
+        self.sink = sink
+        self.closed = asyncio.Event()
+        self.cancel_reasons: list[str] = []
+
+    @property
+    def response_id(self) -> str:
+        return self._response_id
+
+    def cancel(self, reason: str) -> None:
+        if self.closed.is_set():
+            return
+        self.cancel_reasons.append(reason)
+        self.sink.emit(TurnCancelled(reason))
+        self.closed.set()
+
+    async def wait_closed(self) -> None:
+        await self.closed.wait()
+
+
+class _DeferredStarter:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.entered = asyncio.Event()
+        self.fail = fail
+        self.handles: dict[str, _DeferredHandle] = {}
+
+    async def start(self, request: Any, sink: Any, *, cancel: Any) -> _DeferredHandle:
+        del cancel
+        sink.emit(
+            TurnStarted(
+                response_id=request.response_id,
+                model=request.runtime.model_id,
+                created_at=17,
+                requested_model=request.metadata.get("requested_model"),
+            )
+        )
+        self.entered.set()
+        if self.fail:
+            raise RuntimeError("scripted backend failure")
+        handle = _DeferredHandle(request.response_id, sink)
+        self.handles[request.response_id] = handle
+        return handle
+
+    def complete(self, response_id: str) -> None:
+        handle = self.handles[response_id]
+        handle.sink.emit(TurnCompleted("stop"))
+        handle.closed.set()
+
+
+class _DeferredRuntime:
+    def __init__(self, *, fail: bool = False) -> None:
+        from mlx_batch_server.responses.controller import ResponsesController
+        from mlx_batch_server.responses.registry import ResponseRegistry
+        from mlx_batch_server.responses.runtime_mapper import CanonicalResponsesMapper
+        from mlx_batch_server.responses.runtime_projection import (
+            create_runtime_projection,
+        )
+        from mlx_batch_server.runtime.contracts import RuntimeKey
+
+        self.response_registry = ResponseRegistry()
+        self.starter = _DeferredStarter(fail=fail)
+
+        def resolve_runtime(**kwargs: Any) -> RuntimeKey:
+            return RuntimeKey(model_id=kwargs["model"])
+
+        self.responses_controller = ResponsesController(
+            registry=self.response_registry,
+            mapper=CanonicalResponsesMapper(
+                resolve_runtime=resolve_runtime,
+                projection_factory=create_runtime_projection,
+            ),
+            starter=self.starter,
+        )
+
+
+def _deferred_app(runtime: _DeferredRuntime) -> FastAPI:
+    app = FastAPI()
+    app.include_router(build_runtime_responses_router(runtime))
+
+    def auth() -> dict[str, str]:
+        return {"response_owner_id": OWNER}
+
+    app.dependency_overrides[verify_auth] = auth
+    app.dependency_overrides[verify_websocket_auth] = auth
+    return app
+
+
+async def _wait_for_status(
+    client: AsyncOpenAI,
+    response_id: str,
+    expected: str,
+) -> Any:
+    for _ in range(100):
+        response = await client.responses.retrieve(response_id)
+        if response.status == expected:
+            return response
+        await asyncio.sleep(0)
+    raise AssertionError(f"response {response_id} never reached {expected}")
+
+
+@pytest.mark.asyncio
+async def test_background_create_returns_before_release_and_get_advances() -> None:
+    runtime = _DeferredRuntime()
+    transport = httpx.ASGITransport(app=_deferred_app(runtime))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+        created = await asyncio.wait_for(
+            client.responses.create(
+                model="buddy",
+                input="blocked until released",
+                background=True,
+            ),
+            timeout=0.25,
+        )
+
+        assert created.status == "queued"
+        assert created.background is True
+        assert created.model == "buddy"
+        await runtime.starter.entered.wait()
+        running = await _wait_for_status(client, created.id, "in_progress")
+        assert running.background is True
+        assert running.model == "buddy"
+        task_names = {task.get_name() for task in runtime.responses_controller._tasks}
+        assert any("-runtime-" in name for name in task_names)
+        assert any("-relay-" in name for name in task_names)
+        assert any("-background-" in name for name in task_names)
+
+        runtime.starter.complete(created.id)
+        terminal = await _wait_for_status(client, created.id, "completed")
+
+    assert terminal.background is True
+    assert terminal.model == "buddy"
+    await runtime.responses_controller.shutdown(timeout_s=1.0)
+    assert not runtime.responses_controller._tasks
+
+
+@pytest.mark.asyncio
+async def test_background_cancel_is_idempotent_and_owner_bound() -> None:
+    runtime = _DeferredRuntime()
+    transport = httpx.ASGITransport(app=_deferred_app(runtime))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+        created = await client.responses.create(
+            model="buddy",
+            input="cancel me",
+            background=True,
+        )
+        await runtime.starter.entered.wait()
+        await _wait_for_status(client, created.id, "in_progress")
+        first = await client.responses.cancel(created.id)
+        second = await client.responses.cancel(created.id)
+
+    assert first.status == "cancelled"
+    assert second.status == "cancelled"
+    assert first.id == second.id == created.id
+    assert runtime.starter.handles[created.id].cancel_reasons == [
+        "http_cancel_requested"
+    ]
+    await runtime.responses_controller.shutdown(timeout_s=1.0)
+
+
+@pytest.mark.asyncio
+async def test_background_failure_and_shutdown_leave_no_controller_tasks() -> None:
+    failed_runtime = _DeferredRuntime(fail=True)
+    failed_transport = httpx.ASGITransport(app=_deferred_app(failed_runtime))
+    async with httpx.AsyncClient(
+        transport=failed_transport,
+        base_url="http://test",
+    ) as http_client:
+        failed_client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+        created = await failed_client.responses.create(
+            model="buddy",
+            input="fail",
+            background=True,
+        )
+        terminal = await _wait_for_status(failed_client, created.id, "failed")
+
+    assert terminal.error is not None
+    await failed_runtime.responses_controller.shutdown(timeout_s=1.0)
+    assert not failed_runtime.responses_controller._tasks
+
+    active_runtime = _DeferredRuntime()
+    active_transport = httpx.ASGITransport(app=_deferred_app(active_runtime))
+    async with httpx.AsyncClient(
+        transport=active_transport,
+        base_url="http://test",
+    ) as http_client:
+        active_client = AsyncOpenAI(
+            api_key="test",
+            base_url="http://test/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+        active = await active_client.responses.create(
+            model="buddy",
+            input="shutdown",
+            background=True,
+        )
+        await active_runtime.starter.entered.wait()
+        await _wait_for_status(active_client, active.id, "in_progress")
+        await active_runtime.responses_controller.shutdown(timeout_s=1.0)
+
+    assert active_runtime.starter.handles[active.id].cancel_reasons == [
+        "registry_shutdown"
+    ]
+    assert not active_runtime.responses_controller._tasks

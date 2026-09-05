@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from scripts.quality.verify_live_mlx_batch_api import (
     ANTHROPIC_SDK_VERSION,
@@ -28,6 +28,7 @@ from scripts.quality.verify_live_mlx_batch_api import (
     _run_probe,
     _safe_url,
     _validate_openai_events,
+    probe_openai_public_admission,
     probe_openai_sse,
     probe_openai_websocket,
     probe_safe_fetch_private_redirect,
@@ -50,6 +51,9 @@ def _terminal_response() -> dict[str, Any]:
         "created_at": 1,
         "model": MODEL,
         "status": "completed",
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
         "output": [
             {
                 "id": "msg_live_acceptance",
@@ -325,7 +329,28 @@ def _validate_supported_fixture(body: dict[str, Any]) -> None:
 
 def _fake_app(*, refusal_mode: str = "strict") -> FastAPI:
     app = FastAPI()
+    states: dict[str, dict[str, Any]] = {}
+    next_response = 0
     app.state.inference_starts = 0
+
+    def error(
+        message: str,
+        *,
+        code: str,
+        param: str | None,
+        status_code: int = 400,
+    ) -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "param": param,
+                    "code": code,
+                }
+            },
+            status_code=status_code,
+        )
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -341,7 +366,59 @@ def _fake_app(*, refusal_mode: str = "strict") -> FastAPI:
         }
 
     @app.post("/v1/responses", response_model=None)
-    async def responses(body: dict[str, Any]) -> JSONResponse | StreamingResponse:
+    async def responses(request: Request) -> JSONResponse | StreamingResponse:
+        nonlocal next_response
+        try:
+            body = json.loads(await request.body())
+        except json.JSONDecodeError:
+            return error(
+                "request body must contain valid JSON",
+                code="invalid_json",
+                param=None,
+            )
+        if not isinstance(body, dict):
+            return error(
+                "request body must be a JSON object",
+                code="invalid_responses_request",
+                param=None,
+            )
+        if "max_tool_calls" in body:
+            return error(
+                "unsupported Responses parameter: max_tool_calls",
+                code="unsupported_parameter",
+                param="max_tool_calls",
+            )
+        if body.get("background") is True:
+            next_response += 1
+            response_id = f"resp_background_{next_response}"
+            raw_items = body.get("input")
+            sequence = raw_items if isinstance(raw_items, list) else [raw_items]
+            items = [
+                {"id": f"input_stable_{index:02d}", **dict(item)}
+                if isinstance(item, dict)
+                else {
+                    "id": f"input_stable_{index:02d}",
+                    "type": "message",
+                    "role": "user",
+                    "content": str(item),
+                }
+                for index, item in enumerate(sequence)
+            ]
+            snapshot = {
+                **_terminal_response(),
+                "id": response_id,
+                "status": "queued",
+                "background": True,
+                "output": [],
+                "usage": None,
+            }
+            states[response_id] = {
+                "snapshot": snapshot,
+                "items": items,
+                "get_count": 0,
+                "deleted": False,
+            }
+            return JSONResponse(snapshot)
         if not body.get("stream"):
             return JSONResponse(_terminal_response())
         mode = _mode(body.get("input"))
@@ -357,6 +434,97 @@ def _fake_app(*, refusal_mode: str = "strict") -> FastAPI:
             yield b"data: [DONE]\n\n"
 
         return StreamingResponse(generate(), media_type="text/event-stream")
+
+    @app.get("/v1/responses/{response_id}/input_items")
+    async def input_items(response_id: str, request: Request) -> JSONResponse:
+        state = states.get(response_id)
+        if state is None or state["deleted"]:
+            return error(
+                "response not found",
+                code="response_not_found",
+                param=None,
+                status_code=404,
+            )
+        ordered = list(state["items"])
+        if request.query_params.get("order", "desc") == "desc":
+            ordered.reverse()
+        after = request.query_params.get("after")
+        start = 0
+        if after is not None:
+            start = next(
+                index + 1 for index, item in enumerate(ordered) if item["id"] == after
+            )
+        limit = int(request.query_params.get("limit", "20"))
+        data = ordered[start : start + limit]
+        return JSONResponse(
+            {
+                "object": "list",
+                "data": data,
+                "first_id": data[0]["id"] if data else None,
+                "last_id": data[-1]["id"] if data else None,
+                "has_more": start + len(data) < len(ordered),
+            }
+        )
+
+    @app.post("/v1/responses/{response_id}/cancel")
+    async def cancel_response(response_id: str) -> JSONResponse:
+        state = states.get(response_id)
+        if state is None or state["deleted"]:
+            return error(
+                "response not found",
+                code="response_not_found",
+                param=None,
+                status_code=404,
+            )
+        snapshot = state["snapshot"]
+        if snapshot["status"] != "cancelled":
+            snapshot.update(
+                {
+                    "status": "cancelled",
+                    "output": [],
+                    "usage": None,
+                }
+            )
+        return JSONResponse(snapshot)
+
+    @app.delete("/v1/responses/{response_id}")
+    async def delete_response(response_id: str) -> JSONResponse:
+        state = states.get(response_id)
+        if state is None:
+            return error(
+                "response not found",
+                code="response_not_found",
+                param=None,
+                status_code=404,
+            )
+        state["deleted"] = True
+        return JSONResponse(
+            {"id": response_id, "object": "response.deleted", "deleted": True}
+        )
+
+    @app.get("/v1/responses/{response_id}")
+    async def retrieve_response(response_id: str) -> JSONResponse:
+        state = states.get(response_id)
+        if state is None or state["deleted"]:
+            return error(
+                "response not found",
+                code="response_not_found",
+                param=None,
+                status_code=404,
+            )
+        snapshot = state["snapshot"]
+        if snapshot["status"] == "queued":
+            snapshot["status"] = "in_progress"
+        elif snapshot["status"] == "in_progress":
+            snapshot.update(
+                {
+                    **_terminal_response(),
+                    "id": response_id,
+                    "background": True,
+                }
+            )
+        state["get_count"] += 1
+        return JSONResponse(snapshot)
 
     @app.websocket("/v1/responses")
     async def responses_websocket(websocket: WebSocket) -> None:
@@ -519,11 +687,18 @@ async def test_full_fake_http_sse_websocket_success_writes_receipt(
     assert receipt["overall"] is True
     assert receipt["finalized"] is True
     assert receipt["integrity"]["ok"] is True
-    assert len(receipt["probes"]) == 11
+    assert len(receipt["probes"]) == 12
     assert all(probe["ok"] for probe in receipt["probes"].values())
     assert receipt["probes"]["openai_sse"]["details"]["text_delta_count"] == 2
     assert receipt["probes"]["openai_sse"]["details"]["text_delta_receive_count"] >= 2
     assert receipt["probes"]["openai_websocket"]["details"]["socket_count"] == 1
+    public = receipt["probes"]["openai_public_admission"]["details"]
+    assert public["sdk_version"] == "2.32.0"
+    assert public["pagination_item_count"] == 25
+    assert public["pagination_unique_ids"] == 25
+    assert public["cancel_status"] == "cancelled"
+    assert public["malformed_error_code"] == "invalid_json"
+    assert public["unsupported_error_param"] == "max_tool_calls"
     assert (
         receipt["probes"]["anthropic_sdk_async_sse"]["details"]["text_delta_count"] == 2
     )
@@ -623,6 +798,25 @@ def test_receipt_redaction_removes_credentials_from_nested_failures() -> None:
     assert "sk-openai-secret" not in serialized
     assert "sk-anthropic-secret" not in serialized
     assert serialized.count("[redacted]") == 2
+
+
+@pytest.mark.asyncio
+async def test_public_admission_probe_covers_lifecycle_pagination_and_errors(
+    tmp_path: Path,
+) -> None:
+    async with _serve(_fake_app()) as base_url:
+        details = await probe_openai_public_admission(
+            _config(base_url, tmp_path / "unused.json")
+        )
+
+    assert details["lifecycle_statuses"] == [
+        "queued",
+        "in_progress",
+        "completed",
+    ]
+    assert details["pagination_item_count"] == 25
+    assert details["pagination_unique_ids"] == 25
+    assert details["delete_status"] == 404
 
 
 @pytest.mark.asyncio
