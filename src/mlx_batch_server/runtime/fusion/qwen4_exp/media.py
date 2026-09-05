@@ -31,6 +31,11 @@ from .media_resolver import (
     source_identity_digest,
 )
 
+# A `function_call` that reaches preparation already happened. `in_progress` is
+# the one official status that cannot be true of a prior turn, so the seal keeps
+# only the terminal vocabulary instead of coercing an unfinished claim.
+TERMINAL_ITEM_STATUSES = frozenset(("completed", "incomplete"))
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedTextItem:
@@ -73,6 +78,8 @@ class PreparedQwen4Message:
     role: str
     items: tuple[PreparedPromptItem, ...]
     item_type: str | None = None
+    id: str | None = None
+    status: str | None = None
     call_id: str | None = None
     output: str | None = None
     is_error: bool | None = None
@@ -94,9 +101,14 @@ class PreparedQwen4Message:
         ):
             raise ValueError("prepared message item_type is unsupported")
         if self.item_type != "function_call" and (
-            self.name is not None or self.arguments is not None
+            self.name is not None
+            or self.arguments is not None
+            or self.id is not None
+            or self.status is not None
         ):
-            raise ValueError("name and arguments belong only to function_call")
+            raise ValueError(
+                "id, status, name and arguments belong only to function_call"
+            )
         if self.item_type == "function_call":
             _validate_function_call(self)
         elif self.item_type == "function_call_output":
@@ -364,15 +376,26 @@ def render_function_call_output_text(
     )
 
 
+def _require_sealed_identity(value: object, field_name: str) -> None:
+    """One identity string, already normalized upstream, kept byte-exact here."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"function_call {field_name} must not be empty")
+    if value != value.strip():
+        raise ValueError(f"function_call {field_name} must already be normalized")
+
+
 def _validate_function_call(message: PreparedQwen4Message) -> None:
     if message.role != "assistant":
         raise ValueError("function_call must keep its assistant role")
-    if not isinstance(message.call_id, str) or not message.call_id.strip():
-        raise ValueError("function_call call_id must not be empty")
-    if not isinstance(message.name, str) or not message.name.strip():
-        raise ValueError("function_call name must not be empty")
+    _require_sealed_identity(message.call_id, "call_id")
+    _require_sealed_identity(message.name, "name")
     if not isinstance(message.arguments, str):
         raise ValueError("function_call arguments must be text")
+    if message.id is not None:
+        _require_sealed_identity(message.id, "id")
+    if message.status is not None and message.status not in TERMINAL_ITEM_STATUSES:
+        raise ValueError("function_call status must be a terminal item status")
     if message.output is not None or message.is_error is not None:
         raise ValueError("output and is_error belong only to function_call_output")
     if message.items:
@@ -413,7 +436,11 @@ def _messages_digest(messages: tuple[PreparedQwen4Message, ...]) -> str:
                 "message_index": message.message_index,
                 "role": message.role,
                 "type": message.item_type,
+                "id": message.id,
+                "status": message.status,
                 "call_id": message.call_id,
+                "name": message.name,
+                "arguments": message.arguments,
                 "output": message.output,
                 "is_error": message.is_error,
                 "items": [_content_payload(item) for item in message.items],
@@ -455,6 +482,7 @@ def _require_digest(value: str, field_name: str) -> None:
 
 
 __all__ = [
+    "TERMINAL_ITEM_STATUSES",
     "PreparedMediaItem",
     "PreparedPromptItem",
     "PreparedQwen4Message",

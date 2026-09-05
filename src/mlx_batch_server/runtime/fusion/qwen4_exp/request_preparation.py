@@ -24,6 +24,7 @@ from ...contracts import (
     RequestModality,
 )
 from .media import (
+    TERMINAL_ITEM_STATUSES,
     PreparedPromptItem,
     PreparedQwen4Message,
     PreparedQwen4Prompt,
@@ -33,6 +34,11 @@ from .media import (
 
 if TYPE_CHECKING:
     from .media_resolver import ResolvedMediaBundle
+
+# Every field that only a typed `function_call` may own. Anything else carrying
+# one is refused rather than silently dropped, so nothing reaches the seal
+# unauthenticated.
+_CALL_ONLY_FIELDS = ("id", "status", "name", "arguments")
 
 
 class Qwen4ExpRequestPreparationError(ValueError):
@@ -59,6 +65,8 @@ class _MessageLayout:
     role: str
     part_indices: tuple[int, ...]
     item_type: str | None = None
+    id: str | None = None
+    status: str | None = None
     call_id: str | None = None
     output: str | None = None
     is_error: bool | None = None
@@ -161,8 +169,6 @@ def _reconstruct_mixed_messages(
         call_id: str | None = None
         output: str | None = None
         is_error: bool | None = None
-        name: str | None = None
-        arguments: str | None = None
         if item_type not in (
             None,
             "message",
@@ -175,21 +181,19 @@ def _reconstruct_mixed_messages(
         if item_type == "function_call":
             # The call keeps its exact typed identity through preparation; it is
             # never flattened into an ordinary assistant text message.
-            call_id, name, arguments = _function_call_identity(
-                raw_message, role=role, media=indexed_media
-            )
             layouts.append(
-                _MessageLayout(
+                _function_call_layout(
+                    raw_message,
                     message_index=message_index,
                     role=role,
-                    part_indices=(),
-                    item_type=item_type,
-                    call_id=call_id,
-                    name=name,
-                    arguments=arguments,
+                    media=indexed_media,
                 )
             )
             continue
+        if any(field in raw_message for field in _CALL_ONLY_FIELDS):
+            raise Qwen4ExpRequestPreparationError(
+                "id, status, name and arguments belong only to function_call"
+            )
         text_parts = _canonical_text_parts(raw_message.get("content"))
         if item_type == "function_call_output":
             call_id, output, is_error = _function_call_output_identity(
@@ -253,16 +257,17 @@ def _reconstruct_mixed_messages(
 
     if set(media_by_message) - set(range(len(messages))):
         raise Qwen4ExpRequestPreparationError("media refers to a foreign message")
-    _reject_orphan_tool_results(layouts)
+    _validate_call_lineage(layouts)
     return tuple(parts), tuple(layouts)
 
 
-def _function_call_identity(
+def _function_call_layout(
     raw_message: Mapping[str, object],
     *,
+    message_index: int,
     role: str,
     media: Mapping[int, Mapping[str, object]],
-) -> tuple[str, str, str]:
+) -> _MessageLayout:
     """Admit one typed tool call, or refuse it — never degrade it."""
 
     if role != "assistant":
@@ -289,26 +294,91 @@ def _function_call_identity(
     arguments = raw_message.get("arguments")
     if not isinstance(arguments, str):
         raise Qwen4ExpRequestPreparationError("function_call arguments must be text")
-    return call_id, name, arguments
+    return _MessageLayout(
+        message_index=message_index,
+        role=role,
+        part_indices=(),
+        item_type="function_call",
+        id=_optional_call_identity(raw_message, "id"),
+        status=_terminal_call_status(raw_message),
+        call_id=call_id,
+        name=name,
+        arguments=arguments,
+    )
 
 
-def _reject_orphan_tool_results(layouts: Sequence[_MessageLayout]) -> None:
-    """Refuse a tool receipt no typed call in this request can explain.
+def _optional_call_identity(
+    raw_message: Mapping[str, object],
+    field: str,
+) -> str | None:
+    """Absent means absent; present means a normalized non-blank identity."""
+
+    if field not in raw_message:
+        return None
+    value = raw_message.get(field)
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise Qwen4ExpRequestPreparationError(
+            f"function_call {field} must be a normalized identity"
+        )
+    return value
+
+
+def _terminal_call_status(raw_message: Mapping[str, object]) -> str | None:
+    if "status" not in raw_message:
+        return None
+    status = raw_message.get("status")
+    if status not in TERMINAL_ITEM_STATUSES:
+        raise Qwen4ExpRequestPreparationError(
+            "function_call status must be a terminal item status"
+        )
+    return str(status)
+
+
+def _validate_call_lineage(layouts: Sequence[_MessageLayout]) -> None:
+    """Refuse call/result lineage no typed call in this request can explain.
 
     A request whose upstream still flattens calls into assistant text carries no
     typed identity to judge, and its lineage was validated before it arrived.
+    Once typed calls are present the whole chain is judged: one call per
+    ``call_id``, one result per call, and no result for a call that never
+    completed.
     """
 
-    if not any(layout.item_type == "function_call" for layout in layouts):
+    calls: dict[str, _MessageLayout] = {}
+    for layout in layouts:
+        if layout.item_type != "function_call" or layout.call_id is None:
+            continue
+        if layout.call_id in calls:
+            raise Qwen4ExpRequestPreparationError("function_call call_id is duplicated")
+        calls[layout.call_id] = layout
+    if not calls:
         return
+    identities = [layout.id for layout in calls.values() if layout.id is not None]
+    if len(set(identities)) != len(identities):
+        raise Qwen4ExpRequestPreparationError("function_call id is duplicated")
+
     seen: set[str] = set()
+    settled: set[str] = set()
     for layout in layouts:
         if layout.item_type == "function_call" and layout.call_id is not None:
             seen.add(layout.call_id)
-        elif layout.item_type == "function_call_output" and layout.call_id not in seen:
+            continue
+        if layout.item_type != "function_call_output":
+            continue
+        call_id = layout.call_id
+        if call_id is None or call_id not in seen:
             raise Qwen4ExpRequestPreparationError(
                 "function_call_output has no preceding function_call"
             )
+        if call_id in settled:
+            raise Qwen4ExpRequestPreparationError(
+                "function_call_output is duplicated for one function_call"
+            )
+        if calls[call_id].status == "incomplete":
+            raise Qwen4ExpRequestPreparationError(
+                "function_call_output follows a function_call that never completed"
+            )
+        settled.add(call_id)
 
 
 def _function_call_output_identity(
@@ -398,6 +468,8 @@ def _prepared_messages(
                 role=layout.role,
                 items=items,
                 item_type=layout.item_type,
+                id=layout.id,
+                status=layout.status,
                 call_id=layout.call_id,
                 output=layout.output,
                 is_error=layout.is_error,

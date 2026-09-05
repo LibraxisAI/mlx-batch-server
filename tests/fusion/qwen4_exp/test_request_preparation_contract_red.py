@@ -395,6 +395,8 @@ async def test_photo_plus_tool_continuation_reaches_preparation_as_a_typed_call(
     assert call.call_id == "call_inspect"
     assert call.name == "inspect_region"
     assert call.arguments == '{"region":"top"}'
+    assert call.id == "fc_1"
+    assert call.status == "completed"
     assert call.items == ()
     assert call.output is None
     assert prompt.messages[2].call_id == "call_inspect"
@@ -409,6 +411,12 @@ async def test_photo_plus_tool_continuation_reaches_preparation_as_a_typed_call(
         ({"arguments": {"region": "top"}}, "arguments must be text"),
         ({"role": "user"}, "assistant role"),
         ({"output": "leaked"}, "belongs only to function_call_output"),
+        ({"id": ""}, "id must be a normalized identity"),
+        ({"id": " fc_1"}, "id must be a normalized identity"),
+        ({"id": 17}, "id must be a normalized identity"),
+        ({"status": "in_progress"}, "terminal item status"),
+        ({"status": "failed"}, "terminal item status"),
+        ({"status": None}, "terminal item status"),
     ),
 )
 async def test_malformed_call_identity_is_refused_not_degraded(
@@ -467,3 +475,113 @@ async def test_a_typed_call_may_not_own_media_or_message_content() -> None:
     )
     with pytest.raises(Qwen4ExpRequestPreparationError, match="cannot own media"):
         await _preparer(_Resolver()).prepare(request, _Cancel())
+
+
+@pytest.mark.asyncio
+async def test_absent_call_identity_stays_absent_instead_of_being_invented() -> None:
+    """The seal records what arrived — it never defaults `id` or `status`."""
+
+    messages = list(_photo_plus_tool_messages())
+    messages[1] = {
+        key: value for key, value in messages[1].items() if key not in {"id", "status"}
+    }
+    prepared = await _preparer(_Resolver()).prepare(
+        _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+    )
+
+    call = prepared.backend_payload.messages[1]
+    assert call.id is None
+    assert call.status is None
+    assert call.call_id == "call_inspect"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ("id", "status", "name", "arguments"))
+async def test_call_only_fields_are_refused_on_other_message_kinds(
+    field: str,
+) -> None:
+    value = "completed" if field == "status" else "smuggled"
+
+    messages = list(_photo_plus_tool_messages())
+    messages[3] = {**messages[3], field: value}
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="belong only to function_call",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+    messages = list(_photo_plus_tool_messages())
+    messages[2] = {**messages[2], field: value}
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="belong only to function_call",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_call_identity_fails_closed() -> None:
+    messages = list(_photo_plus_tool_messages())
+    messages.insert(2, {**messages[1], "id": "fc_2", "name": "inspect_again"})
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="call_id is duplicated",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+    messages = list(_photo_plus_tool_messages())
+    messages.insert(2, {**messages[1], "call_id": "call_other"})
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="id is duplicated",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_tool_result_for_one_call_fails_closed() -> None:
+    messages = list(_photo_plus_tool_messages())
+    messages.insert(3, dict(messages[2]))
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="duplicated for one function_call",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_result_for_a_call_that_never_completed_fails_closed() -> None:
+    """`incomplete` is terminal, so nothing may follow it in this lineage."""
+
+    messages = list(_photo_plus_tool_messages())
+    messages[1] = {**messages[1], "status": "incomplete"}
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="never completed",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_result_before_its_call_fails_closed() -> None:
+    messages = list(_photo_plus_tool_messages())
+    messages[1], messages[2] = messages[2], messages[1]
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="no preceding function_call",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
