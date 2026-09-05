@@ -10,23 +10,38 @@ one completed outer turn — never an abrupt outer failure.
 from __future__ import annotations
 
 import asyncio
+import gc
+import hashlib
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
+from mlx_batch_server.runtime import agentic as agentic_module
 from mlx_batch_server.runtime.agentic import (
+    CITATIONS_METADATA_KEY,
     FAILURE_CONTINUATION_PREPARATION,
     NO_WEB_PREPARATION,
     HostedAgenticRuntimeStarter,
 )
+from mlx_batch_server.runtime.citations import (
+    CITATION_PREPARATION,
+    CitationStreamFilter,
+)
 from mlx_batch_server.runtime.contracts import GenerationRequest, RuntimeKey, TurnSink
 from mlx_batch_server.runtime.events import (
+    ContentPartCompleted,
+    ContentPartStarted,
     HostedCallCompleted,
+    HostedCallResult,
     HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
+    ReasoningCompleted,
+    ReasoningDelta,
     TextCompleted,
     TextDelta,
     ToolCompleted,
@@ -43,13 +58,17 @@ from mlx_batch_server.runtime.service import (
     RuntimeStartService,
 )
 from mlx_batch_server.runtime.turn import GenerationTurn, TurnState
+from mlx_batch_server.tools.agent_loop import ToolExecutionResult
 from mlx_batch_server.tools.hosted import (
     HostedToolCatalog,
     HostedToolError,
     HostedToolExecutor,
     HostedToolSuccess,
+    build_receipt,
+    canonical_json,
 )
 from mlx_batch_server.tools.hosted_web import HostedWebSearchTool
+from mlx_batch_server.tools.parser import ParsedToolCall
 
 
 @dataclass(slots=True)
@@ -57,10 +76,12 @@ class _Round:
     """One scripted model round for the deterministic fake backend."""
 
     text: str | None = None
+    reasoning: str | None = None
     tool_calls: tuple[tuple[str, str, str], ...] = ()  # (call_id, name, args)
     usage: tuple[int, int] = (10, 5)
     hold: asyncio.Event | None = None
     repeat_last_tool_call: bool = False  # stream-level identical duplicate
+    text_deltas: tuple[str, ...] | None = None  # arbitrary delta chunking
 
 
 class _FakeBackendTurn:
@@ -108,16 +129,31 @@ class _FakeBackendTurn:
                 sink.emit(TurnCancelled(self._cancelled))
                 return
         index = 0
+        if step.reasoning is not None:
+            item_id = f"reasoning_r{rnd}"
+            sink.emit(OutputItemStarted("reasoning", index, item_id))
+            sink.emit(ContentPartStarted("reasoning_summary_text", index, 0, item_id))
+            sink.emit(ReasoningDelta(step.reasoning, item_id, index, 0))
+            sink.emit(ReasoningCompleted(step.reasoning, item_id, index, 0))
+            sink.emit(
+                ContentPartCompleted(
+                    "reasoning_summary_text",
+                    index,
+                    0,
+                    item_id,
+                    step.reasoning,
+                )
+            )
+            sink.emit(
+                OutputItemCompleted("reasoning", index, item_id, text=step.reasoning)
+            )
+            index += 1
         if step.text is not None:
             item_id = f"msg_r{rnd}"
             sink.emit(OutputItemStarted("message", index, item_id))
-            from mlx_batch_server.runtime.events import (
-                ContentPartCompleted,
-                ContentPartStarted,
-            )
-
             sink.emit(ContentPartStarted("output_text", index, 0, item_id))
-            sink.emit(TextDelta(step.text, item_id, index, 0))
+            for delta in step.text_deltas or (step.text,):
+                sink.emit(TextDelta(delta, item_id, index, 0))
             sink.emit(TextCompleted(step.text, item_id, index, 0))
             sink.emit(ContentPartCompleted("output_text", index, 0, item_id, step.text))
             sink.emit(OutputItemCompleted("message", index, item_id, text=step.text))
@@ -212,11 +248,63 @@ class _CountingTool:
         return await self.behavior(arguments)
 
 
-async def _ok_behavior(arguments: Mapping[str, Any]) -> HostedToolSuccess:
-    return HostedToolSuccess(
-        payload={"results": [{"title": "t", "url": "https://ok.example"}]},
-        receipt_fields={"final_url": "https://ok.example", "mime": "text/html"},
+def _search_success(
+    query: str,
+    results: list[dict[str, str]],
+) -> HostedToolSuccess:
+    digest = (
+        "sha256:"
+        + hashlib.sha256(
+            canonical_json({"query": query, "results": results}).encode("utf-8")
+        ).hexdigest()
     )
+    return HostedToolSuccess(
+        payload={"query": query, "results": results},
+        receipt_fields={"result_count": len(results), "result_digest": digest},
+        result={
+            "kind": "search_results",
+            "query": query,
+            "results": [dict(entry) for entry in results],
+            "digest": digest,
+        },
+    )
+
+
+def _document_success(
+    url: str,
+    content: str,
+    media_type: str = "text/plain",
+) -> HostedToolSuccess:
+    digest = f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+    return HostedToolSuccess(
+        payload={"url": url, "media_type": media_type, "content": content},
+        receipt_fields={
+            "final_url": url,
+            "mime": media_type,
+            "result_digest": digest,
+        },
+        result={
+            "kind": "document",
+            "url": url,
+            "media_type": media_type,
+            "content": content,
+            "digest": digest,
+            "retrieved_at": 1,
+        },
+    )
+
+
+_OK_RESULTS = [
+    {
+        "title": "t",
+        "url": "https://ok.example",
+        "snippet": "Loctree is a structural perception tool.",
+    }
+]
+
+
+async def _ok_behavior(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+    return _search_success(str(arguments.get("query", "q")), _OK_RESULTS)
 
 
 def _raising_behavior(code: str, message: str):
@@ -420,9 +508,29 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     assert len(started) == 1 and len(receipts) == 1
     assert events.index(started[0]) < events.index(receipts[0])
     assert receipts[0].status == "completed"
-    assert receipts[0].receipt["final_url"] == "https://ok.example"
+    assert receipts[0].receipt["result_count"] == 1
+    assert receipts[0].receipt["result_digest"].startswith("sha256:")
     assert "error" not in receipts[0].receipt
     assert tool.invocations == 1
+
+    # HR2-4: exactly one HostedCallResult between started and receipt, and the
+    # closing item carries the validated sealed action with proven sources.
+    results = _of(events, HostedCallResult)
+    assert len(results) == 1
+    assert events.index(started[0]) < events.index(results[0])
+    assert events.index(results[0]) < events.index(receipts[0])
+    assert results[0].result["kind"] == "search_results"
+    assert results[0].result["digest"] == receipts[0].receipt["result_digest"]
+    hosted_items = [
+        e for e in _of(events, OutputItemCompleted) if e.kind == "hosted_call"
+    ]
+    assert len(hosted_items) == 1
+    action = hosted_items[0].action
+    assert action is not None
+    assert action["kind"] == "search"
+    assert action["query"] == "loctree"
+    assert action["sources"] == ("https://ok.example",)
+    assert events.index(receipts[0]) < events.index(hosted_items[0])
 
     # V4: the outer usage equals the monotone sum over both child rounds.
     completed = _of(events, TurnCompleted)[0]
@@ -829,7 +937,7 @@ async def test_concurrent_requests_have_isolated_execution_scopes() -> None:
         if len(scopes) == 2:
             both_entered.set()
         await asyncio.wait_for(both_entered.wait(), timeout=2.0)
-        return HostedToolSuccess(payload={"ok": True})
+        return _search_success(str(arguments["query"]), [])
 
     def build(inner: _FakeInner, deadline_s: float, query: str):
         rounds = (
@@ -968,3 +1076,596 @@ async def test_executor_call_id_mismatch_is_a_server_fault_500() -> None:
     assert failed[0].status_code == 500
     assert len(inner.requests) == 1  # no continuation after a server fault
     assert not _of(events, TurnCompleted)
+
+
+# -- W3-HR2-4 result emission, aggregate budget, citation filter -------------
+
+_DOC_URL = "https://doc.example/loctree"
+_DOC_CONTENT = (
+    "Loctree gives structural sight before you touch anything.\n"
+    "It maps  the blast radius."
+)
+_QUOTE = "It maps the blast radius."
+
+
+async def _doc_behavior(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+    return _document_success(str(arguments["url"]), _DOC_CONTENT)
+
+
+def _cited_request(tools: tuple[Mapping[str, Any], ...]) -> GenerationRequest:
+    return GenerationRequest(
+        response_id="resp_hosted",
+        runtime=RuntimeKey(model_id="model-x"),
+        messages=({"role": "user", "content": "co pisza o loctree?"},),
+        tools=tools,
+        metadata={CITATIONS_METADATA_KEY: True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_success_without_result_payload_is_f12() -> None:
+    """HRPD §1.3: a hosted success carrying no canonical result is F12."""
+
+    async def bare(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        return HostedToolSuccess(payload={"ok": True})
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),),
+    )
+    tool = _CountingTool("web_search", bare)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert not _of(events, HostedCallResult)
+    assert not _of(events, HostedCallCompleted)
+    assert len(inner.requests) == 1
+    assert not _of(events, TurnCompleted)
+
+
+class _ResultMutatingExecutor(HostedToolExecutor):
+    """Post-validation mutation double: forges one result payload field."""
+
+    mutate_field = "digest"
+    mutate_value: Any = "sha256:" + "0" * 64
+
+    async def execute(self, call: Any) -> ToolExecutionResult:
+        result = await super().execute(call)
+        metadata = dict(result.metadata or {})
+        payload = dict(metadata["result"])
+        payload[type(self).mutate_field] = type(self).mutate_value
+        metadata["result"] = payload
+        return ToolExecutionResult(
+            call_id=result.call_id,
+            output=result.output,
+            metadata=metadata,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("digest", "sha256:" + "0" * 64),
+        ("url", "https://forged.example"),
+        ("media_type", "text/forged"),
+    ),
+)
+async def test_result_receipt_identity_disagreement_is_f12(
+    field: str,
+    value: str,
+) -> None:
+    """Digest and fetch URL/MIME identity laws: disagreement is never success."""
+
+    executor_cls = type(
+        f"_Mutate_{field}",
+        (_ResultMutatingExecutor,),
+        {"mutate_field": field, "mutate_value": value},
+    )
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_fetch", f'{{"url":"{_DOC_URL}"}}'),)),),
+    )
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=executor_cls(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert not _of(events, HostedCallResult)
+    assert not _of(events, HostedCallCompleted)
+    assert len(inner.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_aggregate_budget_drops_only_the_overflowing_call() -> None:
+    """Deterministic charging in model call order; prior results stay valid."""
+
+    contents = {
+        "https://a.example": "A" * 40,
+        "https://b.example": "B" * 40,
+    }
+
+    async def by_url(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        url = str(arguments["url"])
+        return _document_success(url, contents[url])
+
+    inner = _FakeInner(
+        (
+            _Round(
+                tool_calls=(
+                    ("call_a", "web_fetch", '{"url":"https://a.example"}'),
+                    ("call_b", "web_fetch", '{"url":"https://b.example"}'),
+                )
+            ),
+            _Round(text="The second fetch exceeded the result budget."),
+        )
+    )
+    tool = _CountingTool("web_fetch", by_url)
+    starter, _ = _starter(inner, (tool,), max_result_chars_total=60)
+    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+
+    results = _of(events, HostedCallResult)
+    assert len(results) == 1
+    assert results[0].call_id == "call_a"
+    receipts = _of(events, HostedCallCompleted)
+    assert [r.call_id for r in receipts] == ["call_a", "call_b"]
+    assert [r.status for r in receipts] == ["completed", "failed"]
+    assert receipts[1].receipt["error"]["code"] == "result_budget_exceeded"
+
+    # One terminal continuation with the trusted failure preparation.
+    continuation = inner.requests[1].messages
+    preparations = [
+        m
+        for m in continuation
+        if m.get("role") == "system"
+        and m.get("content") == FAILURE_CONTINUATION_PREPARATION
+    ]
+    assert len(preparations) == 1
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+    # The failed item still closes with its sealed fetch action.
+    failed_items = [
+        e
+        for e in _of(events, OutputItemCompleted)
+        if e.kind == "hosted_call" and e.status == "failed"
+    ]
+    assert len(failed_items) == 1
+    assert failed_items[0].action == {"kind": "fetch", "url": "https://b.example"}
+
+
+@pytest.mark.asyncio
+async def test_f12_result_mismatch_precedes_aggregate_overflow() -> None:
+    """A forged success that would overflow is F12, not a budget failure."""
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_fetch", f'{{"url":"{_DOC_URL}"}}'),)),),
+    )
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_ResultMutatingExecutor(catalog),
+        max_result_chars_total=1,
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert not _of(events, HostedCallResult)
+    assert not _of(events, HostedCallCompleted)
+    assert len(inner.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_late_result_after_cancel_forwards_nothing() -> None:
+    """F11: a call completing after the token fired emits zero events."""
+
+    inner = _FakeInner((_Round(text="plain answer"),))
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    recorded: list[Any] = []
+
+    class _Recorder:
+        def emit(self, event: Any) -> None:
+            recorded.append(event)
+
+    token = FirstWriterCancelToken()
+    handle = await starter.start(
+        _request(({"type": "web_search"},)),
+        _Recorder(),
+        cancel=token,
+    )
+    await handle.wait_closed()
+    before = len(recorded)
+
+    token.cancel("client_disconnected")
+    success = _search_success("q", _OK_RESULTS)
+    receipt = build_receipt(
+        call_id="call_z",
+        tool_name="web_search",
+        status="completed",
+        duration_ms=1,
+        extra=success.receipt_fields,
+    )
+    late = ToolExecutionResult(
+        call_id="call_z",
+        output="{}",
+        metadata={
+            "tool_name": "web_search",
+            "receipt": receipt,
+            "result": success.result,
+        },
+    )
+    item = agentic_module._HostedItem(
+        index=99,
+        item_id="hosted_late",
+        call_id="call_z",
+        tool_name="web_search",
+    )
+    call = ParsedToolCall(
+        index=0,
+        call_id="call_z",
+        name="web_search",
+        arguments='{"query":"q"}',
+    )
+    with pytest.raises(asyncio.CancelledError):
+        handle._emit_hosted_result_and_receipt(item, call, late)
+    assert len(recorded) == before  # no payload, no receipt, no item
+
+
+_RAW_CITED = (
+    'Grounded: <cite url="https://doc.example/loctree">'
+    "It maps the blast radius.</cite> Indeed."
+)
+_FILTERED_CITED = "Grounded: It maps the blast radius. Indeed."
+
+
+def _cited_rounds(raw: str, deltas: tuple[str, ...]) -> tuple[_Round, ...]:
+    return (
+        _Round(tool_calls=(("call_a", "web_fetch", f'{{"url":"{_DOC_URL}"}}'),)),
+        _Round(text=raw, text_deltas=deltas),
+    )
+
+
+@pytest.mark.asyncio
+async def test_armed_filter_grounds_one_citation_and_strips_markup() -> None:
+    deltas = (
+        "Grounded: <ci",
+        'te url="https://doc.example/loctree">It maps the blast',
+        " radius.</ci",
+        "te> Indeed.",
+    )
+    inner = _FakeInner(_cited_rounds(_RAW_CITED, deltas))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, outer = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+
+    # No raw control markup on any surface; the turn contract stayed green.
+    assert "<cite" not in repr(events)
+    assert outer.state is TurnState.TERMINAL
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+    # Exactly one execution, one result event, one proven citation.
+    assert tool.invocations == 1  # no second fetch anywhere (filter included)
+    assert len(_of(events, HostedCallResult)) == 1
+    citations = _of(events, HostedCitation)
+    assert len(citations) == 1
+    citation = citations[0]
+    assert citation.source_call_id == "call_a"
+    assert citation.source_url == _DOC_URL
+    assert citation.cited_text == _QUOTE
+    assert citation.output_start == len("Grounded: ")
+    assert citation.output_end == len("Grounded: ") + len(_QUOTE)
+    assert citation.source_start == _DOC_CONTENT.index("It maps")
+    assert citation.source_end == len(_DOC_CONTENT)
+
+    # Filtered deltas, done-text and item completion agree exactly.
+    message_texts = [e for e in _of(events, TextCompleted) if e.text == _FILTERED_CITED]
+    assert len(message_texts) == 1
+    part = (message_texts[0].output_index, message_texts[0].content_index)
+    delta_concat = "".join(
+        e.delta
+        for e in _of(events, TextDelta)
+        if (e.output_index, e.content_index) == part
+    )
+    assert delta_concat == _FILTERED_CITED
+    completed_parts = [
+        e
+        for e in _of(events, ContentPartCompleted)
+        if e.output_index == part[0] and e.content_index == part[1]
+    ]
+    assert len(completed_parts) == 1
+    assert completed_parts[0].text == _FILTERED_CITED
+    message_items = [
+        e
+        for e in _of(events, OutputItemCompleted)
+        if e.kind == "message" and e.text == _FILTERED_CITED
+    ]
+    assert len(message_items) == 1
+
+    # The trusted citation preparation entered the continuation exactly once.
+    preparations = [
+        m
+        for m in inner.requests[1].messages
+        if m.get("role") == "system" and m.get("content") == CITATION_PREPARATION
+    ]
+    assert len(preparations) == 1
+
+
+@pytest.mark.asyncio
+async def test_split_sentinels_produce_identical_output_for_every_boundary() -> None:
+    """Property: delta boundary placement can never change the public output."""
+
+    baseline_events: list[Any] | None = None
+    for split in range(1, len(_RAW_CITED)):
+        deltas = (_RAW_CITED[:split], _RAW_CITED[split:])
+        inner = _FakeInner(_cited_rounds(_RAW_CITED, deltas))
+        tool = _CountingTool("web_fetch", _doc_behavior)
+        starter, _ = _starter(inner, (tool,))
+        events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+        assert "<cite" not in repr(events)
+        texts = [e.text for e in _of(events, TextCompleted)]
+        citations = [
+            (
+                c.source_url,
+                c.cited_text,
+                c.source_start,
+                c.source_end,
+                c.output_start,
+                c.output_end,
+            )
+            for c in _of(events, HostedCitation)
+        ]
+        observed = (texts, citations)
+        if baseline_events is None:
+            baseline_events = observed
+        else:
+            assert observed == baseline_events, f"split at {split} diverged"
+    assert baseline_events is not None
+    assert baseline_events[0].count(_FILTERED_CITED) == 1
+    assert len(baseline_events[1]) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_url_citation_is_stripped_without_event() -> None:
+    raw = 'See <cite url="https://evil.example">It maps the blast radius.</cite>!'
+    inner = _FakeInner(_cited_rounds(raw, (raw,)))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+
+    assert "<cite" not in repr(events)
+    assert not _of(events, HostedCitation)
+    texts = [e.text for e in _of(events, TextCompleted)]
+    assert "See It maps the blast radius.!" in texts
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_malformed_and_nested_markup_never_reaches_public_events() -> None:
+    """Malformed and nested markers preserve human text with zero citation."""
+
+    raw = (
+        "Broken <cite>human</cite>; nested "
+        f'<cite url="{_DOC_URL}">outer '
+        f'<cite url="{_DOC_URL}">{_QUOTE}</cite> tail</cite>.'
+    )
+    clean = f"Broken human; nested outer {_QUOTE} tail."
+    inner = _FakeInner(_cited_rounds(raw, tuple(raw)))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+
+    assert all("<cite" not in repr(event) for event in events)
+    assert all("</cite>" not in repr(event) for event in events)
+    assert not _of(events, HostedCitation)
+    assert clean in [event.text for event in _of(events, TextCompleted)]
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_unarmed_sentinel_text_passes_through_byte_identically() -> None:
+    """No citations metadata: the baseline pass-through path is untouched."""
+
+    inner = _FakeInner(_cited_rounds(_RAW_CITED, (_RAW_CITED,)))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+
+    texts = [e.text for e in _of(events, TextCompleted)]
+    assert _RAW_CITED in texts  # raw model text, byte-identical
+    assert not _of(events, HostedCitation)
+    preparations = [
+        m
+        for m in inner.requests[1].messages
+        if m.get("content") == CITATION_PREPARATION
+    ]
+    assert not preparations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {},
+        {CITATIONS_METADATA_KEY: False},
+        {CITATIONS_METADATA_KEY: 1},
+        {CITATIONS_METADATA_KEY: "true"},
+        {CITATIONS_METADATA_KEY: {"enabled": True}},
+        {"citations": True},
+    ),
+)
+async def test_only_internal_literal_true_arms_citations(
+    metadata: Mapping[str, Any],
+) -> None:
+    """Absent, truthy and client-owned metadata all fail closed."""
+
+    assert CITATIONS_METADATA_KEY == "mlx_batch_server.internal.citations_requested"
+    request = GenerationRequest(
+        response_id="resp_hosted",
+        runtime=RuntimeKey(model_id="model-x"),
+        messages=({"role": "user", "content": "co pisza o loctree?"},),
+        tools=({"type": "web_fetch"},),
+        metadata=metadata,
+    )
+    inner = _FakeInner(_cited_rounds(_RAW_CITED, (_RAW_CITED,)))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, request)
+
+    assert _RAW_CITED in [event.text for event in _of(events, TextCompleted)]
+    assert not _of(events, HostedCitation)
+    assert not [
+        message
+        for message in inner.requests[1].messages
+        if message.get("content") == CITATION_PREPARATION
+    ]
+
+
+@pytest.mark.asyncio
+async def test_armed_ordinary_text_is_byte_identical_on_every_completion() -> None:
+    """Arming the filter cannot perturb ordinary continuation text."""
+
+    text = "Ordinary text with <citrus> and no control sentinel."
+    inner = _FakeInner(_cited_rounds(text, tuple(text)))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+
+    completed = [event for event in _of(events, TextCompleted) if event.text == text]
+    assert len(completed) == 1
+    part = (completed[0].output_index, completed[0].content_index)
+    assert (
+        "".join(
+            event.delta
+            for event in _of(events, TextDelta)
+            if (event.output_index, event.content_index) == part
+        )
+        == text
+    )
+    assert any(event.text == text for event in _of(events, ContentPartCompleted))
+    assert any(
+        event.kind == "message" and event.text == text
+        for event in _of(events, OutputItemCompleted)
+    )
+    assert not _of(events, HostedCitation)
+
+
+@pytest.mark.asyncio
+async def test_armed_reasoning_path_is_byte_identical_and_never_filtered() -> None:
+    """Citation-shaped reasoning remains on its untouched baseline channel."""
+
+    reasoning = f'Reason about <cite url="{_DOC_URL}">{_QUOTE}</cite> privately.'
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_fetch", f'{{"url":"{_DOC_URL}"}}'),)),
+            _Round(reasoning=reasoning, text="Public answer."),
+        )
+    )
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+
+    assert [event.delta for event in _of(events, ReasoningDelta)] == [reasoning]
+    assert [event.text for event in _of(events, ReasoningCompleted)] == [reasoning]
+    reasoning_parts = [
+        event
+        for event in _of(events, ContentPartCompleted)
+        if event.kind == "reasoning_summary_text"
+    ]
+    assert len(reasoning_parts) == 1 and reasoning_parts[0].text == reasoning
+    assert any(
+        event.kind == "reasoning" and event.text == reasoning
+        for event in _of(events, OutputItemCompleted)
+    )
+    assert not _of(events, HostedCitation)
+
+
+@pytest.mark.asyncio
+async def test_continuation_messages_match_baseline_exactly() -> None:
+    """Golden equality vs baseline 35b95ae: armed adds only the preparation."""
+
+    def build() -> tuple[_FakeInner, HostedAgenticRuntimeStarter]:
+        inner = _FakeInner(
+            (
+                _Round(tool_calls=(("call_a", "web_search", '{"query":"loctree"}'),)),
+                _Round(text="Loctree is a structural perception tool."),
+            )
+        )
+        starter, _ = _starter(inner, (_CountingTool("web_search", _ok_behavior),))
+        return inner, starter
+
+    inner_plain, starter_plain = build()
+    await _drive(starter_plain, _request(({"type": "web_search"},)))
+    inner_armed, starter_armed = build()
+    await _drive(starter_armed, _cited_request(({"type": "web_search"},)))
+
+    expected_baseline = [
+        {"role": "user", "content": "co pisza o loctree?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query":"loctree"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "name": "web_search",
+            "content": canonical_json({"query": "loctree", "results": _OK_RESULTS}),
+        },
+    ]
+    plain = [dict(m) for m in inner_plain.requests[1].messages]
+    armed = [dict(m) for m in inner_armed.requests[1].messages]
+    assert plain == expected_baseline
+    assert armed == [
+        *expected_baseline,
+        {"role": "system", "content": CITATION_PREPARATION},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_filter_state_dies_with_the_turn(monkeypatch: Any) -> None:
+    """Memory-lifetime law: no filter object survives the turn (weakref probe)."""
+
+    created: list[weakref.ref[Any]] = []
+
+    class _Recording(CitationStreamFilter):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            created.append(weakref.ref(self))
+
+    monkeypatch.setattr(agentic_module, "CitationStreamFilter", _Recording)
+    inner = _FakeInner(_cited_rounds(_RAW_CITED, (_RAW_CITED,)))
+    tool = _CountingTool("web_fetch", _doc_behavior)
+    starter, _ = _starter(inner, (tool,))
+
+    outer = GenerationTurn(max_pending_events=512)
+    handle = await starter.start(
+        _cited_request(({"type": "web_fetch"},)),
+        outer,
+        cancel=FirstWriterCancelToken(),
+    )
+    await handle.wait_closed()
+    assert created  # the armed round really built filters
+
+    inner.sinks.clear()
+    inner.turns.clear()
+    inner.requests.clear()
+    del handle, starter, outer
+    gc.collect()
+    assert all(ref() is None for ref in created)

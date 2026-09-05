@@ -31,14 +31,26 @@ from ..tools.agent_loop import (
     hosted_agent_loop_policy,
 )
 from ..tools.hosted import (
+    ACTION_KIND_FOR_TOOL,
     HostedExecutionScope,
     HostedToolCatalog,
     HostedToolExecutor,
+    canonical_json,
     failure_result,
     reset_execution_scope,
+    result_identities,
     set_execution_scope,
+    validate_result_payload,
+    validate_sealed_action,
 )
 from ..tools.parser import ParsedToolCall
+from .citations import (
+    CITATION_PREPARATION,
+    CitationSource,
+    CitationStreamFilter,
+    ItemCitationBudget,
+    ProvenCitation,
+)
 from .events import (
     HOSTED_CALL_ITEM_KIND,
     TERMINAL_EVENT_TYPES,
@@ -46,7 +58,9 @@ from .events import (
     ContentPartStarted,
     HostedCallCompleted,
     HostedCallProgress,
+    HostedCallResult,
     HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     OutputItemStarted,
     ReasoningCompleted,
@@ -79,6 +93,16 @@ NO_WEB_PREPARATION = (
     "searched the web."
 )
 
+# The one internal admitted-request truth for "citations requested". It is not
+# a client metadata field: W4 is the only future owner allowed to set it after
+# protocol validation. Until then it is absent, so filtering fails closed and
+# every public request remains byte-identical to the unfiltered baseline.
+CITATIONS_METADATA_KEY = "mlx_batch_server.internal.citations_requested"
+
+
+def _citations_requested(request: GenerationRequest) -> bool:
+    return request.metadata.get(CITATIONS_METADATA_KEY) is True
+
 
 class HostedRuntimeIntegrityError(RuntimeError):
     """A server-integrity fault (F12): outer TurnFailed 500, never a receipt."""
@@ -108,6 +132,7 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
         executor: HostedToolExecutor,
         max_tool_rounds: int = 8,
         deadline_s: float | None = None,
+        max_result_chars_total: int = 786_432,
     ) -> None:
         # Intentionally no super().__init__: only the type is inherited (see
         # module docstring); the wrapped inner service owns backend turns.
@@ -123,11 +148,14 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
             raise ValueError("max_tool_rounds must be at least 1")
         if deadline_s is not None and deadline_s <= 0:
             raise ValueError("deadline_s must be positive")
+        if max_result_chars_total < 1:
+            raise ValueError("max_result_chars_total must be positive")
         self._inner = inner
         self._catalog = catalog
         self._executor = executor
         self._max_tool_rounds = max_tool_rounds
         self._deadline_s = deadline_s
+        self._max_result_chars_total = max_result_chars_total
 
     @property
     def hosted_catalog(self) -> HostedToolCatalog:
@@ -239,6 +267,13 @@ class _HostedAgenticTurn:
         self._used_item_ids: set[str] = set()
         self._usage_base: UsageUpdate | None = None
         self._last_merged_usage: UsageUpdate | None = None
+        self._deadline: float | None = None
+        self._result_chars_remaining = starter._max_result_chars_total
+        # Within-turn only: the frozen success result events this turn emitted
+        # (citation source authority). Dies with the turn; no store, no cache.
+        self._success_results: list[HostedCallResult] = []
+        self._citations_requested = _citations_requested(request)
+        self._citation_preparation_added = False
 
     # -- BackendTurn surface -------------------------------------------------
 
@@ -279,6 +314,7 @@ class _HostedAgenticTurn:
         deadline: float | None = None
         if self._starter._deadline_s is not None:
             deadline = self._loop.time() + self._starter._deadline_s
+        self._deadline = deadline
         scope_token = set_execution_scope(
             HostedExecutionScope(deadline=deadline, cancel=self._token)
         )
@@ -371,6 +407,16 @@ class _HostedAgenticTurn:
                         "content": FAILURE_CONTINUATION_PREPARATION,
                     }
                 )
+            if (
+                self._citations_requested
+                and self._success_results
+                and not self._citation_preparation_added
+            ):
+                # The trusted citation preparation quotes nothing from any
+                # payload; outside this one message the continuation input
+                # stays byte-identical to the unfiltered baseline.
+                self._citation_preparation_added = True
+                messages.append({"role": "system", "content": CITATION_PREPARATION})
             round_index += 1
             if hosted_attempted and round_index > 2 * self._starter._max_tool_rounds:
                 raise HostedRuntimeIntegrityError(  # pragma: no cover - guard
@@ -384,7 +430,7 @@ class _HostedAgenticTurn:
         # I8: the failure continuation may not execute hosted tools.
         for call in calls:
             item = self._emit_hosted_started(call)
-            self._emit_hosted_receipt(
+            self._emit_hosted_result_and_receipt(
                 item,
                 call,
                 failure_result(
@@ -425,9 +471,45 @@ class _HostedAgenticTurn:
             raise HostedRuntimeIntegrityError(
                 "hosted execution returned a mismatched receipt set"
             )
+        results = self._charge_result_budget(calls, results)
         for call, result in zip(calls, results, strict=True):
-            self._emit_hosted_receipt(items[call.call_id], call, result)
+            self._emit_hosted_result_and_receipt(items[call.call_id], call, result)
         return results, limit_hit
+
+    def _charge_result_budget(
+        self,
+        calls: tuple[ParsedToolCall, ...],
+        results: tuple[ToolExecutionResult, ...],
+    ) -> tuple[ToolExecutionResult, ...]:
+        """Charge the one aggregate result budget in model call order.
+
+        Only the would-overflow payload is dropped: it becomes one typed
+        ``result_budget_exceeded`` error receipt (arming the one terminal
+        continuation downstream) while every previously proven result stays
+        valid and charged.
+        """
+
+        charged: list[ToolExecutionResult] = []
+        for call, result in zip(calls, results, strict=True):
+            outcome = result
+            if outcome.ok:
+                receipt = self._validated_receipt(call, outcome, "completed")
+                payload = self._validated_success_payload(call, outcome, receipt)
+                cost = _result_charge(payload)
+                if cost > self._result_chars_remaining:
+                    outcome = failure_result(
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                        code="result_budget_exceeded",
+                        message=(
+                            "hosted tool result exceeds the aggregate result "
+                            "budget of this turn"
+                        ),
+                    )
+                else:
+                    self._result_chars_remaining -= cost
+            charged.append(outcome)
+        return tuple(charged)
 
     async def _run_child_round(
         self,
@@ -536,13 +618,67 @@ class _HostedAgenticTurn:
         )
         return item
 
-    def _emit_hosted_receipt(
+    def _emit_hosted_result_and_receipt(
         self,
         item: _HostedItem,
         call: ParsedToolCall,
         result: ToolExecutionResult,
     ) -> None:
+        # F11: a call completing after cancel/disconnect/deadline forwards
+        # nothing — no payload, no receipt, no continuation input.
+        self._raise_if_cancelled()
+        self._raise_if_deadline_expired()
         status = "completed" if result.ok else "failed"
+        metadata = result.metadata or {}
+        receipt = self._validated_receipt(call, result, status)
+        result_event: HostedCallResult | None = None
+        if status == "completed":
+            payload = self._validated_success_payload(call, result, receipt)
+            result_event = HostedCallResult(
+                index=item.index,
+                item_id=item.item_id,
+                call_id=call.call_id,
+                tool_name=call.name,
+                result=payload,
+            )
+        elif metadata.get("result") is not None:
+            raise HostedRuntimeIntegrityError("hosted failure carried a result payload")
+        sealed_action = self._sealed_action(
+            call,
+            result_event.result if result_event is not None else None,
+            status,
+        )
+        if result_event is not None:
+            self._forward(result_event)
+            self._success_results.append(result_event)
+        self._forward(
+            HostedCallCompleted(
+                index=item.index,
+                item_id=item.item_id,
+                call_id=call.call_id,
+                tool_name=call.name,
+                status=status,
+                receipt=receipt,
+            )
+        )
+        self._forward(
+            OutputItemCompleted(
+                kind=HOSTED_CALL_ITEM_KIND,
+                index=item.index,
+                item_id=item.item_id,
+                call_id=call.call_id,
+                name=call.name,
+                status=status,
+                action=sealed_action,
+            )
+        )
+
+    @staticmethod
+    def _validated_receipt(
+        call: ParsedToolCall,
+        result: ToolExecutionResult,
+        status: str,
+    ) -> dict[str, Any]:
         metadata = result.metadata or {}
         raw_receipt = metadata.get("receipt")
         if not isinstance(raw_receipt, Mapping):
@@ -568,26 +704,92 @@ class _HostedAgenticTurn:
             raise HostedRuntimeIntegrityError(
                 "hosted receipt error presence disagrees with its status"
             )
-        self._forward(
-            HostedCallCompleted(
-                index=item.index,
-                item_id=item.item_id,
-                call_id=call.call_id,
-                tool_name=call.name,
-                status=status,
-                receipt=receipt,
+        return receipt
+
+    def _validated_success_payload(
+        self,
+        call: ParsedToolCall,
+        result: ToolExecutionResult,
+        receipt: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        payload = (result.metadata or {}).get("result")
+        if not isinstance(payload, Mapping):
+            raise HostedRuntimeIntegrityError(
+                "hosted success carried no result payload"
             )
-        )
-        self._forward(
-            OutputItemCompleted(
-                kind=HOSTED_CALL_ITEM_KIND,
-                index=item.index,
-                item_id=item.item_id,
-                call_id=call.call_id,
-                name=call.name,
-                status=status,
+        try:
+            validated = validate_result_payload(call.name, payload)
+        except (TypeError, ValueError) as error:
+            raise HostedRuntimeIntegrityError(
+                "hosted success carried an invalid result payload"
+            ) from error
+        self._verify_result_receipt_identity(validated, receipt)
+        return validated
+
+    @staticmethod
+    def _verify_result_receipt_identity(
+        payload: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+    ) -> None:
+        # Payload/receipt identity law: any disagreement between the public
+        # result and the audit receipt is F12, never a terminal success.
+        if payload.get("digest") != receipt.get("result_digest"):
+            raise HostedRuntimeIntegrityError(
+                "hosted result digest disagrees with its receipt"
             )
-        )
+        if payload.get("kind") == "document":
+            if payload.get("url") != receipt.get("final_url"):
+                raise HostedRuntimeIntegrityError(
+                    "hosted result url disagrees with its receipt final_url"
+                )
+            if payload.get("media_type") != receipt.get("mime"):
+                raise HostedRuntimeIntegrityError(
+                    "hosted result media_type disagrees with its receipt mime"
+                )
+
+    def _sealed_action(
+        self,
+        call: ParsedToolCall,
+        result: Mapping[str, Any] | None,
+        status: str,
+    ) -> Mapping[str, Any]:
+        """Build the final immutable sealed action (design D-B §2.2).
+
+        The model input supplies the requested query/url; on success the
+        proven result identities supply the search sources. A hosted call
+        whose arguments carry no usable identity seals the raw argument
+        string instead — deterministic, never fabricated semantics.
+        """
+
+        kind = ACTION_KIND_FOR_TOOL.get(call.name)
+        model_action = _call_action(call)
+        if kind == "fetch":
+            url = model_action.get("url")
+            if not isinstance(url, str) or not url.strip():
+                url = call.arguments.strip() or "{}"
+            action: dict[str, Any] = {"kind": "fetch", "url": url}
+        else:
+            query = model_action.get("query")
+            if not isinstance(query, str) or not query.strip():
+                query = call.arguments.strip() or "{}"
+            sources: list[str] = []
+            if status == "completed" and result is not None:
+                seen: set[str] = set()
+                for identity in result_identities(result):
+                    if identity not in seen:
+                        seen.add(identity)
+                        sources.append(identity)
+            action = {"kind": "search", "query": query, "sources": sources}
+        if kind is not None:
+            # The producer validator proves the closed schema and, on
+            # success, the sources-subset law; the event layer re-freezes it.
+            action = validate_sealed_action(call.name, action, result=result)
+        return action
+
+    def _raise_if_deadline_expired(self) -> None:
+        if self._deadline is not None and self._loop.time() >= self._deadline:
+            # Raised inside the _run timeout_at block: the same F11c 504 path.
+            raise TimeoutError("hosted turn exceeded its absolute deadline")
 
     def _complete_outer(self, child_terminal: TurnCompleted) -> None:
         self._emit_terminal(
@@ -655,6 +857,17 @@ class _ChildSink:
         self._tool_calls: list[ParsedToolCall] = []
         self._last_child_usage: UsageUpdate | None = None
         self.saw_text = False
+        # The citation filter arms only for a continuation round that follows
+        # at least one immutable success result with citations requested; on
+        # every other path this sink is byte-identical to the baseline.
+        self._citation_sources: tuple[CitationSource, ...] = ()
+        self._citation_armed = bool(
+            owner._citations_requested and owner._success_results
+        )
+        if self._citation_armed:
+            self._citation_sources = _citation_sources(owner._success_results)
+        self._filters: dict[tuple[int, int], CitationStreamFilter] = {}
+        self._item_budgets: dict[int, ItemCitationBudget] = {}
 
     @property
     def last_child_usage(self) -> UsageUpdate | None:
@@ -733,6 +946,14 @@ class _ChildSink:
                         )
                     )
             return
+        if (
+            self._citation_armed
+            and isinstance(event, OutputItemCompleted)
+            and event.kind == "message"
+        ):
+            filtered = self._filtered_item_text(event.index)
+            if filtered is not None:
+                event = replace(event, text=filtered)
         outer_index, outer_item_id = self._mapped(event.index)
         self._owner._forward(replace(event, index=outer_index, item_id=outer_item_id))
 
@@ -747,6 +968,12 @@ class _ChildSink:
             | ReasoningCompleted
         ),
     ) -> None:
+        if self._citation_armed and (
+            isinstance(event, TextDelta | TextCompleted)
+            or (isinstance(event, ContentPartCompleted) and event.kind == "output_text")
+        ):
+            self._emit_filtered_content(event)
+            return
         if isinstance(event, TextDelta | TextCompleted) and (
             event.delta if isinstance(event, TextDelta) else event.text
         ):
@@ -755,6 +982,113 @@ class _ChildSink:
         self._owner._forward(
             replace(event, output_index=outer_index, item_id=outer_item_id)
         )
+
+    def _emit_filtered_content(
+        self,
+        event: TextDelta | TextCompleted | ContentPartCompleted,
+    ) -> None:
+        """Route message text through the armed causal citation filter.
+
+        Held bytes are the only bytes not yet emitted; markup is only ever
+        held or stripped, so the concatenated clean deltas, the rewritten
+        TextCompleted/ContentPartCompleted texts and the rewritten message
+        OutputItemCompleted text stay exactly equal — the existing turn
+        equality checks remain the enforcement of this property.
+        """
+
+        outer_index, outer_item_id = self._mapped(event.output_index)
+        content_filter = self._filter_for(event.output_index, event.content_index)
+        if isinstance(event, TextDelta):
+            self._forward_filter_output(
+                content_filter.feed(event.delta),
+                event,
+                outer_index,
+                outer_item_id,
+            )
+            return
+        self._forward_filter_output(
+            content_filter.finish() if isinstance(event, TextCompleted) else (),
+            event,
+            outer_index,
+            outer_item_id,
+        )
+        filtered_text = content_filter.filtered_text
+        if filtered_text:
+            self.saw_text = True
+        self._owner._forward(
+            replace(
+                event,
+                output_index=outer_index,
+                item_id=outer_item_id,
+                text=filtered_text,
+            )
+        )
+
+    def _forward_filter_output(
+        self,
+        output: Sequence[str | ProvenCitation],
+        event: TextDelta | TextCompleted | ContentPartCompleted,
+        outer_index: int,
+        outer_item_id: str,
+    ) -> None:
+        for piece in output:
+            if isinstance(piece, str):
+                if piece:
+                    self.saw_text = True
+                self._owner._forward(
+                    TextDelta(
+                        delta=piece,
+                        item_id=outer_item_id,
+                        output_index=outer_index,
+                        content_index=event.content_index,
+                    )
+                )
+                continue
+            self._owner._forward(
+                HostedCitation(
+                    output_index=outer_index,
+                    item_id=outer_item_id,
+                    content_index=event.content_index,
+                    source_call_id=piece.source_call_id,
+                    source_url=piece.source_url,
+                    cited_text=piece.cited_text,
+                    source_start=piece.source_start,
+                    source_end=piece.source_end,
+                    output_start=piece.output_start,
+                    output_end=piece.output_end,
+                )
+            )
+
+    def _filter_for(
+        self,
+        output_index: int,
+        content_index: int,
+    ) -> CitationStreamFilter:
+        key = (output_index, content_index)
+        with self._lock:
+            content_filter = self._filters.get(key)
+            if content_filter is None:
+                budget = self._item_budgets.get(output_index)
+                if budget is None:
+                    budget = ItemCitationBudget()
+                    self._item_budgets[output_index] = budget
+                content_filter = CitationStreamFilter(
+                    self._citation_sources,
+                    budget=budget,
+                )
+                self._filters[key] = content_filter
+        return content_filter
+
+    def _filtered_item_text(self, item_index: int) -> str | None:
+        with self._lock:
+            parts = sorted(
+                (key[1], content_filter)
+                for key, content_filter in self._filters.items()
+                if key[0] == item_index
+            )
+        if not parts:
+            return None
+        return "".join(content_filter.filtered_text for _, content_filter in parts)
 
     def _suppress_kind(self, kind: str) -> bool:
         # In hosted mode the model's function_call items are consumed by the
@@ -812,6 +1146,52 @@ def _unique_calls(calls: Sequence[ParsedToolCall]) -> tuple[ParsedToolCall, ...]
                 f"tool call_id {call.call_id} was reused with a conflicting payload"
             )
     return tuple(unique.values())
+
+
+def _result_charge(payload: Any) -> int:
+    """The deterministic aggregate-budget cost of one canonical result."""
+
+    if not isinstance(payload, Mapping):
+        # Absence of a success payload is F12 at emission; charge nothing.
+        return 0
+    if payload.get("kind") == "document":
+        content = payload.get("content")
+        return len(content) if isinstance(content, str) else 0
+    results = payload.get("results")
+    if results is None:
+        return 0
+    try:
+        return len(canonical_json(results))
+    except (TypeError, ValueError):  # pragma: no cover - producer-validated
+        return 0
+
+
+def _citation_sources(
+    results: Sequence[HostedCallResult],
+) -> tuple[CitationSource, ...]:
+    """Quotable proven sources: document content and search snippets."""
+
+    sources: list[CitationSource] = []
+    for event in results:
+        result = event.result
+        if result["kind"] == "document":
+            sources.append(
+                CitationSource(
+                    call_id=event.call_id,
+                    url=result["url"],
+                    content=result["content"],
+                )
+            )
+            continue
+        for entry in result["results"]:
+            sources.append(
+                CitationSource(
+                    call_id=event.call_id,
+                    url=entry["url"],
+                    content=entry["snippet"],
+                )
+            )
+    return tuple(sources)
 
 
 def _call_action(call: ParsedToolCall) -> Mapping[str, Any]:
@@ -886,6 +1266,7 @@ def _add_usage(base: UsageUpdate | None, child: UsageUpdate) -> UsageUpdate:
 
 
 __all__ = [
+    "CITATIONS_METADATA_KEY",
     "FAILURE_CONTINUATION_PREPARATION",
     "INTERNAL_FAILURE_MESSAGE",
     "NO_WEB_PREPARATION",
