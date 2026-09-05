@@ -195,11 +195,13 @@ def _sanitized_results(
         entry: dict[str, str] = {}
         for key in ("title", "url", "snippet"):
             value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                entry[key] = value
-        # A result without a URL proves no identity and can never be cited
-        # or sealed as a source; it is dropped rather than half-admitted.
-        if "url" in entry:
+            if not isinstance(value, str) or not value.strip():
+                break
+            entry[key] = value
+        # A canonical result is exactly {title, url, snippet}; a row missing
+        # any of them proves no admissible result and is dropped in place —
+        # never widened, subset-admitted, or fabricated (original order kept).
+        if len(entry) == 3:
             sanitized.append(entry)
     return sanitized
 

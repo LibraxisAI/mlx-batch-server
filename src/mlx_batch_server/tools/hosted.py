@@ -209,12 +209,14 @@ def _validate_search_result(result: Mapping[str, Any]) -> dict[str, Any]:
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise ValueError("search result entries must be mappings")
-        if not set(entry) <= _SEARCH_ENTRY_KEYS:
-            raise ValueError("search result entry carries a foreign field")
+        if set(entry) != _SEARCH_ENTRY_KEYS:
+            raise ValueError(
+                "search result entry carries exactly title, url and snippet"
+            )
         validated_entry = {
-            key: _require_result_identity(key, value) for key, value in entry.items()
+            key: _require_result_identity(key, entry[key])
+            for key in ("title", "url", "snippet")
         }
-        _require_result_identity("url", validated_entry.get("url"))
         sanitized_entries.append(validated_entry)
     return {
         "kind": "search_results",
@@ -241,8 +243,12 @@ def validate_sealed_action(
     """Totally validate one closed sealed action against its tool and result.
 
     When ``result`` is given, a search action's sources must be a subset of
-    the result-proven identities and a fetch action's url must equal the
-    result url — provenance agrees mechanically or the action fails closed.
+    the result-proven identities. A fetch action carries the model-REQUESTED
+    URL and returns it unchanged: the redirect-resolved final URL is
+    result/receipt provenance, so the two URLs are deliberately never
+    compared here — their agreement law lives solely in
+    ``_verify_result_receipt_agreement``. A supplied fetch result is still
+    fully validated closed.
     """
 
     expected_kind = ACTION_KIND_FOR_TOOL.get(tool_name)
@@ -274,9 +280,7 @@ def validate_sealed_action(
         raise ValueError("fetch action carries exactly kind and url")
     url = _require_result_identity("url", action["url"])
     if result is not None:
-        validated_result = validate_result_payload(tool_name, result)
-        if url != validated_result["url"]:
-            raise ValueError("fetch action url does not match its result url")
+        validate_result_payload(tool_name, result)
     return {"kind": "fetch", "url": url}
 
 
