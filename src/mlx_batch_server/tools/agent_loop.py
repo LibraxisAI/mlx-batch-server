@@ -23,6 +23,17 @@ class AgentLoopPolicy:
             raise ValueError("max_rounds must be at least 1")
 
 
+def hosted_agent_loop_policy(*, max_rounds: int = 8) -> AgentLoopPolicy:
+    """The one hosted-execution policy: an error receipt must reach the model.
+
+    ``stop_on_tool_error=False`` is the single semantic flip that implements the
+    failure-continuation contract at the loop layer; the default raise would
+    burn the model's one explanatory continuation.
+    """
+
+    return AgentLoopPolicy(max_rounds=max_rounds, stop_on_tool_error=False)
+
+
 @dataclass(frozen=True, slots=True)
 class ToolExecutionResult:
     call_id: str

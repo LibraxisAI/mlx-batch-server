@@ -21,13 +21,27 @@ Vibecrafted. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
+
+
+@runtime_checkable
+class FetchCancelCheck(Protocol):
+    """Cooperative cancellation surface checked between hops and body chunks."""
+
+    @property
+    def cancelled(self) -> bool: ...
+
+    @property
+    def reason(self) -> str | None: ...
+
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
@@ -141,12 +155,19 @@ class SafePublicFetch:
         *,
         accepted_media_types: Sequence[str],
         max_bytes: int | None = None,
+        cancel: FetchCancelCheck | None = None,
+        deadline_s: float | None = None,
     ) -> FetchedResource:
         budget = self._limits.max_bytes if max_bytes is None else max_bytes
         if budget < 1:
             raise SafePublicFetchError(
                 "invalid_fetch_budget",
                 "URL fetch byte budget must be positive",
+            )
+        if deadline_s is not None and deadline_s <= 0:
+            raise SafePublicFetchError(
+                "url_fetch_timeout",
+                "URL fetch exceeded its transport deadline",
             )
         accepted = _accepted_media_types(accepted_media_types)
         timeout = httpx.Timeout(
@@ -163,14 +184,29 @@ class SafePublicFetch:
                 transport=self._transport,
                 trust_env=False,
             ) as client:
-                return await self._fetch_hops(
-                    client=client,
-                    logical_url=logical_url,
-                    accepted=accepted,
-                    budget=budget,
-                )
+                if deadline_s is None:
+                    return await self._fetch_hops(
+                        client=client,
+                        logical_url=logical_url,
+                        accepted=accepted,
+                        budget=budget,
+                        cancel=cancel,
+                    )
+                async with asyncio.timeout(deadline_s):
+                    return await self._fetch_hops(
+                        client=client,
+                        logical_url=logical_url,
+                        accepted=accepted,
+                        budget=budget,
+                        cancel=cancel,
+                    )
         except SafePublicFetchError:
             raise
+        except TimeoutError as exc:
+            raise SafePublicFetchError(
+                "url_fetch_timeout",
+                "URL fetch exceeded its transport deadline",
+            ) from exc
         except httpx.TimeoutException as exc:
             raise SafePublicFetchError(
                 "url_fetch_timeout",
@@ -189,9 +225,11 @@ class SafePublicFetch:
         logical_url: str,
         accepted: tuple[str, ...],
         budget: int,
+        cancel: FetchCancelCheck | None = None,
     ) -> FetchedResource:
         current = logical_url
         for redirects in range(self._limits.max_redirects + 1):
+            _raise_if_cancelled(cancel)
             hop = self._prepare_hop(current, redirect_hop=redirects > 0)
             pinned_ip = self._resolve_public_ip(hop)
             async with client.stream(
@@ -226,7 +264,7 @@ class SafePublicFetch:
                         "URL returned an unsupported media type",
                     )
                 _validate_content_length(response, budget)
-                content = await self._read_bounded(response, budget)
+                content = await self._read_bounded(response, budget, cancel=cancel)
                 return FetchedResource(
                     content=content,
                     media_type=media_type,
@@ -279,9 +317,16 @@ class SafePublicFetch:
                 "URL hostname could not be resolved",
             ) from exc
 
-    async def _read_bounded(self, response: httpx.Response, max_bytes: int) -> bytes:
+    async def _read_bounded(
+        self,
+        response: httpx.Response,
+        max_bytes: int,
+        *,
+        cancel: FetchCancelCheck | None = None,
+    ) -> bytes:
         content = bytearray()
         async for chunk in response.aiter_bytes(self._limits.chunk_bytes):
+            _raise_if_cancelled(cancel)
             content.extend(chunk)
             if len(content) > max_bytes:
                 raise SafePublicFetchError(
@@ -294,6 +339,11 @@ class SafePublicFetch:
                 "URL response body must not be empty",
             )
         return bytes(content)
+
+
+def _raise_if_cancelled(cancel: FetchCancelCheck | None) -> None:
+    if cancel is not None and cancel.cancelled:
+        raise asyncio.CancelledError(cancel.reason or "URL fetch cancelled")
 
 
 def _parse_http_url(url: str) -> _Hop:
@@ -530,6 +580,7 @@ def _validate_content_length(response: httpx.Response, max_bytes: int) -> None:
 
 
 __all__ = [
+    "FetchCancelCheck",
     "FetchedResource",
     "SafePublicFetch",
     "SafePublicFetchError",

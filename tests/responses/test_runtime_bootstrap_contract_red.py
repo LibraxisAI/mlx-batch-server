@@ -27,6 +27,7 @@ from mlx_batch_server.responses.runtime_mapper import CanonicalResponsesMapper
 from mlx_batch_server.responses.runtime_projection import create_runtime_projection
 from mlx_batch_server.responses.runtime_resolver import ManifestRuntimeResolver
 from mlx_batch_server.runtime.admission import AdmissionController
+from mlx_batch_server.runtime.agentic import HostedAgenticRuntimeStarter
 from mlx_batch_server.runtime.backends.legacy_mlx import LegacyMlxBackend
 from mlx_batch_server.runtime.contracts import BackendKind, RoleName
 from mlx_batch_server.runtime.fusion.mtp import MtpPolicy
@@ -163,7 +164,8 @@ def test_composition_wires_one_graph_from_the_explicit_signed_manifest() -> None
     assert receipt.runtime_manager._roles is receipt.role_directory
     assert receipt.runtime_manager._readiness is receipt.readiness_service
     assert receipt.runtime_manager._admission is receipt.admission_controller
-    assert receipt.runtime_start_service._manager is receipt.runtime_manager
+    assert isinstance(receipt.runtime_start_service, HostedAgenticRuntimeStarter)
+    assert receipt.runtime_start_service.inner._manager is receipt.runtime_manager
     assert receipt.anthropic_turn_source._starter is receipt.runtime_start_service
     assert receipt.runtime_resolver._roles is receipt.role_directory
     assert receipt.responses_mapper._resolve_runtime is receipt.runtime_resolver
@@ -473,3 +475,44 @@ async def test_composition_receipt_closes_controller_then_runtime_once() -> None
             {"model": "buddy", "input": "late"},
             owner_id="principal:test",
         )
+
+
+def test_composition_hands_one_hosted_owner_to_both_protocol_paths() -> None:
+    """HAD-4: one catalog/executor/starter instance, no second registry."""
+
+    from mlx_batch_server.tools.hosted import HostedToolCatalog
+    from mlx_batch_server.tools.hosted_web import HostedWebSearchTool
+
+    catalog = HostedToolCatalog((HostedWebSearchTool(provider=None),))
+    receipt = compose_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        backend_factories={BackendKind.FUSED_MTP_MLX: _DormantBackendFactory()},
+        hosted_tools=catalog,
+    )
+    try:
+        starter = receipt.runtime_start_service
+        assert isinstance(starter, HostedAgenticRuntimeStarter)
+        assert receipt.hosted_catalog is catalog
+        assert starter.hosted_catalog is catalog
+        # Both protocol paths hold the same owner object: no HTTP loopback,
+        # no second scheduler.
+        assert receipt.responses_controller._starter is starter
+        assert receipt.anthropic_turn_source._starter is starter
+    finally:
+        clear_turn_source()
+
+
+def test_default_composition_has_an_empty_hosted_catalog() -> None:
+    """Capability truth unchanged: no hosted claim flips in this cut."""
+
+    receipt = compose_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        backend_factories={BackendKind.FUSED_MTP_MLX: _DormantBackendFactory()},
+    )
+    try:
+        assert not receipt.hosted_catalog
+        assert isinstance(receipt.runtime_start_service, HostedAgenticRuntimeStarter)
+    finally:
+        clear_turn_source()

@@ -321,3 +321,11 @@ async def test_failed_tool_receipt_is_stable_across_same_round_retry() -> None:
 
     assert retry_failure.value.results == first_failure.value.results
     assert len(executor.calls) == 2
+
+
+def test_hosted_agent_loop_policy_lets_error_receipts_flow() -> None:
+    from mlx_batch_server.tools.agent_loop import hosted_agent_loop_policy
+
+    policy = hosted_agent_loop_policy(max_rounds=3)
+    assert policy.stop_on_tool_error is False
+    assert policy.max_rounds == 3

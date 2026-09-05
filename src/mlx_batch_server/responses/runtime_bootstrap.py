@@ -17,6 +17,7 @@ from ..chat.anthropic.turn_source import (
 )
 from ..provenance import BuildReceipt
 from ..runtime.admission import AdmissionController
+from ..runtime.agentic import HostedAgenticRuntimeStarter
 from ..runtime.backends.legacy_mlx import (
     LegacyMlxBackend,
     LegacyPortProvider,
@@ -49,6 +50,7 @@ from ..runtime.role_manifest import (
 )
 from ..runtime.roles import RoleDirectory
 from ..runtime.service import RuntimeStartService
+from ..tools.hosted import HostedToolCatalog, HostedToolExecutor
 from ..vision.input import MediaSourceField, MultimodalInputCapabilities
 from .compaction import LocalCompactionCodec
 from .controller import ResponsesController
@@ -79,6 +81,7 @@ class RuntimeCompositionReceipt:
     admission_controller: AdmissionController
     runtime_manager: RuntimeManager
     runtime_start_service: RuntimeStartService
+    hosted_catalog: HostedToolCatalog
     anthropic_turn_source: AnthropicTurnSource
     response_registry: ResponseRegistry
     runtime_resolver: ManifestRuntimeResolver
@@ -149,6 +152,7 @@ def compose_responses_runtime(
     backend_factories: Mapping[BackendKind | str, BackendFactory],
     public_aliases: Mapping[str, RoleName | str] | None = None,
     build_receipt: BuildReceipt | None = None,
+    hosted_tools: HostedToolCatalog | None = None,
 ) -> RuntimeCompositionReceipt:
     """Build one inert process-local graph from explicit trusted inputs.
 
@@ -164,6 +168,7 @@ def compose_responses_runtime(
         public_aliases=public_aliases,
         build_receipt=build_receipt,
         media_source_fields=frozenset(),
+        hosted_tools=hosted_tools,
     )
 
 
@@ -183,6 +188,7 @@ def _compose_responses_runtime(
     public_aliases: Mapping[str, RoleName | str] | None,
     build_receipt: BuildReceipt | None,
     media_source_fields: frozenset[MediaSourceField],
+    hosted_tools: HostedToolCatalog | None = None,
 ) -> RuntimeCompositionReceipt:
     topology = manifest.role_directory()
     process_spec = topology.resolve(process_role)
@@ -208,7 +214,15 @@ def _compose_responses_runtime(
         readiness=readiness,
         admission=admission,
     )
-    starter = RuntimeStartService(manager, default_role=process_spec.name)
+    inner_starter = RuntimeStartService(manager, default_role=process_spec.name)
+    catalog = HostedToolCatalog() if hosted_tools is None else hosted_tools
+    # One immutable catalog/executor/starter owner handed to both protocol
+    # paths; with an empty catalog the starter is a transparent pass-through.
+    starter = HostedAgenticRuntimeStarter(
+        inner_starter,
+        catalog=catalog,
+        executor=HostedToolExecutor(catalog),
+    )
     registry = ResponseRegistry()
     resolver = ManifestRuntimeResolver(roles, aliases)
     anthropic_turn_source = RuntimeAnthropicTurnSource(
@@ -258,6 +272,7 @@ def _compose_responses_runtime(
         admission_controller=admission,
         runtime_manager=manager,
         runtime_start_service=starter,
+        hosted_catalog=catalog,
         anthropic_turn_source=anthropic_turn_source,
         response_registry=registry,
         runtime_resolver=resolver,
@@ -297,6 +312,7 @@ def compose_role_responses_runtime(
     allowed_url_origins: Iterable[str] = (),
     file_id_resolver: FileIdResolverPort | None = None,
     build_receipt: BuildReceipt | None = None,
+    hosted_tools: HostedToolCatalog | None = None,
 ) -> RoleRuntimeCompositionReceipt:
     """Compose exactly the backend family selected by one manifest role.
 
@@ -365,6 +381,7 @@ def compose_role_responses_runtime(
         public_aliases=public_aliases,
         build_receipt=build_receipt,
         media_source_fields=media_source_fields,
+        hosted_tools=hosted_tools,
     )
     return RoleRuntimeCompositionReceipt(
         responses=responses,

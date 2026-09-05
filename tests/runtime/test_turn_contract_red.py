@@ -13,6 +13,9 @@ import pytest
 from mlx_batch_server.runtime.events import (
     ContentPartCompleted,
     ContentPartStarted,
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallStarted,
     OutputItemCompleted,
     OutputItemStarted,
     ProgressUpdate,
@@ -500,3 +503,158 @@ def test_turn_started_keeps_public_alias_and_physical_identity_apart() -> None:
         aliased.request_settings["tools"] = ["mutated"]  # type: ignore[index]
     with pytest.raises(ValueError, match="requested_model"):
         TurnStarted("resp_1", "physical", 7, requested_model=" ")
+
+
+def _open_hosted_item(
+    turn: GenerationTurn,
+    *,
+    index: int = 0,
+    item_id: str = "hosted_0",
+    call_id: str = "call_0",
+    name: str = "web_search",
+) -> None:
+    turn.emit(
+        OutputItemStarted(
+            "hosted_call",
+            index,
+            item_id,
+            call_id=call_id,
+            name=name,
+        )
+    )
+    turn.emit(HostedCallStarted(index, item_id, call_id, name, {"query": "q"}))
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_lifecycle_opens_progresses_and_closes_once() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(HostedCallProgress(0, "hosted_0", "call_0", "executing"))
+    turn.emit(
+        HostedCallCompleted(
+            0,
+            "hosted_0",
+            "call_0",
+            "web_search",
+            "completed",
+            {"call_id": "call_0", "status": "completed", "attempt": 1},
+        )
+    )
+    turn.emit(
+        OutputItemCompleted(
+            "hosted_call",
+            0,
+            "hosted_0",
+            call_id="call_0",
+            name="web_search",
+            status="completed",
+        )
+    )
+    turn.complete(TurnCompleted("stop"))
+    assert turn.state is TurnState.TERMINAL
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_duplicate_receipt_raises() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    receipt = {"call_id": "call_0"}
+    turn.emit(
+        HostedCallCompleted(0, "hosted_0", "call_0", "web_search", "failed", receipt)
+    )
+    with pytest.raises(RuntimeError, match="receipt already emitted"):
+        turn.emit(
+            HostedCallCompleted(
+                0,
+                "hosted_0",
+                "call_0",
+                "web_search",
+                "completed",
+                receipt,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_receipt_requires_a_started_call() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    turn.emit(
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "hosted_0",
+            call_id="call_0",
+            name="web_search",
+        )
+    )
+    with pytest.raises(RuntimeError, match="requires a started hosted call"):
+        turn.emit(
+            HostedCallCompleted(0, "hosted_0", "call_0", "web_search", "completed")
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_item_completion_requires_matching_receipt_status() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    turn.emit(HostedCallCompleted(0, "hosted_0", "call_0", "web_search", "failed"))
+    with pytest.raises(RuntimeError, match="status must match its receipt"):
+        turn.emit(
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "hosted_0",
+                call_id="call_0",
+                name="web_search",
+                status="completed",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_item_completion_requires_a_receipt() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    with pytest.raises(RuntimeError, match="no receipt event"):
+        turn.emit(
+            OutputItemCompleted(
+                "hosted_call",
+                0,
+                "hosted_0",
+                call_id="call_0",
+                name="web_search",
+                status="completed",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_receipt_call_id_mismatch_raises() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    _open_hosted_item(turn)
+    with pytest.raises(RuntimeError, match="does not match its call id"):
+        turn.emit(
+            HostedCallCompleted(
+                0,
+                "hosted_0",
+                "call_0",
+                "web_search",
+                "completed",
+                {"call_id": "call_other"},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_hosted_call_events_require_a_hosted_call_item() -> None:
+    turn = GenerationTurn(max_pending_events=32)
+    _start(turn)
+    turn.emit(OutputItemStarted("message", 0, "msg_0"))
+    with pytest.raises(RuntimeError, match="hosted_call output item"):
+        turn.emit(HostedCallStarted(0, "msg_0", "call_0", "web_search"))

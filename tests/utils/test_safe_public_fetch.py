@@ -243,3 +243,95 @@ async def test_byte_and_mime_limits_are_enforced() -> None:
             accepted_media_types=("image/jpeg",),
         )
     assert mime.value.code == "unsupported_media_type"
+
+
+class _Cancelled:
+    """Minimal FetchCancelCheck flipping to cancelled after N observations."""
+
+    def __init__(self, *, after: int = 0) -> None:
+        self._after = after
+        self.checks = 0
+
+    @property
+    def cancelled(self) -> bool:
+        self.checks += 1
+        return self.checks > self._after
+
+    @property
+    def reason(self) -> str | None:
+        return "client_cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_check_stops_the_fetch_before_the_first_hop() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _png_handler(request)
+
+    fetch, _ = _fetcher(handler)
+    import asyncio
+
+    with pytest.raises(asyncio.CancelledError):
+        await fetch.fetch(
+            "https://cdn.example/pixel.png",
+            accepted_media_types=("image/png",),
+            cancel=_Cancelled(after=0),
+        )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_check_stops_body_consumption_mid_stream() -> None:
+    fetch, _ = _fetcher(_png_handler)
+    import asyncio
+
+    with pytest.raises(asyncio.CancelledError):
+        await fetch.fetch(
+            "https://cdn.example/pixel.png",
+            accepted_media_types=("image/png",),
+            cancel=_Cancelled(after=1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_non_positive_deadline_fails_closed_as_timeout() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _png_handler(request)
+
+    fetch, _ = _fetcher(handler)
+    with pytest.raises(SafePublicFetchError) as error:
+        await fetch.fetch(
+            "https://cdn.example/pixel.png",
+            accepted_media_types=("image/png",),
+            deadline_s=0.0,
+        )
+    assert error.value.code == "url_fetch_timeout"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_bounds_a_stalled_transport() -> None:
+    import asyncio
+
+    class _StallingTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(30.0)
+            raise AssertionError("unreachable")
+
+    fetch = SafePublicFetch(
+        limits=SafePublicFetchLimits(max_bytes=1024, timeout=60.0),
+        transport=_StallingTransport(),
+        getaddrinfo=_addrinfo(_PUBLIC_IP),
+    )
+    with pytest.raises(SafePublicFetchError) as error:
+        await fetch.fetch(
+            "https://cdn.example/pixel.png",
+            accepted_media_types=("image/png",),
+            deadline_s=0.05,
+        )
+    assert error.value.code == "url_fetch_timeout"

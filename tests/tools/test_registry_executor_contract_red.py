@@ -150,3 +150,18 @@ async def test_non_json_registry_data_becomes_failed_receipt() -> None:
     assert result.ok is False
     assert result.error == "tool registry data is not JSON-compatible"
     assert result.metadata["error_code"] == "invalid_tool_result"
+
+
+def test_registry_executor_failure_codes_stay_inside_the_hosted_registry() -> None:
+    """§3.3: one error-code registry; the registry adapter may not fork codes."""
+
+    from mlx_batch_server.tools.hosted import HOSTED_ERROR_CODES
+
+    for code in (
+        "invalid_tool_arguments",
+        "tool_arguments_too_large",
+        "tool_execution_failed",
+        "invalid_tool_result",
+        "tool_not_allowed",
+    ):
+        assert code in HOSTED_ERROR_CODES, code
