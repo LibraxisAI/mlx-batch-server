@@ -72,7 +72,18 @@ _QueueItem: TypeAlias = SequencedTurnEvent | BaseException | None
 
 MAX_CITATIONS_PER_ITEM = 64
 
-_HOSTED_TOOL_ACTION_KINDS = {"web_search": "search", "web_fetch": "fetch"}
+_HOSTED_TOOL_ACTION_KINDS = {
+    "web_search": "search",
+    "web_fetch": "fetch",
+    "open_page": "open_page",
+    "find_in_page": "find_in_page",
+}
+_HOSTED_TOOL_RESULT_KINDS = {
+    "web_search": "search_results",
+    "web_fetch": "document",
+    "open_page": "document",
+    "find_in_page": "find_matches",
+}
 
 
 class _ContentLifecycle:
@@ -576,11 +587,20 @@ class GenerationTurn:
         started_url = started.get("url")
         if started_url is not None and action["url"] != started_url:
             raise RuntimeError("hosted completion action contradicts its started url")
+        if kind == "find_in_page":
+            started_pattern = started.get("pattern")
+            if started_pattern is not None and action["pattern"] != started_pattern:
+                raise RuntimeError(
+                    "hosted completion action contradicts its started pattern"
+                )
 
     def _result_hosted_call(self, event: HostedCallResult) -> None:
         item = self._require_hosted_item(event.index, event.item_id, event.call_id)
         if event.tool_name != item.tool_name:
             raise RuntimeError("hosted result tool name does not match its output item")
+        expected_kind = _HOSTED_TOOL_RESULT_KINDS.get(event.tool_name)
+        if expected_kind is not None and event.result["kind"] != expected_kind:
+            raise RuntimeError("hosted result kind does not match its tool")
         if not item.hosted_started:
             raise RuntimeError("hosted result requires a started hosted call")
         if item.hosted_status is not None:

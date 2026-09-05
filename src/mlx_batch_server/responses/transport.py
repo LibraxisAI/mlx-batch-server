@@ -339,27 +339,48 @@ def render_started_item(event: OutputItemStarted) -> dict[str, Any]:
             "summary": [],
         }
     if event.kind == HOSTED_CALL_ITEM_KIND:
-        if event.name != "web_search":
+        if event.name not in {"web_search", "open_page", "find_in_page"}:
             raise ValueError(
-                "only hosted web_search starts have a Responses item rendering"
+                "only Responses hosted web tools have an item rendering"
             )
         action = event.action
         if action is None:  # pragma: no cover - enforced by the event
             raise ValueError("hosted_call start is missing its opening action")
-        if set(action) != {"query"}:
-            raise ValueError(
-                "hosted web_search opening action carries exactly one query"
-            )
-        query = action["query"]
-        if not isinstance(query, str) or not query.strip():
-            raise ValueError(
-                "hosted web_search opening action requires a non-empty query"
-            )
+        if event.name == "web_search":
+            if set(action) != {"query"}:
+                raise ValueError("web_search opening action requires only query")
+            query = action["query"]
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("web_search opening action requires a non-empty query")
+            projected_action = {"type": "search", "query": query}
+        elif event.name == "open_page":
+            if set(action) != {"url"}:
+                raise ValueError("open_page opening action requires only url")
+            url = action["url"]
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("open_page opening action requires a non-empty url")
+            projected_action = {"type": "open_page", "url": url}
+        else:
+            if set(action) != {"url", "pattern"}:
+                raise ValueError("find_in_page opening action requires url and pattern")
+            url = action["url"]
+            pattern = action["pattern"]
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("find_in_page opening action requires a non-empty url")
+            if not isinstance(pattern, str) or not pattern:
+                raise ValueError(
+                    "find_in_page opening action requires a non-empty pattern"
+                )
+            projected_action = {
+                "type": "find_in_page",
+                "url": url,
+                "pattern": pattern,
+            }
         return {
             "id": event.item_id,
             "type": "web_search_call",
             "status": "in_progress",
-            "action": {"type": "search", "query": query},
+            "action": projected_action,
         }
     return {
         "id": event.item_id,
@@ -386,19 +407,27 @@ def render_hosted_call_item(
     """
 
     kind = action.get("kind")
-    if kind != "search":
-        raise ValueError(
-            "only sealed search actions have a Responses hosted item rendering"
-        )
+    if kind == "search":
+        projected_action: dict[str, Any] = {
+            "type": "search",
+            "query": action["query"],
+            "sources": [{"type": "url", "url": url} for url in action["sources"]],
+        }
+    elif kind == "open_page":
+        projected_action = {"type": "open_page", "url": action["url"]}
+    elif kind == "find_in_page":
+        projected_action = {
+            "type": "find_in_page",
+            "url": action["url"],
+            "pattern": action["pattern"],
+        }
+    else:
+        raise ValueError("sealed action has no Responses hosted item rendering")
     return {
         "id": item_id,
         "type": "web_search_call",
         "status": status,
-        "action": {
-            "type": "search",
-            "query": action["query"],
-            "sources": [{"type": "url", "url": url} for url in action["sources"]],
-        },
+        "action": projected_action,
     }
 
 

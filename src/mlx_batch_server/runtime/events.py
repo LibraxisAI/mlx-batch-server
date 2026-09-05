@@ -21,8 +21,8 @@ OUTPUT_ITEM_KINDS = frozenset(
     ("message", "reasoning", "function_call", HOSTED_CALL_ITEM_KIND)
 )
 HOSTED_CALL_STATUSES = frozenset(("completed", "failed"))
-HOSTED_ACTION_KINDS = frozenset(("search", "fetch"))
-HOSTED_RESULT_KINDS = frozenset(("document", "search_results"))
+HOSTED_ACTION_KINDS = frozenset(("search", "fetch", "open_page", "find_in_page"))
+HOSTED_RESULT_KINDS = frozenset(("document", "search_results", "find_matches"))
 MAX_CITED_TEXT_CHARS = 2048
 
 
@@ -93,7 +93,7 @@ def _freeze_hosted_action(
     frozen = _freeze_mapping(action)
     kind = frozen.get("kind")
     if kind not in HOSTED_ACTION_KINDS:
-        raise ValueError("hosted action kind must be search or fetch")
+        raise ValueError("hosted action kind is outside the closed hosted union")
     if kind == "search":
         if set(frozen) != {"kind", "query", "sources"}:
             raise ValueError("search action carries exactly kind, query and sources")
@@ -107,6 +107,12 @@ def _freeze_hosted_action(
             raise ValueError("search action sources must be unique")
         if status == "failed" and sources:
             raise ValueError("failed hosted action cannot carry success sources")
+        return frozen
+    if kind == "find_in_page":
+        if set(frozen) != {"kind", "url", "pattern"}:
+            raise ValueError("find action carries exactly kind, url and pattern")
+        _require_identity("action url", frozen["url"])
+        _require_identity("action pattern", frozen["pattern"])
         return frozen
     if set(frozen) != {"kind", "url"}:
         raise ValueError("fetch action carries exactly kind and url")
@@ -127,10 +133,16 @@ def _freeze_hosted_result(result: Mapping[str, Any]) -> Mapping[str, Any]:
     frozen = _freeze_mapping(result)
     kind = frozen.get("kind")
     if kind not in HOSTED_RESULT_KINDS:
-        raise ValueError("hosted result kind must be document or search_results")
+        raise ValueError("hosted result kind is outside the closed hosted union")
     _require_identity("result digest", frozen.get("digest", ""))
     if kind == "document":
         _require_identity("result url", frozen.get("url", ""))
+        return frozen
+    if kind == "find_matches":
+        _require_identity("result url", frozen.get("url", ""))
+        matches = frozen.get("matches")
+        if not isinstance(matches, tuple):
+            raise ValueError("find_matches result requires a matches sequence")
         return frozen
     results = frozen.get("results")
     if not isinstance(results, tuple):
@@ -469,7 +481,7 @@ class HostedCallResult:
     def identities(self) -> tuple[str, ...]:
         """The proven URL identities this result establishes for the turn."""
 
-        if self.result["kind"] == "document":
+        if self.result["kind"] in {"document", "find_matches"}:
             return (self.result["url"],)
         return tuple(entry["url"] for entry in self.result["results"])
 

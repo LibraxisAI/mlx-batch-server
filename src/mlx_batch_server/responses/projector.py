@@ -276,7 +276,7 @@ def _project_hosted_event(
     if envelope.stream_id is not None:
         base["stream_id"] = envelope.stream_id.value
     if isinstance(event, HostedCallStarted):
-        if event.tool_name != "web_search":
+        if event.tool_name not in {"web_search", "open_page", "find_in_page"}:
             raise TypeError(f"unsupported hosted tool for Responses: {event.tool_name}")
         return {
             **base,
@@ -301,7 +301,7 @@ def _project_hosted_event(
             "hosted_result_internal",
         )
     if isinstance(event, HostedCallCompleted):
-        if event.tool_name != "web_search":
+        if event.tool_name not in {"web_search", "open_page", "find_in_page"}:
             raise TypeError(f"unsupported hosted tool for Responses: {event.tool_name}")
         if event.status == "failed":
             return NoWireResponseEvent(

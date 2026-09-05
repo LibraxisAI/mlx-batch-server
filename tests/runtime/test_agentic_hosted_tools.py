@@ -62,6 +62,7 @@ from mlx_batch_server.runtime.service import (
 from mlx_batch_server.runtime.turn import GenerationTurn, TurnState
 from mlx_batch_server.tools.agent_loop import ToolExecutionResult
 from mlx_batch_server.tools.hosted import (
+    HostedExecutionPolicy,
     HostedToolCatalog,
     HostedToolError,
     HostedToolExecutor,
@@ -258,7 +259,12 @@ class _CountingTool:
     def describe(self) -> Mapping[str, Any]:
         return {"name": self.name}
 
-    async def invoke(self, arguments: Mapping[str, Any]) -> HostedToolSuccess:
+    async def invoke(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        policy: HostedExecutionPolicy,
+    ) -> HostedToolSuccess:
         self.invocations += 1
         self.arguments_seen.append(arguments)
         return await self.behavior(arguments)
@@ -301,6 +307,7 @@ def _document_success(
         },
         result={
             "kind": "document",
+            "representation": "text",
             "url": url,
             "media_type": media_type,
             "content": content,
@@ -439,6 +446,8 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
     if isinstance(tool, _CountingTool):
         assert tool.invocations == 1
     assert len(inner.requests) == 2
+    assert inner.requests[1].tools == ()
+    assert inner.requests[1].sampling["tool_choice"] == "none"
 
     # The continuation round carries the error exactly once as a tool message
     # plus the trusted preparation that quotes nothing from the payload.
@@ -503,6 +512,8 @@ async def test_per_call_timeout_is_f8_not_an_outer_deadline() -> None:
     assert receipts[0].receipt["error"]["code"] == "tool_timeout"
     assert tool.invocations == 1
     assert len(inner.requests) == 2
+    assert inner.requests[1].tools == ()
+    assert inner.requests[1].sampling["tool_choice"] == "none"
     assert not _of(events, TurnFailed)
     assert _of(events, TurnCompleted)
 
@@ -541,6 +552,10 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     assert receipts[0].receipt["result_digest"].startswith("sha256:")
     assert "error" not in receipts[0].receipt
     assert tool.invocations == 1
+    assert {tool["name"] for tool in inner.requests[0].tools} == {
+        "web_search",
+    }
+    assert inner.requests[1].sampling["tool_choice"] == "auto"
 
     # HR2-4: exactly one HostedCallResult between started and receipt, and the
     # closing item carries the validated sealed action with proven sources.
@@ -619,11 +634,12 @@ async def test_post_failure_hosted_call_is_not_executed() -> None:
     assert tool.invocations == 1
     assert len(inner.requests) == 2
     receipts = _of(events, HostedCallCompleted)
-    assert len(receipts) == 2
-    codes = [r.receipt["error"]["code"] for r in receipts]
-    assert codes == ["provider_auth_failed", "continuation_exhausted"]
-    assert _of(events, TurnCompleted)
-    assert not _of(events, TurnFailed)
+    assert len(receipts) == 1
+    assert receipts[0].receipt["error"]["code"] == "provider_auth_failed"
+    assert inner.requests[1].tools == ()
+    assert inner.requests[1].sampling["tool_choice"] == "none"
+    assert _of(events, TurnFailed)
+    assert not _of(events, TurnCompleted)
 
 
 @pytest.mark.asyncio
@@ -647,6 +663,36 @@ async def test_round_limit_is_a_receipt_plus_terminal_continuation() -> None:
     receipts = _of(events, HostedCallCompleted)
     assert receipts[-1].receipt["error"]["code"] == "tool_round_limit"
     assert _of(events, TurnCompleted)
+    assert not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_later_round_tool_failure_still_gets_one_final_model_reply() -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", '{"query":"first"}'),)),
+            _Round(tool_calls=(("call_b", "web_search", '{"query":"second"}'),)),
+            _Round(text="The second search failed, so this answer is limited."),
+        )
+    )
+
+    async def behavior(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        if arguments["query"] == "second":
+            raise HostedToolError("provider_unavailable", "search unavailable")
+        return _search_success(str(arguments["query"]), _OK_RESULTS)
+
+    tool = _CountingTool("web_search", behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    receipts = _of(events, HostedCallCompleted)
+    assert [receipt.status for receipt in receipts] == ["completed", "failed"]
+    assert receipts[1].receipt["error"]["code"] == "provider_unavailable"
+    assert inner.requests[1].sampling["tool_choice"] == "auto"
+    assert inner.requests[2].tools == ()
+    assert inner.requests[2].sampling["tool_choice"] == "none"
+    assert _of(events, TextCompleted)[-1].text
+    assert len(_of(events, TurnCompleted)) == 1
     assert not _of(events, TurnFailed)
 
 
@@ -723,7 +769,9 @@ async def test_no_admitted_hosted_tool_gets_honest_no_web_preparation() -> None:
     first_message = inner.requests[0].messages[0]
     assert first_message["role"] == "system"
     assert first_message["content"] == NO_WEB_PREPARATION
+    assert inner.requests[0].tools == ()
     assert not _of(events, HostedCallStarted)
+    assert not _of(events, HostedCallResult)
     assert not _of(events, HostedCallCompleted)
     assert len(_of(events, TurnCompleted)) == 1
     assert tool.invocations == 0
@@ -1353,6 +1401,7 @@ async def test_late_result_after_cancel_forwards_nothing() -> None:
         item_id="hosted_late",
         call_id="call_z",
         tool_name="web_search",
+        started_monotonic_ns=1,
     )
     call = ParsedToolCall(
         index=0,

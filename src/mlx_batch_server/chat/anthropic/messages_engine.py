@@ -90,6 +90,7 @@ class AnthropicMessagesEngine:
         self,
         request: MessagesRequest,
         admission: CapabilityAdmission | None,
+        trace_id: str | None = None,
     ) -> tuple[AnthropicMessageProjector, AsyncIterator[TurnEvent]]:
         if admission is None:
             admission = enforce_capabilities(request, detached_profile(request.model))
@@ -107,7 +108,7 @@ class AnthropicMessagesEngine:
             and tool.citations.enabled is True
             for tool in request.tools or ()
         )
-        turn = build_turn(request)
+        turn = build_turn(request, trace_id=trace_id)
         projector = AnthropicMessageProjector(
             message_id=new_message_id(),
             # The alias the client asked for, held stable for the whole turn.
@@ -163,10 +164,11 @@ class AnthropicMessagesEngine:
         request: MessagesRequest,
         *,
         admission: CapabilityAdmission | None = None,
+        trace_id: str | None = None,
     ) -> MessagesResponse:
         """Run one turn and return the terminal Anthropic message."""
 
-        projector, events = self._prepare(request, admission)
+        projector, events = self._prepare(request, admission, trace_id)
         async for event in events:
             projector.observe(event)
         failure = projector.failure
@@ -184,10 +186,11 @@ class AnthropicMessagesEngine:
         request: MessagesRequest,
         *,
         admission: CapabilityAdmission | None = None,
+        trace_id: str | None = None,
     ) -> AsyncIterator[AnthropicStreamEvent]:
         """Run one turn and yield its Anthropic streaming lifecycle."""
 
-        projector, events = self._prepare(request, admission)
+        projector, events = self._prepare(request, admission, trace_id)
         # message_start opens every Anthropic stream, before any runtime event
         # is observed, so the lifecycle is well-formed even if the inference
         # owner starts by reporting a failure.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from typing import Any
 
 import anthropic
@@ -48,6 +50,7 @@ _SOURCE_START = _SOURCE.index("grounded")
 _OUTPUT_START = _CONTINUATION.index("grounded")
 _RESULT = {
     "kind": "document",
+    "representation": "text",
     "url": _URL,
     "media_type": "text/plain; charset=utf-8",
     "content": _SOURCE,
@@ -297,7 +300,7 @@ def test_mutually_exclusive_domain_filters_are_rejected_at_the_field() -> None:
         build_turn(request)
 
 
-def test_duplicate_result_unknown_citation_and_pdf_success_fail_closed() -> None:
+def test_duplicate_result_and_unknown_citation_fail_closed_but_pdf_projects() -> None:
     projector = AnthropicMessageProjector(
         message_id="msg_mutation", model_alias="m", citations_enabled=True
     )
@@ -327,21 +330,32 @@ def test_duplicate_result_unknown_citation_and_pdf_success_fail_closed() -> None
 
     pdf = AnthropicMessageProjector(message_id="msg_pdf", model_alias="m")
     pdf.observe(started)
-    pdf_result = dict(_RESULT, media_type="application/pdf")
+    raw = b"%PDF-1.7\nclosed fixture"
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    pdf_result = dict(
+        _RESULT,
+        representation="base64",
+        media_type="application/pdf",
+        content=base64.b64encode(raw).decode("ascii"),
+        extracted_text="closed fixture",
+        digest=digest,
+    )
     pdf.observe(
         HostedCallResult(0, "hosted_fetch", "call_fetch", "web_fetch", pdf_result)
     )
-    with pytest.raises(AnthropicAPIError, match="not text-family"):
-        pdf.observe(
-            HostedCallCompleted(
-                0,
-                "hosted_fetch",
-                "call_fetch",
-                "web_fetch",
-                "completed",
-                {"final_url": _URL, "result_digest": _RESULT["digest"]},
-            )
+    projected = pdf.observe(
+        HostedCallCompleted(
+            0,
+            "hosted_fetch",
+            "call_fetch",
+            "web_fetch",
+            "completed",
+            {"final_url": _URL, "result_digest": digest},
         )
+    )
+    source = projected[0].content_block.content.content.source
+    assert source.type == "base64"
+    assert base64.b64decode(source.data, validate=True) == raw
 
 
 @pytest.mark.parametrize(

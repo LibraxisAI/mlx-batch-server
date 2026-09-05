@@ -133,7 +133,7 @@ async def create_message(
         try:
             engine = _create_request_engine(http_request, request.model)
             completion = await _maybe_await(
-                engine.generate(request, admission=admission)
+                engine.generate(request, admission=admission, trace_id=request_id)
             )
         except AnthropicAPIError as error:
             return _error_response(error, request_id)
@@ -148,7 +148,11 @@ async def create_message(
     async def anthropic_event_generator() -> AsyncIterator[str]:
         try:
             engine = _create_request_engine(http_request, request.model)
-            async for event in engine.generate_stream(request, admission=admission):
+            async for event in engine.generate_stream(
+                request,
+                admission=admission,
+                trace_id=request_id,
+            ):
                 yield _encode_event(event)
         except AnthropicAPIError as error:
             yield _encode_error(error.error_type, error.message, request_id)

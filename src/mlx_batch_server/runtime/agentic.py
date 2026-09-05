@@ -18,10 +18,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from ..tools.agent_loop import (
@@ -33,8 +35,10 @@ from ..tools.agent_loop import (
 from ..tools.hosted import (
     ACTION_KIND_FOR_TOOL,
     HostedExecutionScope,
+    HostedRoundMode,
     HostedToolCatalog,
     HostedToolExecutor,
+    HostedToolPlan,
     canonical_json,
     failure_result,
     reset_execution_scope,
@@ -78,6 +82,11 @@ from .events import (
     TurnStarted,
     UsageUpdate,
 )
+from .hosted_evidence import (
+    HostedCallEvidence,
+    HostedEvidenceRegistry,
+    HostedRoundEvidence,
+)
 from .service import FirstWriterCancelToken, RuntimeStartError, RuntimeStartService
 
 if TYPE_CHECKING:
@@ -109,6 +118,11 @@ class HostedRuntimeIntegrityError(RuntimeError):
     """A server-integrity fault (F12): outer TurnFailed 500, never a receipt."""
 
 
+class HostedEvidenceError(HostedRuntimeIntegrityError):
+    """Admission evidence could not be prepared before public delivery."""
+
+
+
 class HostedTerminalDeliveryError(RuntimeError):
     """The outer terminal could not be delivered to the sink.
 
@@ -134,6 +148,8 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
         max_tool_rounds: int = 8,
         deadline_s: float | None = None,
         max_result_chars_total: int = 786_432,
+        evidence_registry: HostedEvidenceRegistry | None = None,
+        acceptance_profile: str | None = None,
     ) -> None:
         # Intentionally no super().__init__: only the type is inherited (see
         # module docstring); the wrapped inner service owns backend turns.
@@ -157,6 +173,10 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
         self._max_tool_rounds = max_tool_rounds
         self._deadline_s = deadline_s
         self._max_result_chars_total = max_result_chars_total
+        self._evidence_registry = evidence_registry
+        self._acceptance_profile = acceptance_profile
+        if (evidence_registry is None) != (acceptance_profile is None):
+            raise ValueError("evidence registry and acceptance profile are one capability")
 
     @property
     def hosted_catalog(self) -> HostedToolCatalog:
@@ -180,51 +200,21 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
             # No hosted capability composed: the starter is a transparent
             # pass-through and the deployment's behavior is unchanged.
             return await self._inner.start(request, sink, cancel=token)
-        hosted_names = self._admitted_hosted_names(request)
-        if hosted_names and self._has_client_tools(request):
+        try:
+            plan = self._catalog.plan_for(request)
+        except ValueError as error:
             raise RuntimeStartError(
-                "mixed hosted and client tools must be rejected before the runtime"
-            )
+                str(error) or "hosted tool plan could not be admitted"
+            ) from error
         turn = _HostedAgenticTurn(
             starter=self,
             request=request,
             sink=sink,
             token=token,
-            hosted_names=hosted_names,
+            plan=plan,
         )
         turn.launch()
         return turn
-
-    def _admitted_hosted_names(self, request: GenerationRequest) -> frozenset[str]:
-        admitted: set[str] = set()
-        for name in self._request_tool_names(request):
-            if name in self._catalog.names:
-                admitted.add(name)
-        return frozenset(admitted)
-
-    def _has_client_tools(self, request: GenerationRequest) -> bool:
-        return any(
-            name not in self._catalog.names
-            for name in self._request_tool_names(request)
-        )
-
-    @staticmethod
-    def _request_tool_names(request: GenerationRequest) -> tuple[str, ...]:
-        names: list[str] = []
-        for tool in request.tools:
-            if not isinstance(tool, Mapping):
-                continue
-            kind = tool.get("type")
-            if kind == "function":
-                name = tool.get("name")
-                if name is None and isinstance(tool.get("function"), Mapping):
-                    name = tool["function"].get("name")
-            else:
-                name = tool.get("name") or kind
-            if isinstance(name, str) and name:
-                names.append(name)
-        return tuple(names)
-
 
 @dataclass(frozen=True, slots=True)
 class _ChildRound:
@@ -239,6 +229,7 @@ class _HostedItem:
     item_id: str
     call_id: str
     tool_name: str
+    started_monotonic_ns: int
 
 
 class _HostedAgenticTurn:
@@ -251,13 +242,19 @@ class _HostedAgenticTurn:
         request: GenerationRequest,
         sink: TurnSink,
         token: FirstWriterCancelToken,
-        hosted_names: frozenset[str],
+        plan: HostedToolPlan | None,
     ) -> None:
         self._starter = starter
         self._request = request
         self._sink = sink
         self._token = token
-        self._hosted_names = hosted_names
+        self._plan = plan
+        self._hosted_names = (
+            frozenset() if plan is None else plan.executable_names
+        )
+        self._prior_urls = set(_message_urls(request.messages))
+        self._hosted_uses = 0
+        self._event_sequence = 0
         self._loop = asyncio.get_running_loop()
         self._lock = threading.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -278,6 +275,27 @@ class _HostedAgenticTurn:
         self._citation_corpus = PreparedCitationCorpus()
         self._citations_requested = _citations_requested(request)
         self._citation_preparation_added = False
+        self._evidence = starter._evidence_registry
+        if self._evidence is not None and self._plan is not None:
+            trace_id = str(
+                request.metadata.get(
+                    "mlx_batch_server.internal.hosted_trace_id",
+                    request.response_id,
+                )
+            )
+            try:
+                self._evidence.begin(
+                    response_id=request.response_id,
+                    trace_id=trace_id,
+                    protocol=self._plan.protocol,
+                    profile=starter._acceptance_profile,  # type: ignore[arg-type]
+                )
+                self._evidence.record_consumer_event(
+                    request.response_id,
+                    "waiting",
+                )
+            except Exception as error:
+                raise HostedEvidenceError("admission evidence failed") from error
 
     # -- BackendTurn surface -------------------------------------------------
 
@@ -320,7 +338,15 @@ class _HostedAgenticTurn:
             deadline = self._loop.time() + self._starter._deadline_s
         self._deadline = deadline
         scope_token = set_execution_scope(
-            HostedExecutionScope(deadline=deadline, cancel=self._token)
+            HostedExecutionScope(
+                deadline=deadline,
+                cancel=self._token,
+                policy=(
+                    None
+                    if self._plan is None
+                    else self._plan.policy.with_prior_urls(tuple(self._prior_urls))
+                ),
+            )
         )
         try:
             if deadline is None:
@@ -345,7 +371,14 @@ class _HostedAgenticTurn:
             # F11a/F11b: immediate stop, no continuation, outer TurnCancelled.
             self._emit_cancelled(self._token.reason or "client_cancelled")
         except HostedRuntimeIntegrityError as error:  # F12, authored text
-            self._emit_failed(str(error) or INTERNAL_FAILURE_MESSAGE)
+            self._emit_failed(
+                str(error) or INTERNAL_FAILURE_MESSAGE,
+                code=(
+                    "admission_evidence_failed"
+                    if isinstance(error, HostedEvidenceError)
+                    else "internal_error"
+                ),
+            )
         except Exception:  # F12: the owner of last resort, fixed text only
             self._emit_failed(INTERNAL_FAILURE_MESSAGE)
         finally:
@@ -366,7 +399,16 @@ class _HostedAgenticTurn:
         round_index = 0
         while True:
             self._raise_if_cancelled()
-            child = await self._run_child_round(messages, round_index)
+            mode = (
+                HostedRoundMode.FAILURE_CONTINUATION
+                if terminal_continuation
+                else (
+                    HostedRoundMode.ACTION_SELECTION
+                    if round_index == 0
+                    else HostedRoundMode.SUCCESS_FOLLOWUP
+                )
+            )
+            child = await self._run_child_round(messages, round_index, mode=mode)
             if isinstance(child.terminal, TurnFailed):
                 self._emit_terminal(child.terminal)
                 return
@@ -387,16 +429,29 @@ class _HostedAgenticTurn:
                 self._complete_outer(child.terminal)
                 return
             if terminal_continuation:
-                self._refuse_post_failure_calls(calls)
-                self._complete_outer(child.terminal)
-                return
+                raise HostedRuntimeIntegrityError(
+                    "failure continuation emitted a forbidden hosted tool call"
+                )
             self._raise_if_cancelled()
             hosted_attempted = True
-            results, limit_hit = await self._execute_hosted_round(
-                loop,
-                calls,
-                round_index,
+            current_scope = HostedExecutionScope(
+                deadline=self._deadline,
+                cancel=self._token,
+                policy=(
+                    None
+                    if self._plan is None
+                    else self._plan.policy.with_prior_urls(tuple(self._prior_urls))
+                ),
             )
+            scope_token = set_execution_scope(current_scope)
+            try:
+                results, limit_hit = await self._execute_hosted_round(
+                    loop,
+                    calls,
+                    round_index,
+                )
+            finally:
+                reset_execution_scope(scope_token)
             messages.append(_assistant_tool_call_message(calls))
             for call, result in zip(calls, results, strict=True):
                 messages.append(_tool_result_message(call, result))
@@ -427,32 +482,31 @@ class _HostedAgenticTurn:
                     "hosted round accounting exceeded its bound"
                 )
 
-    def _refuse_post_failure_calls(
-        self,
-        calls: Sequence[ParsedToolCall],
-    ) -> None:
-        # I8: the failure continuation may not execute hosted tools.
-        for call in calls:
-            item = self._emit_hosted_started(call)
-            self._emit_hosted_result_and_receipt(
-                item,
-                call,
-                failure_result(
-                    call_id=call.call_id,
-                    tool_name=call.name,
-                    code="continuation_exhausted",
-                    message=(
-                        "the terminal failure continuation may not execute hosted tools"
-                    ),
-                ),
-            )
-
     async def _execute_hosted_round(
         self,
         loop: AgentLoop,
         calls: tuple[ParsedToolCall, ...],
         round_index: int,
     ) -> tuple[tuple[ToolExecutionResult, ...], bool]:
+        if self._plan is None:
+            raise HostedRuntimeIntegrityError("hosted execution has no request plan")
+        if any(call.name not in self._plan.executable_names for call in calls):
+            raise HostedRuntimeIntegrityError("model selected a tool outside its round plan")
+        if self._hosted_uses + len(calls) > self._plan.policy.max_uses:
+            results = tuple(
+                failure_result(
+                    call_id=call.call_id,
+                    tool_name=call.name,
+                    code="tool_round_limit",
+                    message="hosted tool maximum uses was reached",
+                )
+                for call in calls
+            )
+            items = {call.call_id: self._emit_hosted_started(call) for call in calls}
+            for call, result in zip(calls, results, strict=True):
+                self._emit_hosted_result_and_receipt(items[call.call_id], call, result)
+            return results, True
+        self._hosted_uses += len(calls)
         items = {call.call_id: self._emit_hosted_started(call) for call in calls}
         limit_hit = False
         try:
@@ -519,8 +573,27 @@ class _HostedAgenticTurn:
         self,
         messages: Sequence[Mapping[str, Any]],
         round_index: int,
+        *,
+        mode: HostedRoundMode,
     ) -> _ChildRound:
-        child_request = replace(self._request, messages=tuple(messages))
+        started_ns = time.monotonic_ns()
+        if self._plan is None:
+            child_request = replace(self._request, messages=tuple(messages))
+        else:
+            sampling = dict(self._request.sampling)
+            if mode is HostedRoundMode.FAILURE_CONTINUATION:
+                tools: tuple[Mapping[str, Any], ...] = ()
+                sampling["tool_choice"] = "none"
+            else:
+                tools = self._plan.model_tools
+                if mode is HostedRoundMode.SUCCESS_FOLLOWUP:
+                    sampling["tool_choice"] = "auto"
+            child_request = replace(
+                self._request,
+                messages=tuple(messages),
+                tools=tools,
+                sampling=sampling,
+            )
         collector = _ChildSink(self, first_round=round_index == 0)
         handle = await self._starter._inner.start(
             child_request,
@@ -545,6 +618,30 @@ class _HostedAgenticTurn:
         child_usage = collector.last_child_usage
         if child_usage is not None:
             self._usage_base = _add_usage(self._usage_base, child_usage)
+        if self._evidence is not None and self._plan is not None:
+            terminal_kind = (
+                "completed"
+                if isinstance(terminal, TurnCompleted)
+                else "cancelled" if isinstance(terminal, TurnCancelled) else "failed"
+            )
+            try:
+                self._evidence.record_round(
+                    self.response_id,
+                    HostedRoundEvidence(
+                        round_index=round_index,
+                        started_monotonic_ns=started_ns,
+                        ended_monotonic_ns=time.monotonic_ns(),
+                        terminal_kind=terminal_kind,
+                        usage=(
+                            None
+                            if child_usage is None
+                            else _usage_mapping(child_usage)
+                        ),
+                        call_ids=tuple(call.call_id for call in collector.tool_calls()),
+                    ),
+                )
+            except Exception as error:
+                raise HostedEvidenceError("admission evidence failed") from error
         return _ChildRound(
             terminal=terminal,
             tool_calls=collector.tool_calls(),
@@ -555,6 +652,7 @@ class _HostedAgenticTurn:
 
     def _forward(self, event: TurnEvent) -> None:
         self._sink.emit(event)
+        self._event_sequence += 1
 
     def _mark_started(self, event: TurnStarted) -> bool:
         with self._lock:
@@ -588,12 +686,13 @@ class _HostedAgenticTurn:
     def _emit_hosted_started(self, call: ParsedToolCall) -> _HostedItem:
         index = self._alloc_index()
         item_id = self._alloc_item_id(f"hosted_{call.call_id}")
-        opening_action = _call_action(call)
+        opening_action = _opening_action(call, _call_action(call))
         item = _HostedItem(
             index=index,
             item_id=item_id,
             call_id=call.call_id,
             tool_name=call.name,
+            started_monotonic_ns=time.monotonic_ns(),
         )
         self._forward(
             OutputItemStarted(
@@ -657,31 +756,83 @@ class _HostedAgenticTurn:
         extended_corpus = self._citation_corpus
         if result_event is not None and self._citations_requested:
             extended_corpus = extended_corpus.extend(_citation_sources((result_event,)))
-        if result_event is not None:
-            self._forward(result_event)
-            self._success_results.append(result_event)
-            self._citation_corpus = extended_corpus
-        self._forward(
-            HostedCallCompleted(
-                index=item.index,
-                item_id=item.item_id,
-                call_id=call.call_id,
-                tool_name=call.name,
-                status=status,
-                receipt=receipt,
-            )
+        completed_event = HostedCallCompleted(
+            index=item.index,
+            item_id=item.item_id,
+            call_id=call.call_id,
+            tool_name=call.name,
+            status=status,
+            receipt=receipt,
         )
-        self._forward(
-            OutputItemCompleted(
-                kind=HOSTED_CALL_ITEM_KIND,
-                index=item.index,
-                item_id=item.item_id,
-                call_id=call.call_id,
-                name=call.name,
-                status=status,
-                action=sealed_action,
-            )
+        item_event = OutputItemCompleted(
+            kind=HOSTED_CALL_ITEM_KIND,
+            index=item.index,
+            item_id=item.item_id,
+            call_id=call.call_id,
+            name=call.name,
+            status=status,
+            action=sealed_action,
         )
+        evidence_token: str | None = None
+        if self._evidence is not None:
+            requested_url = sealed_action.get("url")
+            error = receipt.get("error")
+            try:
+                evidence_token = self._evidence.prepare_call(
+                    self.response_id,
+                    HostedCallEvidence(
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                        action_kind=str(sealed_action["kind"]),
+                        status=status,  # type: ignore[arg-type]
+                        error_code=(
+                            str(error.get("code"))
+                            if isinstance(error, Mapping)
+                            else None
+                        ),
+                        requested_url=(
+                            str(requested_url)
+                            if isinstance(requested_url, str)
+                            else None
+                        ),
+                        final_url=(
+                            str(receipt["final_url"])
+                            if isinstance(receipt.get("final_url"), str)
+                            else None
+                        ),
+                        result_digest=(
+                            str(receipt["result_digest"])
+                            if isinstance(receipt.get("result_digest"), str)
+                            else None
+                        ),
+                        mime=(
+                            str(receipt["mime"])
+                            if isinstance(receipt.get("mime"), str)
+                            else None
+                        ),
+                        started_monotonic_ns=item.started_monotonic_ns,
+                        ended_monotonic_ns=time.monotonic_ns(),
+                        delivery_state="prepared",
+                        first_event_sequence=self._event_sequence,
+                        last_event_sequence=self._event_sequence + (2 if result_event is not None else 1),
+                    ),
+                )
+            except Exception as evidence_error:
+                raise HostedEvidenceError("admission evidence failed") from evidence_error
+        try:
+            if result_event is not None:
+                self._forward(result_event)
+                self._success_results.append(result_event)
+                self._citation_corpus = extended_corpus
+                self._prior_urls.update(result_identities(result_event.result))
+            self._forward(completed_event)
+            self._forward(item_event)
+        except BaseException:
+            if evidence_token is not None and self._evidence is not None:
+                self._evidence.mark_call_delivery_failed(self.response_id, evidence_token)
+            raise
+        if evidence_token is not None and self._evidence is not None:
+            self._evidence.mark_call_delivered(self.response_id, evidence_token)
 
     @staticmethod
     def _validated_receipt(
@@ -773,11 +924,19 @@ class _HostedAgenticTurn:
 
         kind = ACTION_KIND_FOR_TOOL.get(call.name)
         model_action = _call_action(call)
-        if kind == "fetch":
+        if kind in {"fetch", "open_page"}:
             url = model_action.get("url")
             if not isinstance(url, str) or not url.strip():
                 url = call.arguments.strip() or "{}"
-            action: dict[str, Any] = {"kind": "fetch", "url": url}
+            action: dict[str, Any] = {"kind": kind, "url": url}
+        elif kind == "find_in_page":
+            url = model_action.get("url")
+            pattern = model_action.get("pattern")
+            if not isinstance(url, str) or not url.strip():
+                url = call.arguments.strip() or "{}"
+            if not isinstance(pattern, str) or not pattern:
+                pattern = call.arguments.strip() or "{}"
+            action = {"kind": "find_in_page", "url": url, "pattern": pattern}
         else:
             query = model_action.get("query")
             if not isinstance(query, str) or not query.strip():
@@ -839,15 +998,51 @@ class _HostedAgenticTurn:
         with self._lock:
             if self._terminal_emitted:
                 return
+        state = (
+            "completed"
+            if isinstance(event, TurnCompleted)
+            else "cancelled" if isinstance(event, TurnCancelled) else "failed"
+        )
+        usage = event.usage if isinstance(event, TurnCompleted) else None
+        evidence_token: str | None = None
+        if self._evidence is not None:
+            try:
+                evidence_token = self._evidence.prepare_terminal(
+                    self.response_id,
+                    state=state,
+                    cancel_reason=(
+                        event.reason if isinstance(event, TurnCancelled) else None
+                    ),
+                    terminal_usage=(
+                        None if usage is None else dict(_usage_mapping(usage))
+                    ),
+                )
+            except Exception as evidence_error:
+                raise HostedEvidenceError("admission evidence failed") from evidence_error
+        with self._lock:
+            if self._terminal_emitted:
+                return
             self._terminal_emitted = True
         try:
             self._forward(event)
         except BaseException as error:
+            if evidence_token is not None and self._evidence is not None:
+                self._evidence.mark_terminal(
+                    self.response_id,
+                    evidence_token,
+                    delivered=False,
+                )
             # Never suppressed into apparent success: the fault escapes the
             # turn task so wait_closed() observably reports it.
             raise HostedTerminalDeliveryError(
                 "outer terminal event could not be delivered to the sink"
             ) from error
+        if evidence_token is not None and self._evidence is not None:
+            self._evidence.mark_terminal(
+                self.response_id,
+                evidence_token,
+                delivered=True,
+            )
 
     def _raise_if_cancelled(self) -> None:
         if self._token.cancelled:
@@ -1183,13 +1378,20 @@ def _citation_sources(
     for event in results:
         result = event.result
         if result["kind"] == "document":
+            content = (
+                result["extracted_text"]
+                if result.get("representation") == "base64"
+                else result["content"]
+            )
             sources.append(
                 CitationSource(
                     call_id=event.call_id,
                     url=result["url"],
-                    content=result["content"],
+                    content=content,
                 )
             )
+            continue
+        if result["kind"] == "find_matches":
             continue
         for entry in result["results"]:
             sources.append(
@@ -1210,6 +1412,55 @@ def _call_action(call: ParsedToolCall) -> Mapping[str, Any]:
     if isinstance(parsed, dict):
         return parsed
     return {"arguments": call.arguments}
+
+
+def _opening_action(
+    call: ParsedToolCall,
+    model_action: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project a total opening action without claiming successful validation."""
+
+    fallback = call.arguments.strip() or "{}"
+    if call.name == "web_search":
+        query = model_action.get("query")
+        return {"query": query if isinstance(query, str) and query.strip() else fallback}
+    if call.name in {"web_fetch", "open_page"}:
+        url = model_action.get("url")
+        return {"url": url if isinstance(url, str) and url.strip() else fallback}
+    if call.name == "find_in_page":
+        url = model_action.get("url")
+        pattern = model_action.get("pattern")
+        return {
+            "url": url if isinstance(url, str) and url.strip() else fallback,
+            "pattern": (
+                pattern if isinstance(pattern, str) and pattern else fallback
+            ),
+        }
+    raise HostedRuntimeIntegrityError("hosted opening action has an unknown tool")
+
+
+_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+
+
+def _message_urls(messages: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """Extract only literal user-supplied URL identities from request content."""
+
+    urls: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            urls.extend(match.rstrip(".,);]}") for match in _URL_PATTERN.findall(value))
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            for item in value:
+                visit(item)
+
+    for message in messages:
+        if str(message.get("role", "")).lower() == "user":
+            visit(message.get("content"))
+    return tuple(dict.fromkeys(urls))
 
 
 def _assistant_tool_call_message(
@@ -1270,6 +1521,19 @@ def _add_usage(base: UsageUpdate | None, child: UsageUpdate) -> UsageUpdate:
         reasoning_output_tokens=(
             base.reasoning_output_tokens + child.reasoning_output_tokens
         ),
+    )
+
+
+def _usage_mapping(usage: UsageUpdate) -> MappingProxyType:
+    return MappingProxyType(
+        {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "reasoning_output_tokens": usage.reasoning_output_tokens,
+        }
     )
 
 

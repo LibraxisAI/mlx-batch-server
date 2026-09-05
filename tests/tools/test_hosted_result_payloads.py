@@ -19,6 +19,7 @@ import pytest
 from mlx_batch_server.tools.hosted import (
     HOSTED_ERROR_CODES,
     MAX_RESULT_TEXT_CHARS,
+    HostedExecutionPolicy,
     HostedExecutionScope,
     HostedToolCatalog,
     HostedToolError,
@@ -85,9 +86,35 @@ def _call(name: str, arguments: str, call_id: str = "call_1") -> ParsedToolCall:
     return ParsedToolCall(index=0, call_id=call_id, name=name, arguments=arguments)
 
 
+def _policy(
+    protocol: str = "anthropic_messages",
+    *,
+    prior_urls: tuple[str, ...] = ("https://cdn.example/page",),
+) -> HostedExecutionPolicy:
+    return HostedExecutionPolicy(  # type: ignore[arg-type]
+        protocol=protocol,
+        max_url_chars=250 if protocol == "anthropic_messages" else None,
+        prior_urls=frozenset(prior_urls),
+    )
+
+
+async def _execute(
+    executor: HostedToolExecutor,
+    call: ParsedToolCall,
+    *,
+    policy: HostedExecutionPolicy | None = None,
+):
+    token = set_execution_scope(HostedExecutionScope(policy=policy or _policy()))
+    try:
+        return await executor.execute(call)
+    finally:
+        reset_execution_scope(token)
+
+
 def _document(**overrides: object) -> dict[str, object]:
     result: dict[str, object] = {
         "kind": "document",
+        "representation": "text",
         "url": "https://cdn.example/page",
         "media_type": "text/plain",
         "content": "hosted fetch body",
@@ -141,7 +168,8 @@ async def test_fetch_result_is_canonical_golden_and_fetched_exactly_once() -> No
     catalog = HostedToolCatalog((HostedWebFetchTool(fetch=_fetch(handler)),))
     executor = HostedToolExecutor(catalog)
 
-    result = await executor.execute(
+    result = await _execute(
+        executor,
         _call("web_fetch", '{"url":"https://cdn.example/page"}')
     )
 
@@ -152,6 +180,7 @@ async def test_fetch_result_is_canonical_golden_and_fetched_exactly_once() -> No
     assert result.metadata is not None
     payload = result.metadata["result"]
     assert payload["kind"] == "document"
+    assert payload["representation"] == "text"
     assert payload["url"] == "https://cdn.example/page"
     assert payload["media_type"] == "text/plain"
     assert payload["content"] == "hosted fetch body"
@@ -185,7 +214,11 @@ async def test_search_result_digest_is_golden_and_receipt_agrees() -> None:
 
     catalog = HostedToolCatalog((HostedWebSearchTool(provider=provider),))
     executor = HostedToolExecutor(catalog)
-    result = await executor.execute(_call("web_search", '{"query":"loctree"}'))
+    result = await _execute(
+        executor,
+        _call("web_search", '{"query":"loctree"}'),
+        policy=_policy("openai_responses", prior_urls=()),
+    )
 
     assert result.ok
     assert result.metadata is not None
@@ -316,14 +349,14 @@ async def test_executor_types_budget_overflow_without_leaking_content() -> None:
         def describe(self):
             return {"name": self.name}
 
-        async def invoke(self, arguments):
+        async def invoke(self, arguments, *, policy):
             return HostedToolSuccess(
                 payload={"ok": True},
                 result=_document(content="x" * (MAX_RESULT_TEXT_CHARS + 1)),
             )
 
     executor = HostedToolExecutor(HostedToolCatalog((_OversizedTool(),)))
-    result = await executor.execute(_call("web_fetch", "{}"))
+    result = await _execute(executor, _call("web_fetch", "{}"))
 
     assert not result.ok
     assert result.metadata is not None
@@ -340,7 +373,7 @@ async def test_receipt_disagreement_fails_closed() -> None:
         def describe(self):
             return {"name": self.name}
 
-        async def invoke(self, arguments):
+        async def invoke(self, arguments, *, policy):
             return HostedToolSuccess(
                 payload={"ok": True},
                 receipt_fields={
@@ -352,7 +385,7 @@ async def test_receipt_disagreement_fails_closed() -> None:
             )
 
     executor = HostedToolExecutor(HostedToolCatalog((_LyingTool(),)))
-    result = await executor.execute(_call("web_fetch", "{}"))
+    result = await _execute(executor, _call("web_fetch", "{}"))
 
     assert not result.ok
     assert result.metadata is not None
@@ -368,7 +401,7 @@ async def test_failure_paths_carry_no_result_payload() -> None:
         def describe(self):
             return {"name": "crash"}
 
-        async def invoke(self, arguments):
+        async def invoke(self, arguments, *, policy):
             raise RuntimeError("backend exploded")
 
     class _SlowTool:
@@ -377,7 +410,7 @@ async def test_failure_paths_carry_no_result_payload() -> None:
         def describe(self):
             return {"name": "slow"}
 
-        async def invoke(self, arguments):
+        async def invoke(self, arguments, *, policy):
             await asyncio.sleep(30.0)
 
     catalog = HostedToolCatalog(
@@ -390,7 +423,15 @@ async def test_failure_paths_carry_no_result_payload() -> None:
         ("slow", "{}"),
         ("web_search", '{"query":"q"}'),
     ):
-        result = await executor.execute(_call(name, arguments))
+        result = await _execute(
+            executor,
+            _call(name, arguments),
+            policy=(
+                _policy("openai_responses", prior_urls=())
+                if name == "web_search"
+                else _policy()
+            ),
+        )
         assert not result.ok
         assert result.metadata is not None
         assert "result" not in result.metadata
@@ -406,7 +447,9 @@ async def test_cancelled_scope_produces_no_result() -> None:
     handler = _CountingHandler()
     catalog = HostedToolCatalog((HostedWebFetchTool(fetch=_fetch(handler)),))
     executor = HostedToolExecutor(catalog)
-    token = set_execution_scope(HostedExecutionScope(cancel=_Cancel()))
+    token = set_execution_scope(
+        HostedExecutionScope(cancel=_Cancel(), policy=_policy())
+    )
     try:
         with pytest.raises(asyncio.CancelledError):
             await executor.execute(
@@ -423,7 +466,9 @@ async def test_exhausted_deadline_is_typed_and_carries_no_result() -> None:
     catalog = HostedToolCatalog((HostedWebFetchTool(fetch=_fetch(handler)),))
     executor = HostedToolExecutor(catalog)
     loop = asyncio.get_running_loop()
-    token = set_execution_scope(HostedExecutionScope(deadline=loop.time() - 1.0))
+    token = set_execution_scope(
+        HostedExecutionScope(deadline=loop.time() - 1.0, policy=_policy())
+    )
     try:
         result = await executor.execute(
             _call("web_fetch", '{"url":"https://cdn.example/page"}')
@@ -470,8 +515,10 @@ async def test_redirect_keeps_requested_action_and_final_provenance() -> None:
     catalog = HostedToolCatalog((HostedWebFetchTool(fetch=_fetch(handler)),))
     executor = HostedToolExecutor(catalog)
 
-    result = await executor.execute(
-        _call("web_fetch", '{"url":"https://example.com/start"}')
+    result = await _execute(
+        executor,
+        _call("web_fetch", '{"url":"https://example.com/start"}'),
+        policy=_policy(prior_urls=("https://example.com/start",)),
     )
 
     assert result.ok

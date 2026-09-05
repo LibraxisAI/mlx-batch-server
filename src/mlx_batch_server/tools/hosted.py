@@ -14,14 +14,17 @@ schema has no field for provider keys, resolved addresses, or request bodies.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextvars
+import hashlib
 import json
 import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from .agent_loop import ToolExecutionResult
 
@@ -72,6 +75,10 @@ HOSTED_ERROR_CODES: frozenset[str] = frozenset(
         "continuation_exhausted",  # I8: hosted call inside the terminal continuation
         "tool_round_limit",  # AgentLoopLimitExceeded on a new round
         "result_budget_exceeded",  # canonical result payload over its per-call bound
+        "url_not_in_prior_context",
+        "fetch_url_too_long",
+        "fetch_invalid_pdf",
+        "admission_evidence_failed",
     }
     | {f"{FETCH_CODE_PREFIX}{code}" for code in _FETCH_CODES}  # F6-F7
 )
@@ -92,6 +99,12 @@ RECEIPT_EXTRA_FIELDS: Mapping[str, type] = MappingProxyType(
         "redirect_count": int,
         "result_digest": str,
         "result_count": int,
+        "source_bytes": int,
+        "content_encoding": str,
+        "content_tokenizer": str,
+        "content_tokens": int,
+        "content_token_limit": int,
+        "content_truncation": str,
     }
 )
 
@@ -103,25 +116,54 @@ RECEIPT_EXTRA_FIELDS: Mapping[str, type] = MappingProxyType(
 RESULT_KIND_FOR_TOOL: Mapping[str, str] = MappingProxyType(
     {
         "web_fetch": "document",
+        "open_page": "document",
+        "find_in_page": "find_matches",
         "web_search": "search_results",
     }
 )
 ACTION_KIND_FOR_TOOL: Mapping[str, str] = MappingProxyType(
     {
         "web_fetch": "fetch",
+        "open_page": "open_page",
+        "find_in_page": "find_in_page",
         "web_search": "search",
     }
 )
 MAX_RESULT_TEXT_CHARS = 262_144
 MAX_RESULT_BYTES = 1_048_576
 
-_DOCUMENT_RESULT_KEYS = frozenset(
-    {"kind", "url", "media_type", "content", "digest", "retrieved_at"}
+_TEXT_DOCUMENT_RESULT_KEYS = frozenset(
+    {
+        "kind",
+        "representation",
+        "url",
+        "media_type",
+        "content",
+        "digest",
+        "retrieved_at",
+    }
+)
+_PDF_DOCUMENT_RESULT_KEYS = frozenset(
+    {
+        "kind",
+        "representation",
+        "url",
+        "media_type",
+        "content",
+        "extracted_text",
+        "digest",
+        "retrieved_at",
+    }
 )
 _SEARCH_RESULT_KEYS = frozenset({"kind", "query", "results", "digest"})
 _SEARCH_ENTRY_KEYS = frozenset({"title", "url", "snippet"})
+_FIND_RESULT_KEYS = frozenset(
+    {"kind", "url", "pattern", "matches", "digest", "retrieved_at"}
+)
+_FIND_MATCH_KEYS = frozenset({"start", "end", "excerpt"})
 _SEARCH_ACTION_KEYS = frozenset({"kind", "query", "sources"})
 _FETCH_ACTION_KEYS = frozenset({"kind", "url"})
+_FIND_ACTION_KEYS = frozenset({"kind", "url", "pattern"})
 _DIGEST_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 
 
@@ -166,16 +208,24 @@ def validate_result_payload(tool_name: str, result: Any) -> dict[str, Any]:
         raise ValueError(f"result kind must be {expected_kind!r} for {tool_name!r}")
     if expected_kind == "document":
         validated = _validate_document_result(result)
-    else:
+    elif expected_kind == "search_results":
         validated = _validate_search_result(result)
+    else:
+        validated = _validate_find_result(result)
     if len(canonical_json(validated).encode("utf-8")) > MAX_RESULT_BYTES:
         raise ResultBudgetExceeded("result payload exceeds the per-call byte bound")
     return validated
 
 
 def _validate_document_result(result: Mapping[str, Any]) -> dict[str, Any]:
-    if set(result) != _DOCUMENT_RESULT_KEYS:
-        raise ValueError("document result carries exactly its closed key set")
+    keys = set(result)
+    representation = result.get("representation")
+    if representation == "text" and keys != _TEXT_DOCUMENT_RESULT_KEYS:
+        raise ValueError("text document result carries exactly its closed key set")
+    if representation == "base64" and keys != _PDF_DOCUMENT_RESULT_KEYS:
+        raise ValueError("PDF document result carries exactly its closed key set")
+    if representation not in {"text", "base64"}:
+        raise ValueError("document representation must be text or base64")
     content = result["content"]
     if isinstance(content, bool) or not isinstance(content, str):
         raise ValueError("document content must be a string")
@@ -188,13 +238,30 @@ def _validate_document_result(result: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("retrieved_at must be a non-negative UTC integer")
     validated: dict[str, Any] = {
         "kind": "document",
+        "representation": representation,
         "url": _require_result_identity("url", result["url"]),
         "media_type": _require_result_identity("media_type", result["media_type"]),
         "content": content,
         "digest": _require_result_digest(result["digest"]),
         "retrieved_at": retrieved_at,
     }
-    if len(content) > MAX_RESULT_TEXT_CHARS:
+    if representation == "base64":
+        if validated["media_type"] != "application/pdf":
+            raise ValueError("base64 document result must be application/pdf")
+        extracted_text = result["extracted_text"]
+        if not isinstance(extracted_text, str):
+            raise ValueError("PDF extracted_text must be a string")
+        try:
+            raw = base64.b64decode(content, validate=True)
+        except ValueError as error:
+            raise ValueError("PDF content must be strict base64") from error
+        expected = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        if expected != validated["digest"]:
+            raise ValueError("PDF content digest does not match raw bytes")
+        if len(raw) > 262_144 or len(extracted_text) > MAX_RESULT_TEXT_CHARS:
+            raise ResultBudgetExceeded("PDF result exceeds its per-call bound")
+        validated["extracted_text"] = extracted_text
+    if representation == "text" and len(content) > MAX_RESULT_TEXT_CHARS:
         raise ResultBudgetExceeded("document content exceeds the per-call bound")
     return validated
 
@@ -226,10 +293,52 @@ def _validate_search_result(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_find_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    if set(result) != _FIND_RESULT_KEYS:
+        raise ValueError("find result carries exactly its closed key set")
+    matches = result["matches"]
+    if isinstance(matches, str | bytes) or not isinstance(matches, Sequence):
+        raise ValueError("find matches must be a sequence")
+    validated_matches: list[dict[str, Any]] = []
+    for match in matches:
+        if not isinstance(match, Mapping) or set(match) != _FIND_MATCH_KEYS:
+            raise ValueError("find match carries exactly start, end and excerpt")
+        start = match["start"]
+        end = match["end"]
+        excerpt = match["excerpt"]
+        if (
+            isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < 0
+            or end <= start
+        ):
+            raise ValueError("find match offsets are invalid")
+        validated_matches.append(
+            {
+                "start": start,
+                "end": end,
+                "excerpt": _require_result_identity("excerpt", excerpt),
+            }
+        )
+    retrieved_at = result["retrieved_at"]
+    if isinstance(retrieved_at, bool) or not isinstance(retrieved_at, int) or retrieved_at < 0:
+        raise ValueError("retrieved_at must be a non-negative UTC integer")
+    return {
+        "kind": "find_matches",
+        "url": _require_result_identity("url", result["url"]),
+        "pattern": _require_result_identity("pattern", result["pattern"]),
+        "matches": validated_matches,
+        "digest": _require_result_digest(result["digest"]),
+        "retrieved_at": retrieved_at,
+    }
+
+
 def result_identities(result: Mapping[str, Any]) -> tuple[str, ...]:
     """The URL identities a validated result proves for later sealed actions."""
 
-    if result["kind"] == "document":
+    if result["kind"] in {"document", "find_matches"}:
         return (result["url"],)
     return tuple(entry["url"] for entry in result["results"])
 
@@ -276,12 +385,23 @@ def validate_sealed_action(
             if not set(validated_sources) <= proven:
                 raise ValueError("search action sources are not proven by the result")
         return {"kind": "search", "query": query, "sources": list(validated_sources)}
+    if expected_kind == "find_in_page":
+        if keys != _FIND_ACTION_KEYS:
+            raise ValueError("find action carries exactly kind, url and pattern")
+        action_result = {
+            "kind": "find_in_page",
+            "url": _require_result_identity("url", action["url"]),
+            "pattern": _require_result_identity("pattern", action["pattern"]),
+        }
+        if result is not None:
+            validate_result_payload(tool_name, result)
+        return action_result
     if keys != _FETCH_ACTION_KEYS:
         raise ValueError("fetch action carries exactly kind and url")
     url = _require_result_identity("url", action["url"])
     if result is not None:
         validate_result_payload(tool_name, result)
-    return {"kind": "fetch", "url": url}
+    return {"kind": expected_kind, "url": url}
 
 
 def _verify_result_receipt_agreement(
@@ -292,11 +412,184 @@ def _verify_result_receipt_agreement(
 
     if receipt_fields.get("result_digest") != result["digest"]:
         raise ValueError("receipt result_digest does not match the result digest")
-    if result["kind"] == "document":
+    if result["kind"] in {"document", "find_matches"}:
         if receipt_fields.get("final_url") != result["url"]:
             raise ValueError("receipt final_url does not match the result url")
+    if result["kind"] == "document":
         if receipt_fields.get("mime") != result["media_type"]:
             raise ValueError("receipt mime does not match the result media_type")
+
+
+class HostedRoundMode(StrEnum):
+    """The only three child-round capability states."""
+
+    ACTION_SELECTION = "action_selection"
+    SUCCESS_FOLLOWUP = "success_followup"
+    FAILURE_CONTINUATION = "failure_continuation"
+
+
+@dataclass(frozen=True, slots=True)
+class HostedExecutionPolicy:
+    """One immutable request/round policy snapshot consumed by hosted tools."""
+
+    protocol: Literal["openai_responses", "anthropic_messages"]
+    max_uses: int = 8
+    max_content_tokens: int | None = None
+    max_url_chars: int | None = None
+    allowed_domains: tuple[str, ...] = ()
+    blocked_domains: tuple[str, ...] = ()
+    prior_urls: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if self.protocol not in {"openai_responses", "anthropic_messages"}:
+            raise ValueError("hosted policy protocol is unknown")
+        if isinstance(self.max_uses, bool) or self.max_uses < 1:
+            raise ValueError("hosted policy max_uses must be positive")
+        if self.max_content_tokens is not None and (
+            isinstance(self.max_content_tokens, bool) or self.max_content_tokens < 1
+        ):
+            raise ValueError("hosted policy max_content_tokens must be positive")
+        if self.max_url_chars is not None and (
+            isinstance(self.max_url_chars, bool) or self.max_url_chars < 1
+        ):
+            raise ValueError("hosted policy max_url_chars must be positive")
+        if self.allowed_domains and self.blocked_domains:
+            raise ValueError("allowed_domains and blocked_domains are mutually exclusive")
+        for field_name, values in (
+            ("allowed_domains", self.allowed_domains),
+            ("blocked_domains", self.blocked_domains),
+        ):
+            if any(not isinstance(value, str) or not value for value in values):
+                raise ValueError(f"{field_name} entries must be non-empty strings")
+        if any(not isinstance(value, str) or not value for value in self.prior_urls):
+            raise ValueError("prior_urls entries must be non-empty strings")
+
+    def with_prior_urls(self, values: Sequence[str]) -> HostedExecutionPolicy:
+        return HostedExecutionPolicy(
+            protocol=self.protocol,
+            max_uses=self.max_uses,
+            max_content_tokens=self.max_content_tokens,
+            max_url_chars=self.max_url_chars,
+            allowed_domains=self.allowed_domains,
+            blocked_domains=self.blocked_domains,
+            prior_urls=frozenset(values),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HostedToolPlan:
+    """Closed translation from one protocol declaration to model tools."""
+
+    protocol: Literal["openai_responses", "anthropic_messages"]
+    public_names: tuple[str, ...]
+    executable_names: frozenset[str]
+    model_tools: tuple[Mapping[str, Any], ...]
+    policy: HostedExecutionPolicy
+
+
+class _FrozenJSONDict(dict[str, Any]):
+    """JSON-compatible mapping that cannot be mutated after construction."""
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise TypeError("hosted model tool descriptors are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
+def _function_descriptor(
+    name: str,
+    description: str,
+    properties: Mapping[str, Mapping[str, Any]],
+    required: Sequence[str],
+) -> Mapping[str, Any]:
+    return _FrozenJSONDict(
+        {
+            "type": "function",
+            "name": name,
+            "description": description,
+            "parameters": _FrozenJSONDict(
+                {
+                    "type": "object",
+                    "properties": _FrozenJSONDict(
+                        {
+                            key: _FrozenJSONDict(dict(value))
+                            for key, value in properties.items()
+                        }
+                    ),
+                    "required": tuple(required),
+                    "additionalProperties": False,
+                }
+            ),
+        }
+    )
+
+
+_MODEL_TOOL_DESCRIPTORS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
+    {
+        "web_search": _function_descriptor(
+            "web_search",
+            "Search the public web for current information.",
+            {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Search query",
+                }
+            },
+            ("query",),
+        ),
+        "open_page": _function_descriptor(
+            "open_page",
+            "Open a URL previously supplied by the user or returned by web_search.",
+            {
+                "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Previously known URL",
+                }
+            },
+            ("url",),
+        ),
+        "find_in_page": _function_descriptor(
+            "find_in_page",
+            "Find literal text in a previously supplied or searched page.",
+            {
+                "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Previously known URL",
+                },
+                "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Literal text to find",
+                },
+            },
+            ("url", "pattern"),
+        ),
+        "web_fetch": _function_descriptor(
+            "web_fetch",
+            "Fetch one public URL explicitly present in the conversation.",
+            {
+                "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Previously known URL",
+                }
+            },
+            ("url",),
+        ),
+    }
+)
 
 
 @runtime_checkable
@@ -322,6 +615,7 @@ class HostedExecutionScope:
 
     deadline: float | None = None
     cancel: ExecutionCancelCheck | None = None
+    policy: HostedExecutionPolicy | None = None
 
     def remaining_s(self) -> float | None:
         if self.deadline is None:
@@ -374,7 +668,12 @@ class HostedTool(Protocol):
 
     def describe(self) -> Mapping[str, Any]: ...
 
-    async def invoke(self, arguments: Mapping[str, Any]) -> HostedToolSuccess: ...
+    async def invoke(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        policy: HostedExecutionPolicy,
+    ) -> HostedToolSuccess: ...
 
 
 class HostedToolSuccess:
@@ -425,8 +724,100 @@ class HostedToolCatalog:
     def get(self, name: str) -> HostedTool | None:
         return self._tools.get(name)
 
+    def plan_for(self, request: Any) -> HostedToolPlan | None:
+        """Translate one immutable GenerationRequest without mutating it.
+
+        The two public protocols deliberately use disjoint hosted declarations:
+        Responses says ``web_search`` and gains the closed search/page/find
+        model arsenal; Anthropic says ``web_fetch`` and gains only that server
+        tool. A mixed hosted/client declaration has no executable meaning.
+        """
+
+        declarations = tuple(
+            tool for tool in getattr(request, "tools", ()) if isinstance(tool, Mapping)
+        )
+        hosted: list[Mapping[str, Any]] = []
+        client: list[Mapping[str, Any]] = []
+        for tool in declarations:
+            kind = tool.get("type")
+            name = tool.get("name")
+            if kind == "web_search":
+                hosted.append(tool)
+            elif kind == "web_fetch" and name == "web_fetch":
+                hosted.append(tool)
+            else:
+                if kind == "function" and name in {"open_page", "find_in_page"}:
+                    raise ValueError("client tools cannot claim internal hosted names")
+                client.append(tool)
+        if hosted and client:
+            raise ValueError("hosted tools cannot be mixed with client-owned tools")
+        if not hosted:
+            return None
+        if len(hosted) != 1:
+            raise ValueError("exactly one public hosted tool declaration is supported")
+        declaration = hosted[0]
+        public_name = str(declaration.get("name") or declaration.get("type"))
+        if public_name == "web_search":
+            protocol: Literal["openai_responses", "anthropic_messages"] = (
+                "openai_responses"
+            )
+            desired = ("web_search", "open_page", "find_in_page")
+            policy = HostedExecutionPolicy(protocol=protocol)
+        elif public_name == "web_fetch":
+            protocol = "anthropic_messages"
+            desired = ("web_fetch",)
+            policy = HostedExecutionPolicy(
+                protocol=protocol,
+                max_uses=_positive_int(declaration.get("max_uses"), default=8),
+                max_content_tokens=_optional_positive_int(
+                    declaration.get("max_content_tokens")
+                ),
+                max_url_chars=250,
+                allowed_domains=_string_tuple(declaration.get("allowed_domains")),
+                blocked_domains=_string_tuple(declaration.get("blocked_domains")),
+            )
+        else:  # pragma: no cover - guarded by hosted classification
+            raise ValueError("unknown public hosted tool")
+        executable = frozenset(name for name in desired if name in self._tools)
+        return HostedToolPlan(
+            protocol=protocol,
+            public_names=(public_name,),
+            executable_names=executable,
+            model_tools=tuple(
+                _MODEL_TOOL_DESCRIPTORS[name]
+                for name in desired
+                if name in executable
+            ),
+            policy=policy,
+        )
+
     def __bool__(self) -> bool:
         return bool(self._tools)
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("hosted policy integer must be positive")
+    return value
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return _positive_int(value, default=1)
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+        raise ValueError("hosted domain policy must be a sequence")
+    result = tuple(str(item).strip().lower() for item in value)
+    if any(not item for item in result):
+        raise ValueError("hosted domain policy entries must not be empty")
+    return result
 
 
 class HostedToolExecutor:
@@ -509,9 +900,16 @@ class HostedToolExecutor:
         scope = current_execution_scope()
         if scope.cancel is not None and scope.cancel.cancelled:
             raise asyncio.CancelledError(scope.cancel.reason or "cancelled")
+        if scope.policy is None:
+            return self._failure(
+                call,
+                "tool_not_allowed",
+                "hosted execution policy is missing",
+                started,
+            )
         try:
             async with asyncio.timeout(self._per_call_timeout_s):
-                success = await tool.invoke(arguments)
+                success = await tool.invoke(arguments, policy=scope.policy)
         except HostedToolError as error:
             return self._failure(call, error.code, error.message, started)
         except TimeoutError:
@@ -718,11 +1116,14 @@ __all__ = [
     "RESULT_KIND_FOR_TOOL",
     "UNEXPECTED_EXECUTION_FAILURE_MESSAGE",
     "ExecutionCancelCheck",
+    "HostedExecutionPolicy",
     "HostedExecutionScope",
+    "HostedRoundMode",
     "HostedTool",
     "HostedToolCatalog",
     "HostedToolError",
     "HostedToolExecutor",
+    "HostedToolPlan",
     "HostedToolSuccess",
     "ResultBudgetExceeded",
     "build_receipt",

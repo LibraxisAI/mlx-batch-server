@@ -474,6 +474,13 @@ class RuntimeResponseProjection:
         result = event.result
         if result["kind"] == "document":
             lengths = {str(result["url"]): len(str(result["content"]))}
+        elif result["kind"] == "find_matches":
+            lengths = {
+                str(result["url"]): max(
+                    (int(match["end"]) for match in result["matches"]),
+                    default=0,
+                )
+            }
         else:
             lengths = {
                 str(entry["url"]): len(str(entry["snippet"]))

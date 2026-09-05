@@ -252,7 +252,7 @@ def test_hosted_completion_action_is_a_closed_deep_frozen_schema() -> None:
         "call_id": "call_1",
         "name": "web_search",
     }
-    with pytest.raises(ValueError, match="kind must be search or fetch"):
+    with pytest.raises(ValueError, match="outside the closed hosted union"):
         OutputItemCompleted(**hosted, action={"kind": "browse"})  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="exactly kind, query and sources"):
         OutputItemCompleted(**hosted, action=_sealed_search(extra="x"))  # type: ignore[arg-type]
@@ -278,6 +278,35 @@ def test_failed_hosted_action_carries_no_success_sources() -> None:
             status="failed",
             action=_sealed_search(),
         )
+
+
+def test_open_and_find_actions_are_closed_and_immutable() -> None:
+    opened = OutputItemCompleted(
+        kind=HOSTED_CALL_ITEM_KIND,
+        index=0,
+        item_id="open_1",
+        call_id="call_open",
+        name="open_page",
+        status="completed",
+        action={"kind": "open_page", "url": "https://example.com"},
+    )
+    found = OutputItemCompleted(
+        kind=HOSTED_CALL_ITEM_KIND,
+        index=1,
+        item_id="find_1",
+        call_id="call_find",
+        name="find_in_page",
+        status="completed",
+        action={
+            "kind": "find_in_page",
+            "url": "https://example.com",
+            "pattern": "needle",
+        },
+    )
+    assert opened.action == {"kind": "open_page", "url": "https://example.com"}
+    assert found.action is not None and found.action["pattern"] == "needle"
+    with pytest.raises(TypeError):
+        found.action["pattern"] = "mutated"  # type: ignore[index]
 
 
 def test_hosted_result_validates_identity_and_freezes_its_payload() -> None:
@@ -324,7 +353,7 @@ def test_hosted_result_validates_identity_and_freezes_its_payload() -> None:
         "call_id": "call_1",
         "tool_name": "web_fetch",
     }
-    with pytest.raises(ValueError, match="document or search_results"):
+    with pytest.raises(ValueError, match="outside the closed hosted union"):
         HostedCallResult(**base, result={"url": "https://a", "digest": "sha256:x"})  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="result digest"):
         HostedCallResult(**base, result={"kind": "document", "url": "https://a"})  # type: ignore[arg-type]

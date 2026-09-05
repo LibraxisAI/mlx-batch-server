@@ -115,6 +115,8 @@ class FetchedResource:
     content: bytes
     media_type: str
     final_url: str
+    http_status: int = 200
+    redirect_count: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.content, bytes) or not self.content:
@@ -122,6 +124,18 @@ class FetchedResource:
         object.__setattr__(self, "media_type", _normalize_media_type(self.media_type))
         if not self.final_url:
             raise ValueError("final_url must be non-empty")
+        if (
+            isinstance(self.http_status, bool)
+            or not isinstance(self.http_status, int)
+            or not 200 <= self.http_status < 300
+        ):
+            raise ValueError("http_status must be a successful HTTP status")
+        if (
+            isinstance(self.redirect_count, bool)
+            or not isinstance(self.redirect_count, int)
+            or self.redirect_count < 0
+        ):
+            raise ValueError("redirect_count must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +283,8 @@ class SafePublicFetch:
                     content=content,
                     media_type=media_type,
                     final_url=hop.logical_url,
+                    http_status=response.status_code,
+                    redirect_count=redirects,
                 )
         raise SafePublicFetchError(
             "redirect_limit_exceeded",

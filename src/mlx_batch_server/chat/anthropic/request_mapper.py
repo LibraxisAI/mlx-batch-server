@@ -45,7 +45,7 @@ _WEB_FETCH_TYPE = "web_fetch_20250910"
 _WEB_FETCH_NAME = "web_fetch"
 
 
-def build_turn(request: MessagesRequest) -> AnthropicTurn:
+def build_turn(request: MessagesRequest, *, trace_id: str | None = None) -> AnthropicTurn:
     """Translate one Anthropic request into a runtime-neutral turn."""
 
     _reject_unsupported(request)
@@ -61,7 +61,7 @@ def build_turn(request: MessagesRequest) -> AnthropicTurn:
         tool_choice=tool_choice,
         sampling=_map_sampling(request),
         reasoning=_map_reasoning(request),
-        metadata=_map_metadata(request),
+        metadata=_map_metadata(request, trace_id=trace_id),
     )
 
 
@@ -687,12 +687,20 @@ def _map_reasoning(request: MessagesRequest) -> Mapping[str, Any]:
     return {"enabled": False}
 
 
-def _map_metadata(request: MessagesRequest) -> Mapping[str, Any]:
+def _map_metadata(
+    request: MessagesRequest,
+    *,
+    trace_id: str | None = None,
+) -> Mapping[str, Any]:
     metadata: dict[str, Any] = {}
     if request.metadata is not None and request.metadata.user_id:
         metadata["user_id"] = request.metadata.user_id
     if request.service_tier is not None:
         metadata["service_tier"] = request.service_tier.value
+    if trace_id is not None:
+        if not trace_id.strip():
+            raise ValueError("hosted trace id must not be empty")
+        metadata["mlx_batch_server.internal.hosted_trace_id"] = trace_id
     if any(
         tool.type == _WEB_FETCH_TYPE
         and tool.citations is not None

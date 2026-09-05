@@ -64,6 +64,7 @@ from mlx_batch_server.tools.hosted import HOSTED_ERROR_CODES
 
 from .anthropic_schema import (
     AnthropicStreamEvent,
+    Base64PDFSource,
     CitationCharLocation,
     CitationsConfig,
     CitationsDeltaBody,
@@ -784,7 +785,7 @@ class AnthropicMessageProjector:
             )
         if event.result.get("kind") != "document":
             raise AnthropicAPIError(
-                "Anthropic web_fetch cannot project a PDF or search-result payload",
+                "Anthropic web_fetch cannot project a non-document payload",
                 error_type="api_error",
             )
         call.result = event.result
@@ -846,9 +847,14 @@ class AnthropicMessageProjector:
             raise AnthropicAPIError(
                 "web_fetch result has no bounded text", error_type="api_error"
             )
-        if not isinstance(media_type, str) or not _is_text_media_type(media_type):
+        representation = result.get("representation", "text")
+        if representation == "base64" and media_type == "application/pdf":
+            source: PlainTextSource | Base64PDFSource = Base64PDFSource(data=content)
+        elif representation == "text" and isinstance(media_type, str) and _is_text_media_type(media_type):
+            source = PlainTextSource(data=content)
+        else:
             raise AnthropicAPIError(
-                f"web_fetch result media_type {media_type!r} is not text-family",
+                f"web_fetch result representation/media_type is unsupported: {representation!r}/{media_type!r}",
                 error_type="api_error",
             )
         if isinstance(retrieved_at, bool) or not isinstance(retrieved_at, int):
@@ -865,7 +871,7 @@ class AnthropicMessageProjector:
                 url=url,
                 retrieved_at=timestamp,
                 content=DocumentBlock(
-                    source=PlainTextSource(data=content),
+                    source=source,
                     title=url,
                     citations=(
                         CitationsConfig(enabled=True)
@@ -922,7 +928,11 @@ class AnthropicMessageProjector:
                 error_type="api_error",
             )
         source_url = call.result.get("url")
-        source_text = call.result.get("content")
+        source_text = (
+            call.result.get("extracted_text")
+            if call.result.get("representation") == "base64"
+            else call.result.get("content")
+        )
         if source_url != event.source_url or not isinstance(source_text, str):
             raise AnthropicAPIError(
                 "hosted citation contradicts its web_fetch result URL",
@@ -1159,6 +1169,7 @@ def _web_fetch_error_code(receipt: Mapping[str, Any]) -> WebFetchErrorCode:
         "fetch_missing_media_type",
         "fetch_invalid_media_type",
         "fetch_invalid_fetch_media_types",
+        "fetch_invalid_pdf",
     }:
         mapped = "unsupported_content_type"
     elif code in {
@@ -1169,7 +1180,7 @@ def _web_fetch_error_code(receipt: Mapping[str, Any]) -> WebFetchErrorCode:
         "fetch_token_budget",
     }:
         mapped = "invalid_tool_input"
-    elif code == "tool_arguments_too_large":
+    elif code in {"tool_arguments_too_large", "fetch_url_too_long"}:
         mapped = "url_too_long"
     elif code in {
         "fetch_invalid_url",
@@ -1178,6 +1189,7 @@ def _web_fetch_error_code(receipt: Mapping[str, Any]) -> WebFetchErrorCode:
         "fetch_url_target_blocked",
         "fetch_redirect_not_allowed",
         "fetch_url_not_allowed",
+        "url_not_in_prior_context",
     }:
         mapped = "url_not_allowed"
     elif code in {

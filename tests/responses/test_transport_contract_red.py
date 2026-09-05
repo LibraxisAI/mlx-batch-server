@@ -1900,21 +1900,16 @@ def test_hosted_started_item_is_exact_and_sdk_valid() -> None:
     assert rendered["type"] != "function_call"
 
 
-def test_hosted_started_item_fails_closed_for_non_search_or_unknown_actions() -> None:
-    with pytest.raises(ValueError, match="hosted web_search starts"):
+def test_hosted_started_item_fails_closed_for_unknown_or_invalid_actions() -> None:
+    with pytest.raises(ValueError, match="Responses hosted web tools"):
         render_started_item(
             OutputItemStarted(
-                "hosted_call",
-                0,
-                "fetch_1",
-                "call_fetch",
-                "web_fetch",
-                {"url": "https://example.com"},
+                "hosted_call", 0, "fetch_1", "call_fetch", "web_fetch", {"url": "https://example.com"}
             )
         )
-    with pytest.raises(ValueError, match="exactly one query"):
+    with pytest.raises(ValueError, match="requires only query"):
         render_started_item(_hosted_started_event(arguments="{}"))
-    with pytest.raises(ValueError, match="exactly one query"):
+    with pytest.raises(ValueError, match="requires only query"):
         render_started_item(
             _hosted_started_event(
                 query="mlx batch server",
@@ -1923,6 +1918,35 @@ def test_hosted_started_item_fails_closed_for_non_search_or_unknown_actions() ->
         )
     with pytest.raises(ValueError, match="non-empty query"):
         render_started_item(_hosted_started_event(query=" "))
+
+
+def test_open_page_and_find_in_page_render_as_official_web_search_actions() -> None:
+    opened = render_started_item(
+        OutputItemStarted(
+            "hosted_call",
+            0,
+            "open_1",
+            "call_open",
+            "open_page",
+            {"url": "https://example.com"},
+        )
+    )
+    found = render_started_item(
+        OutputItemStarted(
+            "hosted_call",
+            1,
+            "find_1",
+            "call_find",
+            "find_in_page",
+            {"url": "https://example.com", "pattern": "needle"},
+        )
+    )
+    assert opened["action"] == {"type": "open_page", "url": "https://example.com"}
+    assert found["action"] == {
+        "type": "find_in_page",
+        "url": "https://example.com",
+        "pattern": "needle",
+    }
 
 
 def test_non_hosted_started_item_goldens_are_unchanged() -> None:

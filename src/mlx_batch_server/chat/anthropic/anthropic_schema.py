@@ -95,11 +95,19 @@ class PlainTextSource(BaseModel):
     data: str
 
 
+class Base64PDFSource(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["base64"] = "base64"
+    media_type: Literal["application/pdf"] = "application/pdf"
+    data: str
+
+
 class DocumentBlock(BaseModel):
     model_config = _STRICT
 
     type: Literal["document"] = "document"
-    source: PlainTextSource
+    source: Union[PlainTextSource, Base64PDFSource]
     title: str | None = None
     citations: CitationsConfig | None = None
 
@@ -774,6 +782,7 @@ AnthropicStreamEvent = Union[
 __all__ = [
     "AnthropicStreamEvent",
     "AnthropicTool",
+    "Base64PDFSource",
     "CacheControl",
     "CitationsConfig",
     "ContentBlock",
