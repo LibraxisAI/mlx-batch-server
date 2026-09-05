@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -70,6 +71,7 @@ HOSTED_ERROR_CODES: frozenset[str] = frozenset(
         "tool_not_allowed",  # F10 (unknown/unadmitted hosted name)
         "continuation_exhausted",  # I8: hosted call inside the terminal continuation
         "tool_round_limit",  # AgentLoopLimitExceeded on a new round
+        "result_budget_exceeded",  # canonical result payload over its per-call bound
     }
     | {f"{FETCH_CODE_PREFIX}{code}" for code in _FETCH_CODES}  # F6-F7
 )
@@ -92,6 +94,205 @@ RECEIPT_EXTRA_FIELDS: Mapping[str, type] = MappingProxyType(
         "result_count": int,
     }
 )
+
+# Canonical decoded result channel (HR2-2). ``metadata["result"]`` is the sole
+# producer boundary for the closed, bounded, model-agreeing success payload;
+# the receipt stays a separate closed audit surface and the two must agree
+# mechanically on digest/provenance. Failure, cancel, and deadline outcomes
+# never carry a result payload.
+RESULT_KIND_FOR_TOOL: Mapping[str, str] = MappingProxyType(
+    {
+        "web_fetch": "document",
+        "web_search": "search_results",
+    }
+)
+ACTION_KIND_FOR_TOOL: Mapping[str, str] = MappingProxyType(
+    {
+        "web_fetch": "fetch",
+        "web_search": "search",
+    }
+)
+MAX_RESULT_TEXT_CHARS = 262_144
+MAX_RESULT_BYTES = 1_048_576
+
+_DOCUMENT_RESULT_KEYS = frozenset(
+    {"kind", "url", "media_type", "content", "digest", "retrieved_at"}
+)
+_SEARCH_RESULT_KEYS = frozenset({"kind", "query", "results", "digest"})
+_SEARCH_ENTRY_KEYS = frozenset({"title", "url", "snippet"})
+_SEARCH_ACTION_KEYS = frozenset({"kind", "query", "sources"})
+_FETCH_ACTION_KEYS = frozenset({"kind", "url"})
+_DIGEST_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+
+
+class ResultBudgetExceeded(ValueError):
+    """A structurally valid result payload exceeds its per-call bound."""
+
+
+def canonical_json(value: Any) -> str:
+    """The one canonical compact/sorted JSON representation used for digests."""
+
+    return _encode_json(value)
+
+
+def _require_result_identity(name: str, value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, str) or not value.strip():
+        raise ValueError(f"result field {name!r} must be a non-empty string")
+    return value
+
+
+def _require_result_digest(value: Any) -> str:
+    if not isinstance(value, str) or _DIGEST_PATTERN.match(value) is None:
+        raise ValueError("result digest must be 'sha256:' plus 64 lowercase hex")
+    return value
+
+
+def validate_result_payload(tool_name: str, result: Any) -> dict[str, Any]:
+    """Totally validate one closed canonical result payload for ``tool_name``.
+
+    Unknown keys, wrong types, empty identities, invalid digests, a kind that
+    does not belong to the tool, and nested foreign/debug/secret fields all
+    fail closed with ``ValueError``. A structurally valid payload above its
+    per-call bound raises ``ResultBudgetExceeded``. Returns a plain decoded
+    ``dict`` copy; validation never touches any transport.
+    """
+
+    expected_kind = RESULT_KIND_FOR_TOOL.get(tool_name)
+    if expected_kind is None:
+        raise ValueError(f"tool {tool_name!r} has no canonical result schema")
+    if not isinstance(result, Mapping):
+        raise ValueError("result payload must be a mapping")
+    if result.get("kind") != expected_kind:
+        raise ValueError(f"result kind must be {expected_kind!r} for {tool_name!r}")
+    if expected_kind == "document":
+        validated = _validate_document_result(result)
+    else:
+        validated = _validate_search_result(result)
+    if len(canonical_json(validated).encode("utf-8")) > MAX_RESULT_BYTES:
+        raise ResultBudgetExceeded("result payload exceeds the per-call byte bound")
+    return validated
+
+
+def _validate_document_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    if set(result) != _DOCUMENT_RESULT_KEYS:
+        raise ValueError("document result carries exactly its closed key set")
+    content = result["content"]
+    if isinstance(content, bool) or not isinstance(content, str):
+        raise ValueError("document content must be a string")
+    retrieved_at = result["retrieved_at"]
+    if (
+        isinstance(retrieved_at, bool)
+        or not isinstance(retrieved_at, int)
+        or retrieved_at < 0
+    ):
+        raise ValueError("retrieved_at must be a non-negative UTC integer")
+    validated: dict[str, Any] = {
+        "kind": "document",
+        "url": _require_result_identity("url", result["url"]),
+        "media_type": _require_result_identity("media_type", result["media_type"]),
+        "content": content,
+        "digest": _require_result_digest(result["digest"]),
+        "retrieved_at": retrieved_at,
+    }
+    if len(content) > MAX_RESULT_TEXT_CHARS:
+        raise ResultBudgetExceeded("document content exceeds the per-call bound")
+    return validated
+
+
+def _validate_search_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    if set(result) != _SEARCH_RESULT_KEYS:
+        raise ValueError("search result carries exactly its closed key set")
+    entries = result["results"]
+    if isinstance(entries, str | bytes) or not isinstance(entries, Sequence):
+        raise ValueError("search results must be a sequence of entries")
+    sanitized_entries: list[dict[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("search result entries must be mappings")
+        if not set(entry) <= _SEARCH_ENTRY_KEYS:
+            raise ValueError("search result entry carries a foreign field")
+        validated_entry = {
+            key: _require_result_identity(key, value) for key, value in entry.items()
+        }
+        _require_result_identity("url", validated_entry.get("url"))
+        sanitized_entries.append(validated_entry)
+    return {
+        "kind": "search_results",
+        "query": _require_result_identity("query", result["query"]),
+        "results": sanitized_entries,
+        "digest": _require_result_digest(result["digest"]),
+    }
+
+
+def result_identities(result: Mapping[str, Any]) -> tuple[str, ...]:
+    """The URL identities a validated result proves for later sealed actions."""
+
+    if result["kind"] == "document":
+        return (result["url"],)
+    return tuple(entry["url"] for entry in result["results"])
+
+
+def validate_sealed_action(
+    tool_name: str,
+    action: Any,
+    *,
+    result: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Totally validate one closed sealed action against its tool and result.
+
+    When ``result`` is given, a search action's sources must be a subset of
+    the result-proven identities and a fetch action's url must equal the
+    result url — provenance agrees mechanically or the action fails closed.
+    """
+
+    expected_kind = ACTION_KIND_FOR_TOOL.get(tool_name)
+    if expected_kind is None:
+        raise ValueError(f"tool {tool_name!r} has no sealed action schema")
+    if not isinstance(action, Mapping):
+        raise ValueError("sealed action must be a mapping")
+    if action.get("kind") != expected_kind:
+        raise ValueError(f"sealed action kind must be {expected_kind!r}")
+    keys = set(action)
+    if expected_kind == "search":
+        if keys != _SEARCH_ACTION_KEYS:
+            raise ValueError("search action carries exactly kind, query and sources")
+        query = _require_result_identity("query", action["query"])
+        sources = action["sources"]
+        if isinstance(sources, str | bytes) or not isinstance(sources, Sequence):
+            raise ValueError("search action sources must be a sequence")
+        validated_sources = tuple(
+            _require_result_identity("source", source) for source in sources
+        )
+        if len(set(validated_sources)) != len(validated_sources):
+            raise ValueError("search action sources must be unique")
+        if result is not None:
+            proven = set(result_identities(validate_result_payload(tool_name, result)))
+            if not set(validated_sources) <= proven:
+                raise ValueError("search action sources are not proven by the result")
+        return {"kind": "search", "query": query, "sources": list(validated_sources)}
+    if keys != _FETCH_ACTION_KEYS:
+        raise ValueError("fetch action carries exactly kind and url")
+    url = _require_result_identity("url", action["url"])
+    if result is not None:
+        validated_result = validate_result_payload(tool_name, result)
+        if url != validated_result["url"]:
+            raise ValueError("fetch action url does not match its result url")
+    return {"kind": "fetch", "url": url}
+
+
+def _verify_result_receipt_agreement(
+    result: Mapping[str, Any],
+    receipt_fields: Mapping[str, Any],
+) -> None:
+    """Fail closed unless receipt provenance mechanically matches the result."""
+
+    if receipt_fields.get("result_digest") != result["digest"]:
+        raise ValueError("receipt result_digest does not match the result digest")
+    if result["kind"] == "document":
+        if receipt_fields.get("final_url") != result["url"]:
+            raise ValueError("receipt final_url does not match the result url")
+        if receipt_fields.get("mime") != result["media_type"]:
+            raise ValueError("receipt mime does not match the result media_type")
 
 
 @runtime_checkable
@@ -173,20 +374,28 @@ class HostedTool(Protocol):
 
 
 class HostedToolSuccess:
-    """Model-visible payload plus the audit-safe receipt fields of one success."""
+    """Model-visible payload plus the audit-safe receipt fields of one success.
 
-    __slots__ = ("payload", "receipt_fields")
+    ``result`` is the tool's canonical decoded payload for the
+    ``metadata["result"]`` channel; the executor validates it closed and
+    bounded before it reaches any consumer. ``payload`` stays the byte-source
+    of the model continuation and is never reinterpreted downstream.
+    """
+
+    __slots__ = ("payload", "receipt_fields", "result")
 
     def __init__(
         self,
         *,
         payload: Any,
         receipt_fields: Mapping[str, Any] | None = None,
+        result: Mapping[str, Any] | None = None,
     ) -> None:
         self.payload = payload
         self.receipt_fields: Mapping[str, Any] = MappingProxyType(
             dict(receipt_fields or {})
         )
+        self.result = result
 
 
 class HostedToolCatalog:
@@ -343,6 +552,29 @@ class HostedToolExecutor:
                 "hosted tool payload is not JSON-compatible",
                 started,
             )
+        validated_result: dict[str, Any] | None = None
+        if success.result is not None:
+            try:
+                validated_result = validate_result_payload(call.name, success.result)
+                _verify_result_receipt_agreement(
+                    validated_result, success.receipt_fields
+                )
+            except ResultBudgetExceeded:
+                return self._failure(
+                    call,
+                    "result_budget_exceeded",
+                    "hosted tool result exceeds its per-call budget",
+                    started,
+                )
+            except (TypeError, ValueError):
+                # Foreign fields, broken identities, or receipt disagreement
+                # fail closed; the offending values never reach any surface.
+                return self._failure(
+                    call,
+                    "invalid_tool_result",
+                    "hosted tool produced an invalid result payload",
+                    started,
+                )
         try:
             receipt = build_receipt(
                 call_id=call.call_id,
@@ -360,10 +592,13 @@ class HostedToolExecutor:
                 "hosted tool produced an invalid success receipt",
                 started,
             )
+        metadata: dict[str, Any] = {"tool_name": call.name, "receipt": receipt}
+        if validated_result is not None:
+            metadata["result"] = validated_result
         return ToolExecutionResult(
             call_id=call.call_id,
             output=output,
-            metadata={"tool_name": call.name, "receipt": receipt},
+            metadata=metadata,
         )
 
     def _failure(
@@ -470,9 +705,13 @@ def _encode_json(value: Any) -> str:
 
 
 __all__ = [
+    "ACTION_KIND_FOR_TOOL",
     "FETCH_CODE_PREFIX",
     "HOSTED_ERROR_CODES",
+    "MAX_RESULT_BYTES",
+    "MAX_RESULT_TEXT_CHARS",
     "RECEIPT_EXTRA_FIELDS",
+    "RESULT_KIND_FOR_TOOL",
     "UNEXPECTED_EXECUTION_FAILURE_MESSAGE",
     "ExecutionCancelCheck",
     "HostedExecutionScope",
@@ -481,9 +720,14 @@ __all__ = [
     "HostedToolError",
     "HostedToolExecutor",
     "HostedToolSuccess",
+    "ResultBudgetExceeded",
     "build_receipt",
+    "canonical_json",
     "current_execution_scope",
     "failure_result",
     "reset_execution_scope",
+    "result_identities",
     "set_execution_scope",
+    "validate_result_payload",
+    "validate_sealed_action",
 ]

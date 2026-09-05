@@ -165,6 +165,14 @@ async def test_successful_fetch_produces_digest_provenance() -> None:
     assert fields["final_url"] == "https://cdn.example/page"
     assert fields["mime"] == "text/plain"
     assert fields["result_digest"].startswith("sha256:")
+    result = success.result
+    assert result is not None
+    assert result["kind"] == "document"
+    assert result["url"] == fields["final_url"]
+    assert result["media_type"] == fields["mime"]
+    assert result["content"] == "hosted fetch body"
+    assert result["digest"] == fields["result_digest"]
+    assert isinstance(result["retrieved_at"], int) and result["retrieved_at"] > 0
     with pytest.raises(TypeError):
         fields["final_url"] = "https://attacker.example"  # type: ignore[index]
 
@@ -191,6 +199,12 @@ async def test_search_success_sanitizes_results_to_known_fields() -> None:
             "snippet": "structural sight",
         }
     ]
+    result = success.result
+    assert result is not None
+    assert result["kind"] == "search_results"
+    assert result["query"] == "loctree"
+    assert result["results"] == success.payload["results"]
+    assert result["digest"] == success.receipt_fields["result_digest"]
 
 
 @pytest.mark.asyncio
