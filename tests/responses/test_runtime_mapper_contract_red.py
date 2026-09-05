@@ -83,7 +83,7 @@ def _prepare(
     )
 
 
-def test_materializes_parent_then_instructions_then_current_input() -> None:
+def test_materializes_all_instructions_before_parent_and_current_conversation() -> None:
     mapper, _, _ = _mapper()
     parent = {"role": "assistant", "content": "remembered"}
 
@@ -101,14 +101,14 @@ def test_materializes_parent_then_instructions_then_current_input() -> None:
     )
 
     assert [item["role"] for item in prepared.materialized_messages] == [
+        "developer",
+        "developer",
         "assistant",
-        "developer",
-        "developer",
         "user",
     ]
-    assert prepared.materialized_messages[0]["content"][0]["text"] == "remembered"
-    assert prepared.materialized_messages[1]["content"][0]["text"] == "Be exact."
-    assert prepared.request.lineage == (prepared.materialized_messages[0],)
+    assert prepared.materialized_messages[0]["content"][0]["text"] == "Be exact."
+    assert prepared.materialized_messages[2]["content"][0]["text"] == "remembered"
+    assert prepared.request.lineage[0]["content"][0]["text"] == "remembered"
     assert prepared.request.messages == tuple(
         {
             "role": item["role"],
