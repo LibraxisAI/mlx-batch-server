@@ -9,6 +9,9 @@ from mlx_batch_server.runtime.contracts import (
     GenerationRequest,
     RuntimeKey,
 )
+from mlx_batch_server.runtime.fusion.qwen4_exp.media import (
+    render_function_call_output_text,
+)
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.tensor import (
     _chat_template_messages,
     _chat_template_reasoning,
@@ -206,6 +209,33 @@ def test_chat_template_coalesces_leading_instruction_roles_in_order() -> None:
             "type": "function_call_output",
         },
     ]
+
+
+def test_error_tool_result_envelope_leaves_success_text_byte_identical() -> None:
+    output = "15 degrees"
+    success_message = {
+        "role": "tool",
+        "type": "function_call_output",
+        "call_id": "toolu_1",
+        "output": output,
+        "content": ({"type": "input_text", "text": output},),
+        "is_error": False,
+    }
+    error_message = {
+        **success_message,
+        "is_error": True,
+    }
+
+    success = _chat_template_messages((success_message,))
+    error = _chat_template_messages((error_message,))
+
+    assert success[0]["output"] == output
+    assert success[0]["content"] == success_message["content"]
+    envelope = render_function_call_output_text(output, True)
+    assert envelope == '{"is_error":true,"content":"15 degrees"}'
+    assert error[0]["output"] == envelope
+    assert error[0]["content"] == envelope
+    assert success[0]["call_id"] == error[0]["call_id"] == "toolu_1"
 
 
 def test_chat_template_rejects_late_developer_role() -> None:

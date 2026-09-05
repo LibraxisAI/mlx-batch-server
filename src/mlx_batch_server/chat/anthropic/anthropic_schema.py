@@ -125,19 +125,78 @@ class RequestToolUseBlock(BaseModel):
     model_config = _STRICT
 
     type: Literal["tool_use"] = "tool_use"
-    id: str
+    id: str = Field(..., min_length=1)
     name: str
     input: dict[str, Any]
 
 
-ToolResultContent = Union[RequestTextBlock, RequestImageBlock]
+class CitationsConfig(BaseModel):
+    model_config = _STRICT
+
+    enabled: bool = False
+
+
+class DocumentSource(BaseModel):
+    """Official document source union, accepted then mapped or refused.
+
+    ``type="content"`` nested documents are parsed so the mapper can fail
+    closed with a named capability error instead of a generic validation miss.
+    """
+
+    model_config = _STRICT
+
+    type: Literal["base64", "url", "file", "text", "content"]
+    media_type: str | None = None
+    data: str | None = None
+    url: str | None = None
+    file_id: str | None = None
+    content: list[RequestTextBlock] | None = None
+
+
+class RequestDocumentBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["document"] = "document"
+    source: DocumentSource
+    title: str | None = None
+    context: str | None = None
+    citations: CitationsConfig | None = None
+
+
+class RequestSearchResultBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["search_result"] = "search_result"
+    source: str
+    title: str
+    content: list[RequestTextBlock]
+    citations: CitationsConfig | None = None
+
+
+class RequestToolReferenceBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["tool_reference"] = "tool_reference"
+    tool_name: str
+
+
+ToolResultContent = Annotated[
+    Union[
+        RequestTextBlock,
+        RequestImageBlock,
+        RequestDocumentBlock,
+        RequestSearchResultBlock,
+        RequestToolReferenceBlock,
+    ],
+    Field(discriminator="type"),
+]
 
 
 class RequestToolResultBlock(BaseModel):
     model_config = _STRICT
 
     type: Literal["tool_result"] = "tool_result"
-    tool_use_id: str
+    tool_use_id: str = Field(..., min_length=1)
     content: Union[str, list[ToolResultContent]] = ""
     is_error: bool = False
 
@@ -484,11 +543,13 @@ AnthropicStreamEvent = Union[
 __all__ = [
     "AnthropicStreamEvent",
     "AnthropicTool",
+    "CitationsConfig",
     "ContentBlock",
     "ContentBlockDeltaBody",
     "ContentBlockDeltaEvent",
     "ContentBlockStartEvent",
     "ContentBlockStopEvent",
+    "DocumentSource",
     "ImageSource",
     "InputJsonDeltaBody",
     "InputMessage",
@@ -503,9 +564,12 @@ __all__ = [
     "Metadata",
     "PingEvent",
     "RequestContentBlock",
+    "RequestDocumentBlock",
     "RequestImageBlock",
+    "RequestSearchResultBlock",
     "RequestTextBlock",
     "RequestThinkingBlock",
+    "RequestToolReferenceBlock",
     "RequestToolResultBlock",
     "RequestToolUseBlock",
     "ServiceTier",
@@ -529,6 +593,7 @@ __all__ = [
     "ToolChoiceNone",
     "ToolChoiceTool",
     "ToolInputSchema",
+    "ToolResultContent",
     "ToolUseBlock",
     "Usage",
 ]

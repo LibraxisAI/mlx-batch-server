@@ -118,6 +118,7 @@ class RuntimeAnthropicTurnSource:
             response_id=f"anthropic_{uuid.uuid4().hex}",
             runtime=runtime,
             messages=tuple(dict(message) for message in turn.messages),
+            media=tuple(dict(item) for item in turn.media),
             tools=tuple(dict(tool) for tool in turn.tools),
             sampling=sampling,
             reasoning=dict(turn.reasoning),

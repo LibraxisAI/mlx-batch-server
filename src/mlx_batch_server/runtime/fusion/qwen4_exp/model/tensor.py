@@ -77,7 +77,12 @@ from ...output import Qwen4OutputChunk, Qwen4TurnEventEncoderFactory
 from ...scheduler import DecodeResult, PrefillResult, SchedulerConfig, SchedulerPlan
 from ...stop_sequences import IncrementalStopMatcher
 from ..execution import Qwen4ExpExecutionBinding
-from ..media import PreparedMediaItem, PreparedQwen4Prompt, PreparedTextItem
+from ..media import (
+    PreparedMediaItem,
+    PreparedQwen4Prompt,
+    PreparedTextItem,
+    render_function_call_output_text,
+)
 from ..media_resolver import ResolvedImage, ResolvedText
 from ..prefix_store import (
     TEXT_CONTEXT_FINGERPRINT,
@@ -4822,9 +4827,11 @@ def _require_prepared_vision_prompt(
             raise ValueError("prepared prompt message type changed")
         expected_call_id = raw_message.get("call_id")
         expected_output = raw_message.get("output")
+        expected_is_error = _canonical_is_error(raw_message)
         if (
             sealed_message.call_id != expected_call_id
             or sealed_message.output != expected_output
+            or sealed_message.is_error != expected_is_error
         ):
             raise ValueError("prepared prompt tool receipt identity changed")
         if any(
@@ -4841,6 +4848,15 @@ def _require_prepared_vision_prompt(
         actual_kinds, actual_text = _sealed_message_layout(sealed_message.items)
         if actual_kinds != expected_kinds or actual_text != expected_text:
             raise ValueError("prepared prompt message content layout changed")
+    return value
+
+
+def _canonical_is_error(raw_message: Mapping[str, Any]) -> bool | None:
+    if "is_error" not in raw_message:
+        return None
+    value = raw_message.get("is_error")
+    if not isinstance(value, bool):
+        raise ValueError("canonical function_call_output is_error must be a boolean")
     return value
 
 
@@ -4900,8 +4916,22 @@ def _render_prepared_messages(
     image_count = 0
     for message in prompt.messages:
         content: list[str] = []
+        envelope_emitted = False
+        template_output = (
+            render_function_call_output_text(message.output or "", message.is_error)
+            if message.item_type == "function_call_output"
+            else None
+        )
         for item in message.items:
             if isinstance(item, PreparedTextItem):
+                if (
+                    message.item_type == "function_call_output"
+                    and message.is_error is True
+                ):
+                    if not envelope_emitted:
+                        content.append(template_output or "")
+                        envelope_emitted = True
+                    continue
                 content.append(item.text)
                 continue
             if not isinstance(item, PreparedMediaItem):
@@ -4914,6 +4944,12 @@ def _render_prepared_messages(
                 image_count += 1
             else:
                 raise TypeError("prepared media contains an unsupported resolution")
+        if (
+            message.item_type == "function_call_output"
+            and message.is_error is True
+            and not envelope_emitted
+        ):
+            content.insert(0, template_output or "")
         rendered_message: dict[str, object] = {
             "role": message.role,
             "content": "".join(content),
@@ -4922,7 +4958,8 @@ def _render_prepared_messages(
             rendered_message["type"] = message.item_type
         if message.item_type == "function_call_output":
             rendered_message["call_id"] = message.call_id
-            rendered_message["output"] = message.output
+            rendered_message["output"] = template_output
+            rendered_message["is_error"] = message.is_error
         rendered.append(rendered_message)
     return rendered, image_count
 
@@ -4943,6 +4980,22 @@ def _chat_template_instruction_text(content: object) -> str:
     return "".join(parts)
 
 
+def _render_chat_template_message(message: Mapping[str, Any]) -> dict[str, object]:
+    rendered = dict(message)
+    if rendered.get("type") != "function_call_output":
+        return rendered
+    is_error = rendered.get("is_error") if "is_error" in rendered else None
+    if is_error is not True:
+        return rendered
+    output = rendered.get("output")
+    if not isinstance(output, str):
+        output = _chat_template_instruction_text(rendered.get("content"))
+    envelope = render_function_call_output_text(output, True)
+    rendered["output"] = envelope
+    rendered["content"] = envelope
+    return rendered
+
+
 def _chat_template_messages(
     messages: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, object]]:
@@ -4961,7 +5014,7 @@ def _chat_template_messages(
             instructions.append(_chat_template_instruction_text(message.get("content")))
             continue
         conversation_started = True
-        rendered.append(dict(message))
+        rendered.append(_render_chat_template_message(message))
     if instructions:
         rendered.insert(
             0,
