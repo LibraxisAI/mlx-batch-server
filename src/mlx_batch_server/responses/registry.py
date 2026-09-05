@@ -31,6 +31,10 @@ DEFAULT_IDLE_TTL_S = 3600.0
 DEFAULT_IN_FLIGHT_TTL_S = 900.0
 DEFAULT_TOMBSTONE_ENTRIES = 512
 
+_MESSAGE_ITEM_TYPE = "message"
+_FUNCTION_CALL_ITEM_TYPE = "function_call"
+_ITEM_STATUSES = frozenset(("in_progress", "completed", "incomplete"))
+
 
 class ResponseRegistryError(LookupError):
     """Structured lifecycle error suitable for a Responses wire adapter."""
@@ -130,8 +134,73 @@ def _json_clone(value: Any) -> Any:
         ) from exc
 
 
-def _assistant_output_messages(envelope: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Materialize assistant text output for the next response in a chain."""
+def _assistant_message_lineage(item: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Carry one assistant message output item into the next request."""
+
+    content = item.get("content")
+    if isinstance(content, str):
+        parts = [{"type": "input_text", "text": content}] if content else []
+    elif isinstance(content, list):
+        parts = [
+            {"type": "input_text", "text": part["text"]}
+            for part in content
+            if isinstance(part, Mapping)
+            and part.get("type") in {"text", "input_text", "output_text"}
+            and isinstance(part.get("text"), str)
+            and part["text"]
+        ]
+    else:
+        parts = []
+    if not parts:
+        return None
+    return {"role": "assistant", "content": parts}
+
+
+def _function_call_lineage(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Carry one official function_call identity into the next request.
+
+    The successor request must present the call that produced a tool result;
+    an output item without a usable identity cannot anchor a continuation, so
+    it fails closed here instead of handing the model an orphan result.
+    """
+
+    call_id = item.get("call_id")
+    name = item.get("name")
+    arguments = item.get("arguments")
+    if (
+        not isinstance(call_id, str)
+        or not call_id
+        or not isinstance(name, str)
+        or not name
+        or not isinstance(arguments, str)
+    ):
+        raise ResponseRegistryError(
+            "stored function_call output item cannot anchor a continuation",
+            code="response_invalid_lineage",
+            status_code=409,
+            param="previous_response_id",
+        )
+    lineage: dict[str, Any] = {
+        "type": _FUNCTION_CALL_ITEM_TYPE,
+        "role": "assistant",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+    }
+    item_id = item.get("id")
+    if isinstance(item_id, str) and item_id:
+        lineage["id"] = item_id
+    status = item.get("status")
+    if status in _ITEM_STATUSES:
+        lineage["status"] = status
+    namespace = item.get("namespace")
+    if isinstance(namespace, str) and namespace:
+        lineage["namespace"] = namespace
+    return lineage
+
+
+def _output_lineage_messages(envelope: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Materialize the complete prior output-item sequence for a continuation."""
 
     output = envelope.get("output")
     if not isinstance(output, list):
@@ -139,24 +208,15 @@ def _assistant_output_messages(envelope: Mapping[str, Any]) -> list[dict[str, An
 
     messages: list[dict[str, Any]] = []
     for item in output:
-        if not isinstance(item, Mapping) or item.get("type") != "message":
+        if not isinstance(item, Mapping):
             continue
-        content = item.get("content")
-        if isinstance(content, str):
-            parts = [{"type": "input_text", "text": content}] if content else []
-        elif isinstance(content, list):
-            parts = [
-                {"type": "input_text", "text": part["text"]}
-                for part in content
-                if isinstance(part, Mapping)
-                and part.get("type") in {"text", "input_text", "output_text"}
-                and isinstance(part.get("text"), str)
-                and part["text"]
-            ]
-        else:
-            parts = []
-        if parts:
-            messages.append({"role": "assistant", "content": parts})
+        item_type = item.get("type")
+        if item_type == _MESSAGE_ITEM_TYPE:
+            message = _assistant_message_lineage(item)
+            if message is not None:
+                messages.append(message)
+        elif item_type == _FUNCTION_CALL_ITEM_TYPE:
+            messages.append(_function_call_lineage(item))
     return messages
 
 
@@ -562,7 +622,7 @@ class ResponseRegistry:
                 stored.last_access_at = now
                 self._stored.move_to_end(response_id)
                 messages = _json_clone(stored.materialized_messages)
-                messages.extend(_assistant_output_messages(stored.envelope))
+                messages.extend(_output_lineage_messages(stored.envelope))
                 return messages
             self._raise_lookup_locked(
                 response_id,

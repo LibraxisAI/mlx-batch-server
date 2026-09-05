@@ -22,6 +22,31 @@ from mlx_batch_server.responses.runtime_mapper import (
     ResponsesMappingError,
 )
 from mlx_batch_server.runtime.contracts import BackendKind, RuntimeKey
+from mlx_batch_server.runtime.fusion.qwen4_exp.request_preparation import (
+    _reconstruct_mixed_messages,
+)
+
+INSPECT_CALL_ID = "${INSPECT_CANVAS_CALL_ID}"
+INSPECT_ARGUMENTS = '{"target":"canvas"}'
+_CALL_LINEAGE = {
+    "type": "function_call",
+    "role": "assistant",
+    "call_id": INSPECT_CALL_ID,
+    "name": "inspect_canvas",
+    "arguments": INSPECT_ARGUMENTS,
+    "id": "fc_inspect_canvas",
+    "status": "completed",
+}
+_CALL_TEXT = json.dumps(
+    {
+        "type": "function_call",
+        "call_id": INSPECT_CALL_ID,
+        "name": "inspect_canvas",
+        "arguments": INSPECT_ARGUMENTS,
+    },
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
 
 if TYPE_CHECKING:
     from mlx_batch_server.responses.controller import PreparedResponse
@@ -203,9 +228,16 @@ def test_preserves_function_output_before_typed_message_and_image() -> None:
         key: value for key, value in command.items() if key not in {"type", "stream_id"}
     }
 
-    prepared = _prepare(mapper, payload)
+    # The command carries previous_response_id, so the matching call reaches the
+    # mapper as inherited lineage exactly as the registry materializes it.
+    prepared = _prepare(mapper, payload, parents=(_CALL_LINEAGE,))
 
-    function_output = prepared.request.messages[0]
+    assert prepared.request.messages[0] == {
+        "type": "message",
+        "role": "assistant",
+        "content": ({"type": "input_text", "text": _CALL_TEXT},),
+    }
+    function_output = prepared.request.messages[1]
     assert function_output == {
         "type": "function_call_output",
         "role": "tool",
@@ -218,7 +250,7 @@ def test_preserves_function_output_before_typed_message_and_image() -> None:
             },
         ),
     }
-    assert prepared.request.messages[1] == {
+    assert prepared.request.messages[2] == {
         "type": "message",
         "role": "user",
         "content": (
@@ -234,21 +266,30 @@ def test_preserves_function_output_before_typed_message_and_image() -> None:
             "image_url": "${CANVAS_VIEW_DATA_URL}",
             "detail": "high",
             "_role": "user",
-            "_message_index": 1,
+            "_message_index": 2,
             "_content_index": 1,
         },
     )
     assert [item["type"] for item in prepared.materialized_messages] == [
+        "function_call",
         "function_call_output",
         "message",
     ]
     assert payload["input"][0]["output"] == "${INSPECT_CANVAS_JSON_RECEIPT}"
     assert (
-        json.loads(json.dumps(list(prepared.request.messages)))[0]["call_id"]
+        json.loads(json.dumps(list(prepared.request.messages)))[1]["call_id"]
         == "${INSPECT_CANVAS_CALL_ID}"
     )
     with pytest.raises(TypeError):
         function_output["call_id"] = "call_changed"  # type: ignore[index]
+
+    # Delivery proof: the fused mixed-content preparer seals this exact request.
+    _parts, layouts = _reconstruct_mixed_messages(prepared.request)
+    assert [layout.item_type for layout in layouts] == [
+        "message",
+        "function_call_output",
+        "message",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -283,13 +324,78 @@ def test_preserves_function_output_before_typed_message_and_image() -> None:
                 "type": "function_call_output",
                 "call_id": "call_1",
                 "output": "ok",
-                "status": "completed",
+                "status": "finished",
+            },
+            "input[0].status",
+        ),
+        (
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "ok",
+                "id": " ",
+            },
+            "input[0].id",
+        ),
+        (
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{"type": "output_text", "text": "ok"}],
+            },
+            "input[0].output[0].type",
+        ),
+        (
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{"type": "input_text"}],
+            },
+            "input[0].output[0].text",
+        ),
+        (
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [],
+            },
+            "input[0].output",
+        ),
+        (
+            {"type": "function_call", "call_id": "call_1", "name": "t"},
+            "input[0].arguments",
+        ),
+        (
+            {"type": "function_call", "name": "t", "arguments": "{}"},
+            "input[0].call_id",
+        ),
+        (
+            {"type": "function_call", "call_id": "call_1", "arguments": "{}"},
+            "input[0].name",
+        ),
+        (
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "t",
+                "arguments": "{}",
+                "status": "done",
+            },
+            "input[0].status",
+        ),
+        (
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "t",
+                "arguments": "{}",
+                "unknown": 1,
             },
             "input[0]",
         ),
     ],
 )
-def test_invalid_or_incomplete_function_outputs_fail_closed(
+def test_invalid_or_incomplete_function_items_fail_closed(
     item: Mapping[str, Any], param: str
 ) -> None:
     mapper, _, _ = _mapper()
@@ -773,3 +879,293 @@ def test_unpreserved_reasoning_summary_style_fails_closed() -> None:
 
     assert error.value.code == "invalid_responses_request"
     assert error.value.param == "reasoning.summary"
+
+
+def test_direct_official_function_call_reaches_the_backend_with_its_result() -> None:
+    """Round two must carry the call that explains the result it supplies."""
+
+    mapper, _, _ = _mapper()
+
+    prepared = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": [
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": '{"city":"Kielce"}',
+                    "status": "completed",
+                },
+                {
+                    "type": "function_call_output",
+                    "id": "fco_1",
+                    "call_id": "call_1",
+                    "output": "18C",
+                    "status": "completed",
+                },
+                {"type": "message", "role": "user", "content": "I ciepło?"},
+            ],
+        },
+    )
+
+    call = prepared.materialized_messages[0]
+    assert call == {
+        "type": "function_call",
+        "role": "assistant",
+        "call_id": "call_1",
+        "name": "get_weather",
+        "arguments": '{"city":"Kielce"}',
+        "content": (
+            {
+                "type": "input_text",
+                "text": json.dumps(
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": '{"city":"Kielce"}',
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        ),
+        "id": "fc_1",
+        "status": "completed",
+    }
+    assert prepared.materialized_messages[1]["id"] == "fco_1"
+    assert prepared.materialized_messages[1]["status"] == "completed"
+    assert [item["type"] for item in prepared.materialized_messages] == [
+        "function_call",
+        "function_call_output",
+        "message",
+    ]
+
+    # The backend receives the ordered call/result pair, not a lone result.
+    backend = list(prepared.request.messages)
+    assert [message["role"] for message in backend] == ["assistant", "tool", "user"]
+    # The rendered call is the official item verbatim, so it round-trips.
+    assert json.loads(backend[0]["content"][0]["text"]) == {
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "get_weather",
+        "arguments": '{"city":"Kielce"}',
+    }
+    assert backend[1]["call_id"] == "call_1"
+    assert backend[1]["output"] == "18C"
+
+
+def test_single_text_content_output_is_delivered_without_stringifying() -> None:
+    mapper, _, _ = _mapper()
+
+    prepared = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "t",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [{"type": "input_text", "text": "receipt"}],
+                },
+            ],
+        },
+    )
+
+    assert prepared.request.messages[1]["output"] == "receipt"
+    assert prepared.request.messages[1]["content"] == (
+        {"type": "input_text", "text": "receipt"},
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        [{"type": "input_image", "image_url": "https://example.test/a.png"}],
+        [{"type": "input_file", "file_id": "file_1"}],
+        [
+            {"type": "input_text", "text": "a"},
+            {"type": "input_text", "text": "b"},
+        ],
+    ],
+)
+def test_unrenderable_official_output_variants_fail_with_capability_error(
+    output: list[Mapping[str, Any]],
+) -> None:
+    """Official but unrenderable variants must not stringify or disappear."""
+
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "t",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": output,
+                    },
+                ],
+            },
+        )
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.param == "input[1].output"
+
+
+def test_orphan_and_mismatched_tool_results_fail_closed() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as orphan:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "ok",
+                    }
+                ],
+            },
+        )
+    assert orphan.value.code == "invalid_responses_request"
+    assert orphan.value.param == "input[0].call_id"
+
+    with pytest.raises(ResponsesMappingError) as mismatch:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "t",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_2",
+                        "output": "ok",
+                    },
+                ],
+            },
+        )
+    assert mismatch.value.param == "input[1].call_id"
+
+    with pytest.raises(ResponsesMappingError) as reordered:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "ok",
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "t",
+                        "arguments": "{}",
+                    },
+                ],
+            },
+        )
+    assert reordered.value.param == "input[0].call_id"
+
+
+def test_inherited_call_lineage_explains_a_direct_tool_result() -> None:
+    """A previous_response_id chain supplies the call round two never resends."""
+
+    mapper, _, _ = _mapper()
+
+    prepared = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": INSPECT_CALL_ID,
+                    "output": "receipt",
+                }
+            ],
+        },
+        parents=(_CALL_LINEAGE,),
+    )
+
+    assert [item["type"] for item in prepared.materialized_messages] == [
+        "function_call",
+        "function_call_output",
+    ]
+    assert prepared.materialized_messages[0]["call_id"] == INSPECT_CALL_ID
+    assert prepared.materialized_messages[0]["arguments"] == INSPECT_ARGUMENTS
+    assert prepared.request.messages[0]["content"][0]["text"] == _CALL_TEXT
+
+    with pytest.raises(ResponsesMappingError) as foreign:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_foreign",
+                        "output": "receipt",
+                    }
+                ],
+            },
+            parents=(_CALL_LINEAGE,),
+        )
+    assert foreign.value.param == "input[0].call_id"
+
+
+def test_inherited_tool_result_keeps_its_identity_for_a_third_round() -> None:
+    """Re-reading stored lineage must not degrade a result into a bare message."""
+
+    mapper, _, _ = _mapper()
+
+    prepared = _prepare(
+        mapper,
+        {"model": "flash-next", "input": "and now?"},
+        parents=(
+            _CALL_LINEAGE,
+            {
+                "type": "function_call_output",
+                "role": "tool",
+                "call_id": INSPECT_CALL_ID,
+                "output": "receipt",
+                "content": [{"type": "input_text", "text": "receipt"}],
+            },
+        ),
+    )
+
+    assert [item.get("type") for item in prepared.materialized_messages[:2]] == [
+        "function_call",
+        "function_call_output",
+    ]
+    inherited = prepared.request.messages[1]
+    assert inherited["type"] == "function_call_output"
+    assert inherited["call_id"] == INSPECT_CALL_ID
+    assert inherited["output"] == "receipt"
