@@ -10,9 +10,9 @@ from scripts.quality.verify_mlx_batch_api_contract import evaluate_section
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/quality/verify_mlx_batch_api_contract.py"
 EXPECTED_MARKERS = (
-    "OPENAI_SOURCE_CONTRACT=red",
-    "ANTHROPIC_SOURCE_CONTRACT=red",
-    "SAFE_PUBLIC_FETCH_SOURCE_CONTRACT=red",
+    "OPENAI_SOURCE_CONTRACT=green",
+    "ANTHROPIC_SOURCE_CONTRACT=green",
+    "SAFE_PUBLIC_FETCH_SOURCE_CONTRACT=green",
     "MULTIROW_SOURCE_CONTRACT=green",
 )
 TENSOR_RELATIVE = Path("src/mlx_batch_server/runtime/fusion/qwen4_exp/model/tensor.py")
@@ -34,7 +34,7 @@ def test_all_contracts_are_named_and_report_independent_states() -> None:
     assert result.returncode == 1, result.stderr
     for marker in EXPECTED_MARKERS:
         assert marker in result.stdout
-    assert result.stdout.count("  missing:") >= 3
+    assert "  missing:" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -45,21 +45,21 @@ def test_all_contracts_are_named_and_report_independent_states() -> None:
         ("safe-fetch", "owned-interface"),
     ),
 )
-def test_each_section_exposes_its_deterministic_red_reason(
+def test_each_section_exposes_its_deterministic_green_reason(
     section: str,
     reason: str,
 ) -> None:
-    result = _run("--section", section, "--expect", "red")
+    result = _run("--section", section, "--expect", "green")
 
     assert result.returncode == 0, result.stderr
     assert reason in result.stdout
 
 
-def test_green_expectation_rejects_the_red_baseline() -> None:
-    result = _run("--section", "openai", "--expect", "green")
+def test_red_expectation_rejects_the_green_baseline() -> None:
+    result = _run("--section", "openai", "--expect", "red")
 
     assert result.returncode == 1
-    assert "OPENAI_SOURCE_CONTRACT=red" in result.stdout
+    assert "OPENAI_SOURCE_CONTRACT=green" in result.stdout
 
 
 def test_multirow_green_requires_the_concrete_recursive_mtp_seam() -> None:
@@ -156,4 +156,73 @@ def test_multirow_verifier_rejects_missing_verified_window_commit(
     assert not result.green
     assert any(
         "row-local verified-window commits" in failure for failure in result.failures
+    )
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    (
+        "_target_forward_batch",
+        "_mtp_forward_batch",
+        "_mtp_update_batch",
+        "_decode_mtp_batch",
+        "_decode_mtp_one",
+    ),
+)
+def test_multirow_verifier_rejects_missing_physical_recorders(
+    tmp_path: Path,
+    method_name: str,
+) -> None:
+    source = (ROOT / TENSOR_RELATIVE).read_text(encoding="utf-8")
+    prefix, method = source.split(f"    def {method_name}(\n", 1)
+    mutated = (
+        prefix
+        + f"    def {method_name}(\n"
+        + method.replace(
+            "self._record_tensor_forward(",
+            "self._missing_tensor_forward_recorder(",
+            1,
+        )
+    )
+
+    result = _mutated_multirow_result(tmp_path, mutated)
+
+    assert not result.green
+    assert any(
+        "completion recorders are missing" in failure for failure in result.failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("method_name", "assignment"),
+    (
+        ("_target_forward_batch", "logits, hidden = self.model("),
+        ("_mtp_forward_batch", "logits, next_hidden = self.model.mtp_forward("),
+        ("_mtp_update_batch", "mtp_hidden = self.model.mtp_update_cache("),
+    ),
+)
+def test_multirow_verifier_rejects_per_row_physical_model_calls(
+    tmp_path: Path,
+    method_name: str,
+    assignment: str,
+) -> None:
+    source = (ROOT / TENSOR_RELATIVE).read_text(encoding="utf-8")
+    prefix, method = source.split(f"    def {method_name}(\n", 1)
+    mutated = (
+        prefix
+        + f"    def {method_name}(\n"
+        + method.replace(
+            f"            {assignment}\n",
+            f"            for _reservation in reservations:\n"
+            f"                {assignment}\n",
+            1,
+        )
+    )
+
+    result = _mutated_multirow_result(tmp_path, mutated)
+
+    assert not result.green
+    assert any(
+        "model forward" in failure or "model call" in failure or "row-serial" in failure
+        for failure in result.failures
     )

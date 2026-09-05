@@ -42,8 +42,9 @@ import math
 import os
 import re
 import time
+import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -4626,6 +4627,77 @@ class _TensorDecodeOutcome:
     mtp_rejected_tokens: int = 0
 
 
+_TENSOR_FORWARD_SCHEMA = "qwen4-exp.tensor-forward.v1"
+_TENSOR_FORWARD_RESET = "per_tensor_runtime_instance"
+_TENSOR_FORWARD_PHASES = (
+    "target_decode",
+    "mtp_draft",
+    "target_verify",
+    "target_correction",
+    "mtp_history_update",
+)
+
+
+@dataclass(slots=True)
+class _TensorForwardPhaseTelemetry:
+    completed_calls: int = 0
+    completed_rows: int = 0
+    max_completed_rows: int = 0
+    completed_calls_by_shape: dict[str, int] = field(default_factory=dict)
+
+    def record(self, *, batch_rows: int, sequence_length: int) -> None:
+        if batch_rows < 1 or sequence_length < 1:
+            raise ValueError("completed tensor forwards require positive BxS shape")
+        shape = f"{batch_rows}x{sequence_length}"
+        self.completed_calls += 1
+        self.completed_rows += batch_rows
+        self.max_completed_rows = max(self.max_completed_rows, batch_rows)
+        self.completed_calls_by_shape[shape] = (
+            self.completed_calls_by_shape.get(shape, 0) + 1
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "completed_calls": self.completed_calls,
+            "completed_rows": self.completed_rows,
+            "max_completed_rows": self.max_completed_rows,
+            "completed_calls_by_shape": dict(self.completed_calls_by_shape),
+        }
+
+
+@dataclass(slots=True)
+class _TensorForwardTelemetry:
+    runtime_instance_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    phases: dict[str, _TensorForwardPhaseTelemetry] = field(
+        default_factory=lambda: {
+            phase: _TensorForwardPhaseTelemetry() for phase in _TENSOR_FORWARD_PHASES
+        }
+    )
+
+    def record(
+        self,
+        phase: str,
+        *,
+        batch_rows: int,
+        sequence_length: int,
+    ) -> None:
+        try:
+            counters = self.phases[phase]
+        except KeyError as error:
+            raise ValueError(f"unknown tensor forward phase: {phase}") from error
+        counters.record(batch_rows=batch_rows, sequence_length=sequence_length)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "schema": _TENSOR_FORWARD_SCHEMA,
+            "runtime_instance_id": self.runtime_instance_id,
+            "reset_semantics": _TENSOR_FORWARD_RESET,
+            "phases": {
+                phase: self.phases[phase].snapshot() for phase in _TENSOR_FORWARD_PHASES
+            },
+        }
+
+
 _VISION_IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
 
 
@@ -5004,6 +5076,7 @@ class _Qwen4ExpTensorRuntime:
         self._closed = False
         self._prefill_rows = 0
         self._decode_rows = 0
+        self._tensor_forward_telemetry = _TensorForwardTelemetry()
         self._vision_preprocessor: Qwen4ExpTensorPreprocessor | None = None
         self._vision_tower: Qwen4ExpVisionTensorTower | None = None
         if not plan.config.language_model_only:
@@ -5414,6 +5487,7 @@ class _Qwen4ExpTensorRuntime:
             "active_reservations": len(self._reservations),
             "prefill_rows": self._prefill_rows,
             "decode_rows": self._decode_rows,
+            "tensor_forward": self._forward_telemetry().snapshot(),
             "native_capabilities": tuple(sorted(self.capabilities.enabled)),
             "prefix_cache_mode": "whole_boundary_hot",
             "paged_cache_enabled": False,
@@ -5426,6 +5500,26 @@ class _Qwen4ExpTensorRuntime:
             "prefix_cache_misses": prefix.misses,
             "prefix_cache_commits": prefix.commits,
         }
+
+    def _forward_telemetry(self) -> _TensorForwardTelemetry:
+        telemetry = getattr(self, "_tensor_forward_telemetry", None)
+        if telemetry is None:
+            telemetry = _TensorForwardTelemetry()
+            self._tensor_forward_telemetry = telemetry
+        return telemetry
+
+    def _record_tensor_forward(
+        self,
+        phase: str,
+        *,
+        batch_rows: int,
+        sequence_length: int,
+    ) -> None:
+        self._forward_telemetry().record(
+            phase,
+            batch_rows=batch_rows,
+            sequence_length=sequence_length,
+        )
 
     def shutdown(self, deadline_s: float) -> None:
         if deadline_s < 0:
@@ -5528,6 +5622,11 @@ class _Qwen4ExpTensorRuntime:
                     input_embeddings=history_embeddings,
                 )
             mx.eval(mtp_hidden)
+            self._record_tensor_forward(
+                "mtp_history_update",
+                batch_rows=1,
+                sequence_length=len(history_token_ids),
+            )
         reservation.logits = logits
         reservation.hidden = hidden[:, -1:, :]
         reservation.position = end
@@ -5830,6 +5929,7 @@ class _Qwen4ExpTensorRuntime:
                 verify_token_rows,
                 active_rows,
                 phase="verify",
+                telemetry_phase=None,
             )
         finally:
             self.model.end_capture(active_rows[0].cache, capture)
@@ -5913,6 +6013,12 @@ class _Qwen4ExpTensorRuntime:
             for reservation in active_rows:
                 self.model.clear_verify_capture(reservation.cache)
 
+        self._record_tensor_forward(
+            "target_verify",
+            batch_rows=len(active_rows),
+            sequence_length=len(verify_token_rows[0]),
+        )
+
         authoritative_logits: list[Any] = []
         authoritative_hidden: list[Any] = []
         for row_index, (verify_logits, verify_hidden) in enumerate(verify_forwards):
@@ -5939,6 +6045,7 @@ class _Qwen4ExpTensorRuntime:
             correction_forwards = self._target_forward_batch(
                 tuple(correction_tokens),
                 tuple(active_rows[index] for index in correction_indices),
+                telemetry_phase="target_correction",
             )
             if len(correction_forwards) != len(correction_indices):
                 raise RuntimeError("stochastic correction batch lost a row")
@@ -6057,6 +6164,7 @@ class _Qwen4ExpTensorRuntime:
         reservations: tuple[_TensorReservation, ...],
         *,
         phase: str = "decode",
+        telemetry_phase: str | None = "target_decode",
     ) -> tuple[tuple[Any, Any], ...]:
         """Issue exactly one target/QSA forward for compatible active rows."""
 
@@ -6083,6 +6191,12 @@ class _Qwen4ExpTensorRuntime:
             )
         mx.eval(logits, hidden)
         _scatter_batch_cache(batch_cache, cache_rows)
+        if telemetry_phase is not None:
+            self._record_tensor_forward(
+                telemetry_phase,
+                batch_rows=len(reservations),
+                sequence_length=len(token_rows[0]),
+            )
         return tuple(
             (logits[index : index + 1], hidden[index : index + 1])
             for index in range(len(reservations))
@@ -6116,6 +6230,11 @@ class _Qwen4ExpTensorRuntime:
             )
         mx.eval(logits, next_hidden)
         _scatter_batch_cache(batch_cache, cache_rows)
+        self._record_tensor_forward(
+            "mtp_draft",
+            batch_rows=len(reservations),
+            sequence_length=1,
+        )
         return tuple(
             (
                 logits[index : index + 1],
@@ -6151,6 +6270,11 @@ class _Qwen4ExpTensorRuntime:
             )
         mx.eval(mtp_hidden)
         _scatter_batch_cache(batch_cache, cache_rows)
+        self._record_tensor_forward(
+            "mtp_history_update",
+            batch_rows=len(reservations),
+            sequence_length=1,
+        )
 
     def _decode_ar_one(self, reservation: _TensorReservation) -> _TensorDecodeOutcome:
         primary, primary_is_new = self._take_primary(reservation)
@@ -6170,6 +6294,11 @@ class _Qwen4ExpTensorRuntime:
                     mtp_cache=reservation.mtp_cache,
                 )
             mx.eval(mtp_hidden)
+            self._record_tensor_forward(
+                "mtp_history_update",
+                batch_rows=1,
+                sequence_length=1,
+            )
             reservation.logits = logits[:, -1:, :]
             reservation.hidden = hidden[:, -1:, :]
         self._commit_output(reservation, emitted_tokens)
@@ -6226,6 +6355,11 @@ class _Qwen4ExpTensorRuntime:
                     return_hidden=True,
                 )
             mx.eval(draft_logits, draft_hidden_next)
+            self._record_tensor_forward(
+                "mtp_draft",
+                batch_rows=1,
+                sequence_length=1,
+            )
             draft, draft_q = _sample_draft_from_logits(
                 draft_logits[0, -1],
                 reservation.draft_sampler,
@@ -6245,6 +6379,7 @@ class _Qwen4ExpTensorRuntime:
                 verify_tokens,
                 reservation,
                 phase="verify",
+                telemetry_phase=None,
             )
         finally:
             self.model.end_capture(reservation.cache, capture)
@@ -6291,6 +6426,13 @@ class _Qwen4ExpTensorRuntime:
         finally:
             self.model.clear_verify_capture(reservation.cache)
 
+        if committed_from_capture:
+            self._record_tensor_forward(
+                "target_verify",
+                batch_rows=1,
+                sequence_length=len(verify_tokens),
+            )
+
         committed_tokens = (primary, *accepted_drafts)
         if stochastic_rejection:
             if correction is None:
@@ -6299,7 +6441,9 @@ class _Qwen4ExpTensorRuntime:
 
         if committed_from_capture and stochastic_rejection:
             authoritative_logits, authoritative_hidden = self._target_forward(
-                (correction,), reservation
+                (correction,),
+                reservation,
+                telemetry_phase="target_correction",
             )
         elif committed_from_capture:
             authoritative_logits = verify_logits[:, keep_tokens - 1 : keep_tokens, :]
@@ -6340,6 +6484,11 @@ class _Qwen4ExpTensorRuntime:
                     mtp_cache=reservation.mtp_cache,
                 )
             mx.eval(mtp_hidden)
+            self._record_tensor_forward(
+                "mtp_history_update",
+                batch_rows=1,
+                sequence_length=1,
+            )
 
         reservation.logits = authoritative_logits[:, -1:, :]
         reservation.hidden = authoritative_hidden[:, -1:, :]
@@ -6425,6 +6574,7 @@ class _Qwen4ExpTensorRuntime:
         reservation: _TensorReservation,
         *,
         phase: str = "decode",
+        telemetry_phase: str | None = "target_decode",
     ) -> tuple[Any, Any]:
         token_array = mx.array([token_ids])
         with (
@@ -6439,6 +6589,12 @@ class _Qwen4ExpTensorRuntime:
                 logits_keep=0,
             )
         mx.eval(logits, hidden)
+        if telemetry_phase is not None:
+            self._record_tensor_forward(
+                telemetry_phase,
+                batch_rows=1,
+                sequence_length=len(token_ids),
+            )
         return logits, hidden
 
     @staticmethod

@@ -126,6 +126,19 @@ def test_cold_role_is_alive_available_and_wakeable_but_not_resident() -> None:
 @pytest.mark.asyncio
 async def test_runtime_contract_reads_live_capabilities_from_loaded_handle() -> None:
     service, manager = _service()
+    tensor_forward = {
+        "schema": "qwen4-exp.tensor-forward.v1",
+        "runtime_instance_id": "7d1bc9de-efb0-4c7e-8611-4a3ee2fc73ce",
+        "reset_semantics": "per_tensor_runtime_instance",
+        "phases": {
+            "target_verify": {
+                "completed_calls": 3,
+                "completed_rows": 6,
+                "max_completed_rows": 2,
+                "completed_calls_by_shape": {"2x3": 3},
+            }
+        },
+    }
     manager.capabilities = CapabilityReport(
         supported=True,
         backend=BackendKind.FUSED_MTP_MLX,
@@ -143,6 +156,7 @@ async def test_runtime_contract_reads_live_capabilities_from_loaded_handle() -> 
     manager.stats = {
         "mtp": {"rounds": 7, "accepted_tokens": 6},
         "scheduler": {"max_decode_rows": 4},
+        "executor": {"driver": {"tensor_forward": tensor_forward}},
     }
 
     await service.load_model(ModelLoadRequest(model=FLASH))
@@ -151,6 +165,9 @@ async def test_runtime_contract_reads_live_capabilities_from_loaded_handle() -> 
 
     assert status["observed_capabilities"]["facts"]["mtp_rounds"] == 7
     assert status["runtime_stats"] == manager.stats
+    assert status["runtime_stats"]["executor"]["driver"]["tensor_forward"] == (
+        tensor_forward
+    )
     assert contract["mtp"] == {
         "capable": True,
         "enabled": True,
