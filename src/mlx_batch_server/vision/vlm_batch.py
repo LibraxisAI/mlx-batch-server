@@ -18,6 +18,11 @@ from ..chat.mlx.runtime_aliases import resolve_runtime_target
 from ..core.config import get_settings
 from ..utils.logger import logger
 from ..utils.model_limits import extract_context_length, resolve_max_tokens
+from ..utils.streaming_detokenizer import (
+    finalize_text,
+    new_streaming_detokenizer,
+    push_token,
+)
 from .vlm_cache import (
     get_vlm_backend,
     resolve_vlm_model_id,
@@ -1089,8 +1094,7 @@ async def _dispatch_stream_tokens(
     uids: list[int],
 ) -> list[bool]:
     uid_to_idx = {uid: idx for idx, uid in enumerate(uids)}
-    token_buffers: list[list[int]] = [[] for _ in batch]
-    last_texts = [""] * len(batch)
+    detokenizers = [new_streaming_detokenizer(tokenizer) for _ in batch]
     finished = [False] * len(batch)
 
     # Safety cap: hard limit on empty polls to prevent infinite loop if
@@ -1129,12 +1133,11 @@ async def _dispatch_stream_tokens(
             delta = ""
             token = getattr(resp, "token", None)
             if token is not None:
-                token_buffers[idx].append(token)
-                new_text = tokenizer.decode(token_buffers[idx])
-                delta = new_text[len(last_texts[idx]) :]
-                last_texts[idx] = new_text
+                delta = push_token(detokenizers[idx], token)
 
             finish_reason = getattr(resp, "finish_reason", None)
+            if finish_reason is not None:
+                delta += finalize_text(detokenizers[idx])
             if delta or finish_reason is not None:
                 await batch[idx].response_queue.put(
                     VlmStreamChunk(

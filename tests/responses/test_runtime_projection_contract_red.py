@@ -210,6 +210,18 @@ def test_failure_and_cancellation_have_controller_terminal_statuses() -> None:
     assert terminal["error"] is None
     assert terminal["incomplete_details"] is None
 
+    steered = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)
+    _observe(
+        steered,
+        (
+            TurnStarted("resp_projection", "buddy", 44),
+            TurnCancelled("steered"),
+        ),
+    )
+    steered_terminal = steered.terminal_envelope()
+    assert steered_terminal["status"] == "incomplete"
+    assert steered_terminal["incomplete_details"] == {"reason": "steered"}
+
 
 def test_length_finish_projects_incomplete_response_and_output_item() -> None:
     projection = RuntimeResponseProjection(_prepared(), clock=lambda: 1.0)

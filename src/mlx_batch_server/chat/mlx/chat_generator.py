@@ -510,10 +510,7 @@ class ChatGenerator:
                 if enable_prompt_cache and self.prompt_cache.cache:
                     mlx_kwargs["prompt_cache"] = self.prompt_cache.cache
 
-                # Stream generation with delta decoding
-                # Delta decoding preserves spaces for SentencePiece tokenizers
                 generated_tokens = []
-                decoded_text = ""  # Track full decoded text for delta calculation
 
                 for response in stream_generate(
                     model=self.model.text_model,
@@ -522,17 +519,12 @@ class ChatGenerator:
                     draft_model=self.model.draft_model,
                     **mlx_kwargs,
                 ):
-                    if response.finish_reason is not None:
+                    delta_text = getattr(response, "text", "") or ""
+                    if response.finish_reason is not None and not delta_text:
                         break
-
-                    generated_tokens.append(response.token)
-
-                    # Delta decoding: decode all tokens together to preserve spaces
-                    # SentencePiece tokenizers encode spaces as prefix (▁), which is lost
-                    # when decoding individual tokens
-                    full_decoded = self.tokenizer.decode(generated_tokens)
-                    delta_text = full_decoded[len(decoded_text) :]
-                    decoded_text = full_decoded
+                    generated_tokens.extend(
+                        () if response.finish_reason is not None else (response.token,)
+                    )
 
                     # Record first token time if this is the first token
                     if first_token_time is None:
@@ -545,7 +537,6 @@ class ChatGenerator:
                             response, top_logprobs
                         )
 
-                    # Use delta_text instead of response.text for parsing
                     parse_result = request_template.stream_parse_chat_result(delta_text)
 
                     # Create StreamContent based on parse result

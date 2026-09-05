@@ -196,7 +196,13 @@ def test_vlm_batch_coordinator_attaches_llm_surface(monkeypatch) -> None:
     monkeypatch.setattr(
         vlm_batch,
         "_vlm_batch_generate",
-        lambda model, processor, *, images=None, prompts=None, max_tokens=128, **kwargs: (
+        lambda model,
+        processor,
+        *,
+        images=None,
+        prompts=None,
+        max_tokens=128,
+        **kwargs: (
             SimpleNamespace(
                 texts=["batched vision"],
                 prompt_tokens=3,
@@ -396,7 +402,10 @@ def test_dispatch_stream_tokens_ignores_prompt_progress() -> None:
         finished = await vlm_batch._dispatch_stream_tokens(
             batch=[request],
             gen=FakeGenerator(),
-            tokenizer=SimpleNamespace(decode=lambda tokens: "token" * len(tokens)),
+            tokenizer=SimpleNamespace(
+                decode=lambda tokens: "token" * len(tokens),
+                encode=lambda text, **kwargs: [1],
+            ),
             uids=[1],
         )
 
@@ -406,6 +415,78 @@ def test_dispatch_stream_tokens_ignores_prompt_progress() -> None:
             ("token", None),
             ("", "stop"),
         ]
+
+    asyncio.run(_run())
+
+
+def test_dispatch_stream_tokens_buffers_partial_utf8_per_row() -> None:
+    from mlx_batch_server.vision import vlm_batch
+
+    class ByteTokenizer:
+        tokens = {
+            1: b"Cze\xc5",
+            2: b"\x9b\xc4",
+            3: b"\x87! ",
+            4: b"\xf0\x9f",
+            5: b"\x98\x8a",
+        }
+
+        @staticmethod
+        def encode(text: str, *, add_special_tokens: bool = False) -> list[int]:
+            del text, add_special_tokens
+            return [0]
+
+        def decode(self, token_ids: list[int]) -> str:
+            return b"".join(self.tokens.get(token, b"") for token in token_ids).decode(
+                "utf-8", "replace"
+            )
+
+    class FakeGenerator:
+        def __init__(self) -> None:
+            self.results = iter(
+                [
+                    [
+                        SimpleNamespace(
+                            uid=1,
+                            token=token,
+                            finish_reason="stop" if token == 5 else None,
+                        )
+                    ]
+                    for token in (1, 2, 3, 4, 5)
+                ]
+            )
+
+        def next(self):
+            return next(self.results, None)
+
+    async def _run() -> None:
+        response_queue: asyncio.Queue = asyncio.Queue()
+        request = vlm_batch.PendingVlmStreamRequest(
+            request_id="req-unicode",
+            messages=[{"role": "user", "content": "Describe this image"}],
+            images=["https://example.com/cat.png"],
+            max_tokens=9,
+            temperature=None,
+            top_p=None,
+            response_queue=response_queue,
+            created_at=0.0,
+        )
+
+        finished = await vlm_batch._dispatch_stream_tokens(
+            batch=[request],
+            gen=FakeGenerator(),
+            tokenizer=ByteTokenizer(),
+            uids=[1],
+        )
+        chunks = []
+        while not response_queue.empty():
+            chunks.append(response_queue.get_nowait())
+        text = "".join(chunk.text for chunk in chunks)
+
+        assert finished == [True]
+        assert text == "Cześć! 😊"
+        assert "\ufffd" not in text
+        assert chunks[-1].finish_reason == "stop"
 
     asyncio.run(_run())
 

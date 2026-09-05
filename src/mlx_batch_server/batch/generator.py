@@ -35,6 +35,11 @@ from mlx_lm.sample_utils import make_sampler
 from ..chat.mlx.model_types import MLXModel
 from ..utils.logger import logger
 from ..utils.model_limits import extract_context_length, resolve_max_tokens
+from ..utils.streaming_detokenizer import (
+    finalize_text,
+    new_streaming_detokenizer,
+    push_token,
+)
 
 if TYPE_CHECKING:
     from ..chat.mlx.chat_generator import ChatGenerator
@@ -172,9 +177,7 @@ class BatchChatGenerator:
         self._request_to_uid: dict[str, int] = {}
         self._active_requests: set[str] = set()
 
-        # Delta decoding state (for proper space handling with SentencePiece)
-        self._request_tokens: dict[str, list[int]] = {}
-        self._request_text: dict[str, str] = {}
+        self._request_detokenizers: dict[str, Any] = {}
 
         # Statistics
         self._stats = BatchGenerationStats()
@@ -429,9 +432,8 @@ class BatchChatGenerator:
     def _process_response(self, response) -> BatchStreamChunk | None:
         """Process a single response from BatchGenerator.
 
-        Uses delta decoding to preserve spaces for SentencePiece tokenizers.
-        Instead of decoding each token individually (which loses spaces),
-        we decode all tokens together and emit the difference.
+        Uses one stateful detokenizer per request so partial UTF-8 byte tokens
+        never escape as replacement characters.
 
         Args:
             response: Response from BatchGenerator.next()
@@ -444,20 +446,11 @@ class BatchChatGenerator:
             logger.warning(f"Unknown UID in batch response: {response.uid}")
             return None
 
-        # Delta decoding: decode all tokens together to preserve spaces
-        # Initialize tracking state for new requests
-        if request_id not in self._request_tokens:
-            self._request_tokens[request_id] = []
-            self._request_text[request_id] = ""
-
-        # Append token and decode full sequence
-        self._request_tokens[request_id].append(response.token)
-        full_text = self.tokenizer.decode(self._request_tokens[request_id])
-
-        # Calculate delta (new text since last decode)
-        prev_text = self._request_text[request_id]
-        token_text = full_text[len(prev_text) :]
-        self._request_text[request_id] = full_text
+        detokenizer = self._request_detokenizers.get(request_id)
+        if detokenizer is None:
+            detokenizer = new_streaming_detokenizer(self.tokenizer)
+            self._request_detokenizers[request_id] = detokenizer
+        token_text = push_token(detokenizer, response.token)
 
         # Build logprobs if available
         logprobs = None
@@ -469,12 +462,11 @@ class BatchChatGenerator:
 
         # Track completion and cleanup delta state
         if response.finish_reason is not None:
+            token_text += finalize_text(detokenizer)
             self._uid_to_request.pop(response.uid, None)
             self._request_to_uid.pop(request_id, None)
             self._active_requests.discard(request_id)
-            # Clean up delta decoding state
-            self._request_tokens.pop(request_id, None)
-            self._request_text.pop(request_id, None)
+            self._request_detokenizers.pop(request_id, None)
             self._stats.completed_requests += 1
             self._stats.active_requests = len(self._active_requests)
             logger.debug(f"Request {request_id} completed: {response.finish_reason}")

@@ -72,8 +72,14 @@ def build_runtime_responses_router(
             source = await controller.create(body, owner_id=owner_id)
         except ResponseRegistryError as error:
             return _registry_error(error)
-        except (TypeError, ValueError) as error:
+        except TypeError as error:
             return _request_error(str(error) or type(error).__name__)
+        except ValueError as error:
+            return _request_error(
+                str(error) or type(error).__name__,
+                code=str(getattr(error, "code", "invalid_request")),
+                param=getattr(error, "param", None),
+            )
         except RuntimeError as error:
             return _server_error(
                 str(error) or type(error).__name__,

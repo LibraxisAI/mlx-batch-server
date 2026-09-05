@@ -108,6 +108,16 @@ def test_materializes_all_instructions_before_parent_and_current_conversation() 
     ]
     assert prepared.materialized_messages[0]["content"][0]["text"] == "Be exact."
     assert prepared.materialized_messages[2]["content"][0]["text"] == "remembered"
+    assert [item["role"] for item in prepared.lineage_messages or ()] == [
+        "developer",
+        "assistant",
+        "user",
+    ]
+    assert all(
+        part.get("text") != "Be exact."
+        for item in prepared.lineage_messages or ()
+        for part in item["content"]
+    )
     assert prepared.request.lineage[0]["content"][0]["text"] == "remembered"
     assert prepared.request.messages == tuple(
         {
@@ -629,3 +639,71 @@ def test_projection_is_created_only_by_the_injected_factory() -> None:
     )
     with pytest.raises(TypeError, match="ResponseProjection"):
         invalid.start_projection(prepared)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "background",
+        "conversation",
+        "include",
+        "max_tool_calls",
+        "modalities",
+        "output_modalities",
+        "prompt",
+        "prompt_cache_key",
+        "service_tier",
+        "stream_options",
+        "truncation",
+        "unknown_extension",
+    ],
+)
+def test_unsupported_top_level_fields_fail_closed(field: str) -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                field: True,
+            },
+        )
+
+    assert error.value.code == "unsupported_parameter"
+    assert error.value.param == field
+
+
+def test_unsupported_reasoning_fields_fail_closed() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "reasoning": {"generate_summary": "auto"},
+            },
+        )
+
+    assert error.value.code == "unsupported_parameter"
+    assert error.value.param == "reasoning.generate_summary"
+
+
+def test_unpreserved_reasoning_summary_style_fails_closed() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "reasoning": {"summary": "concise"},
+            },
+        )
+
+    assert error.value.code == "invalid_responses_request"
+    assert error.value.param == "reasoning.summary"

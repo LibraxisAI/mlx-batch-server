@@ -59,6 +59,7 @@ from mlx_lm.models.qwen3_next import (
 from mlx_lm.tokenizer_utils import load as load_tokenizer
 
 from .....utils.model_limits import resolve_max_tokens
+from .....utils.streaming_detokenizer import new_streaming_detokenizer
 from ....backends.fused_mtp_mlx import FusedStepResult
 from ....contracts import (
     GenerationRequest,
@@ -4127,6 +4128,12 @@ class _TensorOutputState:
     trim_visible_prefix: bool = False
     reasoning_tokens: int = 0
 
+    def is_protocol_token(self, token_id: int) -> bool:
+        return token_id in self.stop_token_ids or token_id in {
+            self.think_start_id,
+            self.think_end_id,
+        }
+
     def route(self, token_id: int, text: str) -> tuple[str, str]:
         if token_id in self.stop_token_ids:
             return "", ""
@@ -4161,6 +4168,7 @@ class _TensorReservation:
     prefix_lease: Qwen4ExpPrefixLeaseIdentity
     prefix_context_fingerprint: str
     output_state: _TensorOutputState
+    detokenizer: Any
     prefix_hit: bool = False
     pending_prefix: Qwen4ExpPendingBoundaryCheckpoint | None = None
     pending_prefix_tokens: tuple[int, ...] = ()
@@ -4647,6 +4655,7 @@ class _Qwen4ExpTensorRuntime:
                     self._think_end_id,
                 ),
             ),
+            detokenizer=new_streaming_detokenizer(self.tokenizer),
             input_embeddings=input_embeddings,
             position_table=mrope.position_table if mrope is not None else None,
             mrope=mrope,
@@ -4842,9 +4851,33 @@ class _Qwen4ExpTensorRuntime:
             first_output_index = reservation.output_tokens - len(outcome.tokens) + 1
             row_events: list[Any] = []
             for index, token in enumerate(outcome.tokens):
+                if reservation.output_state.is_protocol_token(token):
+                    reservation.detokenizer.finalize()
+                    pending_text = reservation.detokenizer.last_segment
+                    if pending_text:
+                        text_delta, reasoning_delta = reservation.output_state.route(
+                            -1,
+                            pending_text,
+                        )
+                        row_events.extend(
+                            encoder.feed(
+                                Qwen4OutputChunk(
+                                    text_delta=text_delta,
+                                    reasoning_delta=reasoning_delta,
+                                    usage=_usage(
+                                        reservation, first_output_index + index
+                                    ),
+                                )
+                            )
+                        )
+                    reservation.detokenizer.reset()
+                    decoded = ""
+                else:
+                    reservation.detokenizer.add_token(token)
+                    decoded = reservation.detokenizer.last_segment
                 text_delta, reasoning_delta = reservation.output_state.route(
                     token,
-                    self.tokenizer.decode([token]),
+                    decoded,
                 )
                 chunk = Qwen4OutputChunk(
                     text_delta=text_delta,
@@ -4853,6 +4886,22 @@ class _Qwen4ExpTensorRuntime:
                 )
                 row_events.extend(encoder.feed(chunk))
             if outcome.finished:
+                reservation.detokenizer.finalize()
+                final_text = reservation.detokenizer.last_segment
+                if final_text:
+                    text_delta, reasoning_delta = reservation.output_state.route(
+                        -1,
+                        final_text,
+                    )
+                    row_events.extend(
+                        encoder.feed(
+                            Qwen4OutputChunk(
+                                text_delta=text_delta,
+                                reasoning_delta=reasoning_delta,
+                                usage=_usage(reservation),
+                            )
+                        )
+                    )
                 row_events.extend(
                     encoder.finish(
                         _usage(reservation),

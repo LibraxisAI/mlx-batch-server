@@ -21,11 +21,34 @@ from mlx_batch_server.chat.mlx.wrapper_cache import (
 class _FakeTokenizer:
     eos_token_ids = {0}
 
-    def encode(self, text: str) -> list[int]:
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
         return list(range(1, len(text.split()) + 1))
 
     def decode(self, tokens: list[int]) -> str:
         return "".join(str(token) for token in tokens)
+
+
+class _ByteTokenizer:
+    eos_token_ids = {0}
+    _tokens = {
+        1: b"Cze\xc5",
+        2: b"\x9b\xc4",
+        3: b"\x87! ",
+        4: b"\xf0\x9f",
+        5: b"\x98\x8a",
+    }
+
+    @staticmethod
+    def encode(text: str, *, add_special_tokens: bool = False) -> list[int]:
+        del text, add_special_tokens
+        return [0]
+
+    def decode(self, tokens: list[int]) -> str:
+        return b"".join(self._tokens.get(token, b"") for token in tokens).decode(
+            "utf-8",
+            "replace",
+        )
 
 
 class _FakeChatTemplate:
@@ -116,6 +139,30 @@ def _fake_model(context_length: int, *, multimodal: bool = False) -> SimpleNames
 
 
 class TestBatchChatGenerator:
+    def test_process_response_buffers_partial_utf8_per_request(self):
+        generator = BatchChatGenerator(model=_fake_model(context_length=16))
+        generator.tokenizer = _ByteTokenizer()
+        generator._uid_to_request[11] = "req-unicode"
+        generator._request_to_uid["req-unicode"] = 11
+        generator._active_requests.add("req-unicode")
+
+        chunks = [
+            generator._process_response(
+                SimpleNamespace(
+                    uid=11,
+                    token=token,
+                    logprobs=None,
+                    finish_reason="stop" if token == 5 else None,
+                )
+            )
+            for token in (1, 2, 3, 4, 5)
+        ]
+        text = "".join(chunk.text for chunk in chunks if chunk is not None)
+
+        assert text == "Cześć! 😊"
+        assert "\ufffd" not in text
+        assert "req-unicode" not in generator._request_detokenizers
+
     def test_prepare_batch_requests_resolves_max_tokens_against_context(self):
         """Requests should be clamped to the remaining context budget."""
         generator = BatchChatGenerator(model=_fake_model(context_length=8))

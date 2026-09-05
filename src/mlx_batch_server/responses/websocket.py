@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeAlias, cast
 
@@ -14,13 +15,14 @@ from .transport import (
     ResponseEventSource,
     ResponseInjectCommand,
     ResponseSteerCommand,
+    ResponseSteerRejectedError,
     SessionClosedError,
     StreamId,
+    TransportControlOutcome,
     TransportErrorOutcome,
     TransportOutcome,
     TransportProtocolError,
     TransportSession,
-    UnsupportedClientEventError,
     UnsupportedInjectError,
     WebSocketCommand,
     parse_websocket_command,
@@ -53,6 +55,7 @@ class ResponsesWebSocketSession:
         self._core = MultiplexedTransportSession(session)
         self._start_response = start_response
         self._steer_response = steer_response
+        self._commands_by_response_id: dict[str, ResponseCreateCommand] = {}
 
     @property
     def session(self) -> TransportSession:
@@ -91,6 +94,8 @@ class ResponsesWebSocketSession:
             source = await cast("Awaitable[ResponseEventSource]", source)
         if not isinstance(source, ResponseEventSource):
             raise TypeError("response starter must return ResponseEventSource")
+        if source.response_id is not None:
+            self._commands_by_response_id[source.response_id] = command
         return source
 
     async def cancel(self, stream_id: StreamId | None, reason: str) -> None:
@@ -98,23 +103,49 @@ class ResponsesWebSocketSession:
 
         await self._core.cancel(stream_id, reason)
 
-    async def steer(self, command: ResponseSteerCommand) -> None:
-        if self._steer_response is None:
-            raise UnsupportedClientEventError(
-                "response.steer is not configured for this transport",
-                param="type",
+    async def steer(self, command: ResponseSteerCommand) -> Mapping[str, Any] | None:
+        if self._steer_response is not None:
+            result = self._steer_response(command)
+            if inspect.isawaitable(result):
+                await result
+            return None
+
+        original = self._commands_by_response_id.get(command.previous_response_id)
+        if original is None:
+            return render_steer_failed(
+                command,
+                code="response_not_found",
+                message="the target response is not active on this connection",
             )
-        result = self._steer_response(command)
-        if inspect.isawaitable(result):
-            await result
+        successor_body = dict(original.response)
+        successor_body["previous_response_id"] = command.previous_response_id
+        successor_body["input"] = command.input
+        successor = ResponseCreateCommand(
+            response=successor_body,
+            stream_id=original.stream_id,
+        )
+        steer_id = f"steer_{uuid.uuid4().hex}"
+        try:
+            await self._core.steer(
+                command.previous_response_id,
+                steer_id,
+                lambda: self._resolve_source(successor),
+            )
+        except ResponseSteerRejectedError as error:
+            return render_steer_failed(
+                command,
+                code=error.code,
+                message=str(error),
+                steer_id=steer_id,
+            )
+        return None
 
     async def handle(self, command: WebSocketCommand) -> Mapping[str, Any] | None:
         if isinstance(command, ResponseCreateCommand):
             await self.create(command)
             return None
         if isinstance(command, ResponseSteerCommand):
-            await self.steer(command)
-            return None
+            return await self.steer(command)
         if isinstance(command, ResponseInjectCommand):
             error = UnsupportedInjectError(
                 "Beta Multi-agent response.inject is unsupported without an "
@@ -147,6 +178,8 @@ class ResponsesWebSocketSession:
 
     async def receive_payload(self) -> dict[str, Any]:
         outcome = await self.receive()
+        if isinstance(outcome, TransportControlOutcome):
+            return dict(outcome.payload)
         if isinstance(outcome, TransportErrorOutcome):
             return render_protocol_error(outcome.error)
         projected = project_event(outcome)
@@ -195,3 +228,26 @@ def render_protocol_error(error: TransportProtocolError) -> dict[str, Any]:
     if error.stream_id is not None:
         payload["stream_id"] = error.stream_id.value
     return payload
+
+
+def render_steer_failed(
+    command: ResponseSteerCommand,
+    *,
+    code: str,
+    message: str,
+    steer_id: str | None = None,
+) -> dict[str, Any]:
+    """Render rejected steering input so the client can safely retry it."""
+
+    steer: dict[str, Any] = {
+        "previous_response_id": command.previous_response_id,
+    }
+    if steer_id is not None:
+        steer["id"] = steer_id
+    return {
+        "type": "response.steer.failed",
+        "sequence_number": 0,
+        "steer": steer,
+        "input": command.input,
+        "error": {"code": code, "message": message},
+    }
