@@ -8,6 +8,8 @@ a proven verbatim span with filter-computed offsets.
 
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
 from mlx_batch_server.runtime.citations import (
@@ -18,6 +20,7 @@ from mlx_batch_server.runtime.citations import (
     CitationSource,
     CitationStreamFilter,
     ItemCitationBudget,
+    PreparedCitationCorpus,
     ProvenCitation,
 )
 
@@ -39,13 +42,38 @@ _VALID = f'Before <cite url="{_URL}">{_QUOTE}</cite> after.'
 _VALID_CLEAN = f"Before {_QUOTE} after."
 
 
+def _filter(
+    sources: tuple[CitationSource, ...] = _SOURCES,
+    *,
+    budget: ItemCitationBudget | None = None,
+) -> CitationStreamFilter:
+    return CitationStreamFilter(
+        PreparedCitationCorpus.from_sources(sources),
+        budget=budget,
+    )
+
+
+def _normalized(text: str) -> str:
+    output: list[str] = []
+    in_whitespace = False
+    for char in unicodedata.normalize("NFC", text):
+        if char.isspace():
+            if not in_whitespace:
+                output.append(" ")
+            in_whitespace = True
+        else:
+            output.append(char)
+            in_whitespace = False
+    return "".join(output)
+
+
 def _run(
     text: str, *, chunks: tuple[str, ...] | None = None
 ) -> tuple[
     str,
     list[ProvenCitation],
 ]:
-    stream_filter = CitationStreamFilter(_SOURCES)
+    stream_filter = _filter()
     citations: list[ProvenCitation] = []
     output: list[str] = []
     for chunk in chunks if chunks is not None else (text,):
@@ -61,6 +89,18 @@ def _run(
             citations.append(piece)
     joined = "".join(output)
     assert joined == stream_filter.filtered_text
+    for citation in citations:
+        assert (
+            joined[citation.output_start : citation.output_end] == citation.cited_text
+        )
+        source = next(
+            source
+            for source in _SOURCES
+            if source.call_id == citation.source_call_id
+            and source.url == citation.source_url
+        )
+        source_slice = source.content[citation.source_start : citation.source_end]
+        assert _normalized(source_slice) == _normalized(citation.cited_text)
     return joined, citations
 
 
@@ -139,7 +179,7 @@ def test_whitespace_and_unicode_normalization_prove_the_span() -> None:
         url="https://u.example",
         content="Skróbany   tekst źródła.",
     )
-    stream_filter = CitationStreamFilter((source,))
+    stream_filter = _filter((source,))
     pieces = stream_filter.feed(
         '<cite url="https://u.example">Skróbany tekst źródła.</cite>'
     )
@@ -148,6 +188,64 @@ def test_whitespace_and_unicode_normalization_prove_the_span() -> None:
     assert len(citations) == 1
     assert citations[0].source_start == 0
     assert citations[0].source_end == len(source.content)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "quote"),
+    (
+        ("\u1100\u1161", "\uac00"),
+        ("\uac00", "\u1100\u1161"),
+    ),
+)
+def test_full_string_nfc_proves_hangul_in_both_directions(
+    source_text: str,
+    quote: str,
+) -> None:
+    source = CitationSource(
+        call_id="call_h",
+        url="https://u.example/hangul",
+        content=source_text,
+    )
+    stream_filter = _filter((source,))
+    pieces = (
+        stream_filter.feed(f'<cite url="{source.url}">{quote}</cite>')
+        + stream_filter.finish()
+    )
+
+    text = "".join(piece for piece in pieces if isinstance(piece, str))
+    citations = [piece for piece in pieces if isinstance(piece, ProvenCitation)]
+    assert text == quote
+    assert len(citations) == 1
+    assert citations[0].cited_text == quote
+    assert (citations[0].source_start, citations[0].source_end) == (
+        0,
+        len(source_text),
+    )
+    assert (citations[0].output_start, citations[0].output_end) == (0, len(quote))
+
+
+def test_boundary_whitespace_is_proved_without_range_contradiction() -> None:
+    source = CitationSource(
+        call_id="call_w",
+        url="https://u.example/whitespace",
+        content="  Alpha beta  ",
+    )
+    quote = " Alpha beta "
+    stream_filter = _filter((source,))
+    pieces = (
+        stream_filter.feed(f'<cite url="{source.url}">{quote}</cite>')
+        + stream_filter.finish()
+    )
+
+    text = "".join(piece for piece in pieces if isinstance(piece, str))
+    citations = [piece for piece in pieces if isinstance(piece, ProvenCitation)]
+    assert text == quote
+    assert len(citations) == 1
+    citation = citations[0]
+    assert citation.cited_text == quote
+    assert text[citation.output_start : citation.output_end] == quote
+    assert (citation.source_start, citation.source_end) == (0, len(source.content))
+    assert source.content[citation.source_start : citation.source_end] == source.content
 
 
 def test_malformed_attribute_strips_opener_and_keeps_text() -> None:
@@ -223,7 +321,7 @@ def test_empty_quote_emits_nothing_and_no_citation() -> None:
 
 def test_citations_per_item_budget_bounds_events() -> None:
     budget = ItemCitationBudget(2)
-    stream_filter = CitationStreamFilter(_SOURCES, budget=budget)
+    stream_filter = _filter(budget=budget)
     sentinel = f'<cite url="{_URL}">{_QUOTE}</cite> '
     pieces = stream_filter.feed(sentinel * 4)
     pieces += stream_filter.finish()
@@ -241,7 +339,7 @@ def test_holdback_is_bounded_at_every_instant() -> None:
     sample = f'pre <cite url="{_URL}">{_QUOTE}</cite> post ' + (
         f'x <cite url="{_URL}">{"y" * 100}</cite>'
     )
-    stream_filter = CitationStreamFilter(_SOURCES)
+    stream_filter = _filter()
     emitted = 0
     for fed, ch in enumerate(sample, start=1):
         for piece in stream_filter.feed(ch):
@@ -251,7 +349,7 @@ def test_holdback_is_bounded_at_every_instant() -> None:
 
 
 def test_search_snippet_grounds_a_citation() -> None:
-    stream_filter = CitationStreamFilter(_SOURCES)
+    stream_filter = _filter()
     pieces = stream_filter.feed(
         '<cite url="https://s.example/hit">structural perception</cite>'
     )
@@ -262,7 +360,7 @@ def test_search_snippet_grounds_a_citation() -> None:
 
 
 def test_filter_refuses_reuse_after_finish() -> None:
-    stream_filter = CitationStreamFilter(_SOURCES)
+    stream_filter = _filter()
     stream_filter.finish()
     with pytest.raises(RuntimeError):
         stream_filter.feed("x")

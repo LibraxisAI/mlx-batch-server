@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from mlx_batch_server.runtime import agentic as agentic_module
+from mlx_batch_server.runtime import citations as citations_module
 from mlx_batch_server.runtime.agentic import (
     CITATIONS_METADATA_KEY,
     FAILURE_CONTINUATION_PREPARATION,
@@ -82,6 +83,7 @@ class _Round:
     hold: asyncio.Event | None = None
     repeat_last_tool_call: bool = False  # stream-level identical duplicate
     text_deltas: tuple[str, ...] | None = None  # arbitrary delta chunking
+    text_parts: tuple[tuple[str, ...], ...] | None = None
 
 
 class _FakeBackendTurn:
@@ -151,11 +153,24 @@ class _FakeBackendTurn:
         if step.text is not None:
             item_id = f"msg_r{rnd}"
             sink.emit(OutputItemStarted("message", index, item_id))
-            sink.emit(ContentPartStarted("output_text", index, 0, item_id))
-            for delta in step.text_deltas or (step.text,):
-                sink.emit(TextDelta(delta, item_id, index, 0))
-            sink.emit(TextCompleted(step.text, item_id, index, 0))
-            sink.emit(ContentPartCompleted("output_text", index, 0, item_id, step.text))
+            text_parts = step.text_parts or (step.text_deltas or (step.text,),)
+            for content_index, deltas in enumerate(text_parts):
+                part_text = "".join(deltas)
+                sink.emit(
+                    ContentPartStarted("output_text", index, content_index, item_id)
+                )
+                for delta in deltas:
+                    sink.emit(TextDelta(delta, item_id, index, content_index))
+                sink.emit(TextCompleted(part_text, item_id, index, content_index))
+                sink.emit(
+                    ContentPartCompleted(
+                        "output_text",
+                        index,
+                        content_index,
+                        item_id,
+                        part_text,
+                    )
+                )
             sink.emit(OutputItemCompleted("message", index, item_id, text=step.text))
             index += 1
         for call_id, name, arguments in step.tool_calls:
@@ -1396,6 +1411,95 @@ async def test_armed_filter_grounds_one_citation_and_strips_markup() -> None:
         if m.get("role") == "system" and m.get("content") == CITATION_PREPARATION
     ]
     assert len(preparations) == 1
+
+
+@pytest.mark.asyncio
+async def test_full_nfc_hangul_proof_survives_every_delta_boundary() -> None:
+    """A Jamo source proves a precomposed quote through the real child sink."""
+
+    url = "https://doc.example/hangul"
+    source = "\u1100\u1161"
+    quote = "\uac00"
+    raw = f'<cite url="{url}">{quote}</cite>'
+
+    async def hangul_document(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        return _document_success(str(arguments["url"]), source)
+
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_h", "web_fetch", f'{{"url":"{url}"}}'),)),
+            _Round(text=quote, text_deltas=tuple(raw)),
+        )
+    )
+    tool = _CountingTool("web_fetch", hangul_document)
+    starter, _ = _starter(inner, (tool,))
+    events, outer = await _drive(
+        starter,
+        _cited_request(({"type": "web_fetch"},)),
+    )
+
+    assert outer.state is TurnState.TERMINAL
+    assert [event.text for event in _of(events, TextCompleted) if event.text] == [quote]
+    citations = _of(events, HostedCitation)
+    assert len(citations) == 1
+    assert citations[0].cited_text == quote
+    assert (citations[0].source_start, citations[0].source_end) == (0, 2)
+    assert (citations[0].output_start, citations[0].output_end) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_one_prepared_corpus_is_shared_and_extended_incrementally(
+    monkeypatch: Any,
+) -> None:
+    """Eight content filters share source preparation; later results append once."""
+
+    first_url = "https://doc.example/first"
+    second_url = "https://doc.example/second"
+    contents = {
+        first_url: "Alpha source.",
+        second_url: "Beta source.",
+    }
+    first_raw = f'<cite url="{first_url}">{contents[first_url]}</cite>'
+    second_raw = f'<cite url="{second_url}">{contents[second_url]}</cite>'
+    prepared_call_ids: list[str] = []
+    corpora: list[Any] = []
+    original_prepare = citations_module._prepare_source
+
+    def recording_prepare(source: Any) -> Any:
+        prepared_call_ids.append(source.call_id)
+        return original_prepare(source)
+
+    class RecordingFilter(CitationStreamFilter):
+        def __init__(self, sources: Any, **kwargs: Any) -> None:
+            corpora.append(sources)
+            super().__init__(sources, **kwargs)
+
+    async def document(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        url = str(arguments["url"])
+        return _document_success(url, contents[url])
+
+    monkeypatch.setattr(citations_module, "_prepare_source", recording_prepare)
+    monkeypatch.setattr(agentic_module, "CitationStreamFilter", RecordingFilter)
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_fetch", f'{{"url":"{first_url}"}}'),)),
+            _Round(
+                text=contents[first_url] * 8,
+                text_parts=tuple((first_raw,) for _ in range(8)),
+                tool_calls=(("call_b", "web_fetch", f'{{"url":"{second_url}"}}'),),
+            ),
+            _Round(text=contents[second_url], text_deltas=(second_raw,)),
+        )
+    )
+    starter, _ = _starter(inner, (_CountingTool("web_fetch", document),))
+    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+
+    assert prepared_call_ids == ["call_a", "call_b"]
+    assert len(corpora) == 9
+    assert all(corpus is corpora[0] for corpus in corpora[:8])
+    assert corpora[8] is not corpora[0]
+    assert corpora[8]._parent is corpora[0]
+    assert len(_of(events, HostedCitation)) == 9
 
 
 @pytest.mark.asyncio
