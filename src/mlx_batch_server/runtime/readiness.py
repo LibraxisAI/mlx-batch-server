@@ -33,6 +33,7 @@ class ReadinessService:
     ) -> None:
         self._roles = roles
         self._lock = threading.RLock()
+        self.__manager_publication_authority = object()
         frozen_receipt = None if receipt is None else dict(receipt)
         self._snapshots = {
             spec.name: RoleSnapshot(
@@ -117,6 +118,7 @@ class ReadinessService:
         backend: BackendKind,
         capabilities: CapabilityReport | None = None,
         materialization: TensorMaterializationReceipt | None = None,
+        _publication_authority: object | None = None,
     ) -> RoleSnapshot:
         name = self._roles.resolve(role).name
         with self._lock:
@@ -137,6 +139,10 @@ class ReadinessService:
                 raise ValueError(
                     f"role {name.value!r} lacks an exact materialization receipt"
                 )
+            if _publication_authority is not self.__manager_publication_authority:
+                raise PermissionError(
+                    f"role {name.value!r} READY publication requires its manager"
+                )
             return self._store(
                 name,
                 replace(
@@ -150,6 +156,11 @@ class ReadinessService:
                     materialization=materialization,
                 ),
             )
+
+    def _publication_authority_for_manager(self) -> object:
+        """Return the private capability consumed only by the paired manager."""
+
+        return self.__manager_publication_authority
 
     def mark_unloading(self, role: RoleName | str) -> RoleSnapshot:
         name = self._roles.resolve(role).name

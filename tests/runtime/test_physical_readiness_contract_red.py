@@ -229,6 +229,20 @@ async def test_plain_public_factory_cannot_publish_fabricated_receipt() -> None:
     assert readiness.is_ready(RoleName.MAIN) is False
 
 
+def test_public_receipt_cannot_bypass_manager_and_publish_ready_directly() -> None:
+    _, readiness = _services(_Factory(_Handle()))
+
+    with pytest.raises(PermissionError, match="requires its manager"):
+        readiness.mark_ready(
+            RoleName.MAIN,
+            loaded_model=MODEL,
+            backend=BackendKind.FUSED_MTP_MLX,
+            materialization=_receipt(),
+        )
+
+    assert readiness.is_ready(RoleName.MAIN) is False
+
+
 @pytest.mark.asyncio
 async def test_trusted_factory_rejects_receipt_fabricated_under_foreign_seal() -> None:
     handle = _Handle(receipt=_receipt(authority=object()))
@@ -416,12 +430,13 @@ def test_every_non_ready_transition_clears_materialization() -> None:
         "dead",
     )
     for transition in transitions:
-        _, readiness = _services(_Factory(_Handle()))
+        manager, readiness = _services(_Factory(_Handle()))
         readiness.mark_ready(
             RoleName.MAIN,
             loaded_model=MODEL,
             backend=BackendKind.FUSED_MTP_MLX,
             materialization=_receipt(),
+            _publication_authority=manager._readiness_publication_authority,
         )
         if transition == "unloading":
             snapshot = readiness.mark_unloading(RoleName.MAIN)
@@ -436,12 +451,13 @@ def test_every_non_ready_transition_clears_materialization() -> None:
         assert snapshot.model_state is not ModelState.READY
         assert snapshot.materialization is None
 
-    _, readiness = _services(_Factory(_Handle()))
+    manager, readiness = _services(_Factory(_Handle()))
     readiness.mark_ready(
         RoleName.MAIN,
         loaded_model=MODEL,
         backend=BackendKind.FUSED_MTP_MLX,
         materialization=_receipt(),
+        _publication_authority=manager._readiness_publication_authority,
     )
     readiness.mark_dead(RoleName.MAIN, "dead")
     snapshot = readiness.mark_alive(RoleName.MAIN)

@@ -74,6 +74,9 @@ class _Manager:
             backend=BackendKind.FUSED_MTP_MLX,
             capabilities=self.capabilities,
             materialization=_materialization(),
+            _publication_authority=(
+                self.readiness._publication_authority_for_manager()
+            ),
         )
         return object()
 

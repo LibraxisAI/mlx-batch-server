@@ -95,6 +95,11 @@ class RuntimeManager:
                 self._factory_materialization_authorities[kind] = authority
         self._roles = roles or (readiness.roles if readiness is not None else None)
         self._readiness = readiness
+        self._readiness_publication_authority = (
+            None
+            if readiness is None
+            else readiness._publication_authority_for_manager()
+        )
         self._admission = admission or AdmissionController()
         self._default_load_config = default_load_config or LoadConfig()
         self._max_runtimes = max_runtimes
@@ -666,6 +671,7 @@ class RuntimeManager:
                 backend=runtime.backend,
                 capabilities=self._handle_capabilities(handle),
                 materialization=materialization,
+                _publication_authority=self._readiness_publication_authority,
             )
 
     def _mark_roles_degraded(
