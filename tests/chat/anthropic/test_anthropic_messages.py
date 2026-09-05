@@ -21,20 +21,19 @@ def client():
 
 @pytest.fixture
 def anthropic_client(client):
-    """Create Anthropic client configured with test server and handle cache cleanup."""
-    # The test will use this client instance
-    yield anthropic.Anthropic(
+    """Create an official Anthropic SDK client pointed at the test server.
+
+    These are conformance tests: they assert that the real SDK parses what
+    this server emits. They need local model weights *and* a typed inference
+    owner bound to the Anthropic surface (see
+    ``mlx_batch_server.chat.anthropic.turn_source``); the protocol itself is
+    proven without either in ``test_anthropic_messages_projection.py``.
+    """
+    return anthropic.Anthropic(
         base_url="http://test/anthropic",
         api_key="not-needed",
         http_client=client,
     )
-
-    # Teardown logic: runs after the test is finished
-    # This clears the global model cache to prevent state pollution between tests
-    import mlx_batch_server.chat.anthropic.router as anthropic_router
-
-    anthropic_router._cached_model = None
-    anthropic_router._cached_anthropic_adapter = None
 
 
 @pytest.fixture
