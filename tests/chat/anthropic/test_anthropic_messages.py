@@ -5,12 +5,84 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mlx_batch_server.chat.anthropic.anthropic_schema import MessagesRequest
+from mlx_batch_server.chat.anthropic.turn_source import (
+    AnthropicTurn,
+    clear_turn_source,
+    register_turn_source,
+)
 from mlx_batch_server.main import app
+from mlx_batch_server.runtime.events import (
+    REASONING_CONTENT_KIND,
+    TEXT_CONTENT_KIND,
+    ContentPartStarted,
+    ReasoningCompleted,
+    ReasoningDelta,
+    TextCompleted,
+    TextDelta,
+    TurnCompleted,
+    TurnStarted,
+    UsageUpdate,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.model
+
+class _SDKConformanceTurnSource:
+    """Deterministic typed owner used to prove the official SDK wire contract."""
+
+    def stream(self, turn: AnthropicTurn):
+        async def events():
+            yield TurnStarted(
+                response_id="anthropic_sdk_conformance",
+                model=turn.model_alias,
+                created_at=1,
+            )
+            output_index = 0
+            if turn.reasoning.get("enabled") is True:
+                yield ContentPartStarted(
+                    kind=REASONING_CONTENT_KIND,
+                    output_index=output_index,
+                    content_index=0,
+                    item_id="reasoning_0",
+                )
+                yield ReasoningDelta(
+                    delta="A short deterministic reasoning trace.",
+                    item_id="reasoning_0",
+                    output_index=output_index,
+                    content_index=0,
+                )
+                yield ReasoningCompleted(
+                    text="A short deterministic reasoning trace.",
+                    item_id="reasoning_0",
+                    output_index=output_index,
+                    content_index=0,
+                )
+                output_index += 1
+            yield ContentPartStarted(
+                kind=TEXT_CONTENT_KIND,
+                output_index=output_index,
+                content_index=0,
+                item_id="text_0",
+            )
+            yield TextDelta(
+                delta="Hello from the canonical runtime.",
+                item_id="text_0",
+                output_index=output_index,
+                content_index=0,
+            )
+            yield TextCompleted(
+                text="Hello from the canonical runtime.",
+                item_id="text_0",
+                output_index=output_index,
+                content_index=0,
+            )
+            yield TurnCompleted(
+                finish_reason="stop",
+                usage=UsageUpdate(input_tokens=7, output_tokens=6, total_tokens=13),
+            )
+
+        return events()
 
 
 @pytest.fixture
@@ -24,16 +96,19 @@ def anthropic_client(client):
     """Create an official Anthropic SDK client pointed at the test server.
 
     These are conformance tests: they assert that the real SDK parses what
-    this server emits. They need local model weights *and* a typed inference
-    owner bound to the Anthropic surface (see
-    ``mlx_batch_server.chat.anthropic.turn_source``); the protocol itself is
-    proven without either in ``test_anthropic_messages_projection.py``.
+    this server emits through a deterministic typed runtime owner. They do not
+    load model weights; live-model parity belongs to the I1 runtime proof.
     """
-    return anthropic.Anthropic(
-        base_url="http://test/anthropic",
-        api_key="not-needed",
-        http_client=client,
-    )
+    source = _SDKConformanceTurnSource()
+    register_turn_source(source)
+    try:
+        yield anthropic.Anthropic(
+            base_url="http://test/anthropic",
+            api_key="not-needed",
+            http_client=client,
+        )
+    finally:
+        clear_turn_source(source)
 
 
 @pytest.fixture
@@ -178,18 +253,18 @@ class TestAnthropicMessages:
 
                     if event.type == "message_start":
                         message_start_received = True
-                        assert event.message.model == model, (
-                            "Incorrect model name in stream"
-                        )
+                        assert (
+                            event.message.model == model
+                        ), "Incorrect model name in stream"
 
                     elif event.type == "content_block_start":
                         content_block_start_received = True
-                        assert event.content_block is not None, (
-                            "Missing content_block in content_block_start"
-                        )
-                        assert event.index is not None, (
-                            "Missing index in content_block_start"
-                        )
+                        assert (
+                            event.content_block is not None
+                        ), "Missing content_block in content_block_start"
+                        assert (
+                            event.index is not None
+                        ), "Missing index in content_block_start"
 
                     elif event.type == "content_block_delta":
                         delta = event.delta
@@ -214,16 +289,16 @@ class TestAnthropicMessages:
 
                     elif event.type == "content_block_stop":
                         content_block_stop_received = True
-                        assert event.index is not None, (
-                            "Missing index in content_block_stop"
-                        )
+                        assert (
+                            event.index is not None
+                        ), "Missing index in content_block_stop"
 
                     elif event.type == "message_delta":
                         message_delta_received = True
                         delta = event.delta
-                        assert delta.stop_reason is not None, (
-                            "No stop reason in message_delta"
-                        )
+                        assert (
+                            delta.stop_reason is not None
+                        ), "No stop reason in message_delta"
                         # Usage should be available in the event
                         assert event.usage is not None, "No usage in message_delta"
 
@@ -237,9 +312,9 @@ class TestAnthropicMessages:
             assert content_block_stop_received, "No content_block_stop event received"
             assert message_delta_received, "No message_delta event received"
             assert message_stop_received, "No message_stop event received"
-            assert text_deltas_received > 0, (
-                f"No text deltas received (got {event_count} total events)"
-            )
+            assert (
+                text_deltas_received > 0
+            ), f"No text deltas received (got {event_count} total events)"
             assert content_text.strip(), "Generated content is empty"
             logger.info(f"Complete generated content: {content_text}")
             logger.info(f"Received {text_deltas_received} text delta events")
@@ -304,9 +379,9 @@ class TestAnthropicMessages:
             assert message_stop_received, "No message_stop event received"
 
             # Check that we received either thinking or text content (or both)
-            assert thinking_deltas_received > 0 or text_deltas_received > 0, (
-                "No content deltas received"
-            )
+            assert (
+                thinking_deltas_received > 0 or text_deltas_received > 0
+            ), "No content deltas received"
 
             if thinking_deltas_received > 0:
                 assert thinking_content.strip(), "Thinking content is empty"
@@ -349,24 +424,24 @@ class TestAnthropicMessages:
 
             # 检查必需的事件都存在
             assert len(events_order) > 0, "No events received at all"
-            assert "message_start" in events_order, (
-                f"Missing message_start event in {events_order}"
-            )
-            assert "content_block_start" in events_order, (
-                f"Missing content_block_start event in {events_order}"
-            )
-            assert "content_block_stop" in events_order, (
-                f"Missing content_block_stop event in {events_order}"
-            )
-            assert "message_delta" in events_order, (
-                f"Missing message_delta event in {events_order}"
-            )
-            assert "message_stop" in events_order, (
-                f"Missing message_stop event in {events_order}"
-            )
-            assert events_order.count("content_block_delta") > 0, (
-                f"Missing content_block_delta events in {events_order}"
-            )
+            assert (
+                "message_start" in events_order
+            ), f"Missing message_start event in {events_order}"
+            assert (
+                "content_block_start" in events_order
+            ), f"Missing content_block_start event in {events_order}"
+            assert (
+                "content_block_stop" in events_order
+            ), f"Missing content_block_stop event in {events_order}"
+            assert (
+                "message_delta" in events_order
+            ), f"Missing message_delta event in {events_order}"
+            assert (
+                "message_stop" in events_order
+            ), f"Missing message_stop event in {events_order}"
+            assert (
+                events_order.count("content_block_delta") > 0
+            ), f"Missing content_block_delta events in {events_order}"
 
             # 验证严格顺序
             message_start_idx = events_order.index("message_start")
@@ -376,39 +451,39 @@ class TestAnthropicMessages:
             message_delta_idx = events_order.index("message_delta")
             message_stop_idx = events_order.index("message_stop")
 
-            assert message_start_idx < content_block_start_idx, (
-                "message_start should come before content_block_start"
-            )
-            assert content_block_start_idx < first_delta_idx, (
-                "content_block_start should come before first content_block_delta"
-            )
-            assert first_delta_idx < content_block_stop_idx, (
-                "content_block_delta should come before content_block_stop"
-            )
-            assert content_block_stop_idx < message_delta_idx, (
-                "content_block_stop should come before message_delta"
-            )
-            assert message_delta_idx < message_stop_idx, (
-                "message_delta should come before message_stop"
-            )
+            assert (
+                message_start_idx < content_block_start_idx
+            ), "message_start should come before content_block_start"
+            assert (
+                content_block_start_idx < first_delta_idx
+            ), "content_block_start should come before first content_block_delta"
+            assert (
+                first_delta_idx < content_block_stop_idx
+            ), "content_block_delta should come before content_block_stop"
+            assert (
+                content_block_stop_idx < message_delta_idx
+            ), "content_block_stop should come before message_delta"
+            assert (
+                message_delta_idx < message_stop_idx
+            ), "message_delta should come before message_stop"
 
             # 验证所有content_block_delta都在start和stop之间
             for i, event in enumerate(events_order):
                 if event == "content_block_delta":
-                    assert i > content_block_start_idx, (
-                        f"content_block_delta at index {i} should come after content_block_start"
-                    )
-                    assert i < content_block_stop_idx, (
-                        f"content_block_delta at index {i} should come before content_block_stop"
-                    )
+                    assert (
+                        i > content_block_start_idx
+                    ), f"content_block_delta at index {i} should come after content_block_start"
+                    assert (
+                        i < content_block_stop_idx
+                    ), f"content_block_delta at index {i} should come before content_block_stop"
 
             # 验证message_start是第一个事件，message_stop是最后一个事件
-            assert events_order[0] == "message_start", (
-                f"message_start should be the first event, got: {events_order[0]}"
-            )
-            assert events_order[-1] == "message_stop", (
-                f"message_stop should be the last event, got: {events_order[-1]}"
-            )
+            assert (
+                events_order[0] == "message_start"
+            ), f"message_start should be the first event, got: {events_order[0]}"
+            assert (
+                events_order[-1] == "message_stop"
+            ), f"message_stop should be the last event, got: {events_order[-1]}"
 
             logger.info("✅ Event order validation passed")
 
@@ -501,25 +576,25 @@ class TestAnthropicMessages:
                     if block_info["type"] == "thinking":
                         thinking_block_found = True
                         thinking_block_index = index
-                        assert "thinking_delta" in block_info["deltas"], (
-                            f"Thinking block {index} should have thinking_delta"
-                        )
+                        assert (
+                            "thinking_delta" in block_info["deltas"]
+                        ), f"Thinking block {index} should have thinking_delta"
 
                     elif block_info["type"] == "text":
                         text_block_found = True
                         text_block_index = index
-                        assert "text_delta" in block_info["deltas"], (
-                            f"Text block {index} should have text_delta"
-                        )
+                        assert (
+                            "text_delta" in block_info["deltas"]
+                        ), f"Text block {index} should have text_delta"
 
                 if thinking_block_found:
                     logger.info(f"Found thinking block at index {thinking_block_index}")
 
                     # 如果同时有thinking和text，验证thinking在text之前
                     if text_block_found:
-                        assert thinking_block_index < text_block_index, (
-                            "Thinking block should come before text block"
-                        )
+                        assert (
+                            thinking_block_index < text_block_index
+                        ), "Thinking block should come before text block"
                         logger.info(
                             f"Verified thinking block {thinking_block_index} comes before text block {text_block_index}"
                         )
@@ -528,9 +603,9 @@ class TestAnthropicMessages:
                 logger.info("✅ Thinking content validation passed")
 
             # 验证至少有一些内容（thinking或text）
-            assert thinking_content.strip() or text_content.strip(), (
-                "Should have either thinking or text content"
-            )
+            assert (
+                thinking_content.strip() or text_content.strip()
+            ), "Should have either thinking or text content"
 
         except Exception as e:
             logger.error(f"Test error: {e!s}")

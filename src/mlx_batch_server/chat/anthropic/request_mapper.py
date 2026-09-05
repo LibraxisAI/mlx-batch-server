@@ -15,7 +15,6 @@ from typing import Any
 from .anthropic_schema import (
     AnthropicTool,
     InputMessage,
-    MessageRole,
     MessagesRequest,
     RequestImageBlock,
     RequestTextBlock,

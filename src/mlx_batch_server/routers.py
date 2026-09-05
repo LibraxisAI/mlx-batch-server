@@ -27,6 +27,8 @@ def build_api_router(
     """
     settings = settings or get_settings()
     router = APIRouter()
+    from .chat.anthropic import router as anthropic_router
+
     canonical_runtime = runtime_control_router is not None
     if canonical_runtime != (responses_router is not None):
         raise ValueError(
@@ -35,7 +37,6 @@ def build_api_router(
 
     if not canonical_runtime:
         from .batch import router as batch_router
-        from .chat.anthropic import router as anthropic_router
         from .chat.openai import router as chat_router
         from .chat.openai.models import models
         from .embeddings import router as embeddings_router
@@ -53,7 +54,6 @@ def build_api_router(
         router.include_router(chat_router.router)
         router.include_router(embeddings_router.router)
         router.include_router(visual_embeddings_router.router)
-        router.include_router(anthropic_router.router, prefix="/anthropic")
         from .responses.router import router as legacy_responses_router
 
         router.include_router(legacy_responses_router)
@@ -63,6 +63,8 @@ def build_api_router(
         assert responses_router is not None
         router.include_router(runtime_control_router)
         router.include_router(responses_router)
+
+    router.include_router(anthropic_router.router, prefix="/anthropic")
 
     from .admin.router import router as admin_router
     from .health import ready_router

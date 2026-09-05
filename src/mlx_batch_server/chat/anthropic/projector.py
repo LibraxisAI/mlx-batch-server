@@ -154,7 +154,9 @@ class AnthropicMessageProjector:
     def usage(self) -> Usage:
         return self._state.usage
 
-    def observe(self, event: TurnEvent) -> tuple[AnthropicStreamEvent, ...]:
+    def observe(  # noqa: PLR0911, PLR0912 - explicit typed event dispatcher
+        self, event: TurnEvent
+    ) -> tuple[AnthropicStreamEvent, ...]:
         """Project one runtime event onto zero or more Anthropic events."""
 
         if isinstance(event, TurnStarted):
@@ -585,7 +587,9 @@ class AnthropicMessageProjector:
             cache_read_input_tokens=usage.cache_read_input_tokens,
         )
 
-    def _resolve_stop_reason(self, finish_reason: str | None) -> StopReason:
+    def _resolve_stop_reason(  # noqa: PLR0911 - protocol mapping table
+        self, finish_reason: str | None
+    ) -> StopReason:
         normalized = (finish_reason or "").strip().lower()
         if normalized in _TRUNCATION_REASONS:
             return StopReason.MAX_TOKENS

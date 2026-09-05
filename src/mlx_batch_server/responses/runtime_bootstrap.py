@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..chat.anthropic.runtime_source import RuntimeAnthropicTurnSource
+from ..chat.anthropic.turn_source import (
+    AnthropicTurnSource,
+    clear_turn_source,
+    register_turn_source,
+)
 from ..provenance import BuildReceipt
 from ..runtime.admission import AdmissionController
 from ..runtime.backends.legacy_mlx import (
@@ -15,7 +21,13 @@ from ..runtime.backends.legacy_mlx import (
     LegacyPortProvider,
 )
 from ..runtime.backends.legacy_provider import CachedLegacyPortProvider
-from ..runtime.contracts import BackendFactory, BackendKind, RoleName, RoleSpec
+from ..runtime.contracts import (
+    BackendFactory,
+    BackendKind,
+    RoleName,
+    RoleSpec,
+    RuntimeKey,
+)
 from ..runtime.fusion.concrete.composition import (
     Qwen4ExpBackendCompositionReceipt,
     compose_qwen4_exp_backend,
@@ -65,6 +77,7 @@ class RuntimeCompositionReceipt:
     admission_controller: AdmissionController
     runtime_manager: RuntimeManager
     runtime_start_service: RuntimeStartService
+    anthropic_turn_source: AnthropicTurnSource
     response_registry: ResponseRegistry
     runtime_resolver: ManifestRuntimeResolver
     responses_mapper: CanonicalResponsesMapper
@@ -82,6 +95,7 @@ class RuntimeCompositionReceipt:
             raise ValueError("deadline_s must be non-negative")
         loop = asyncio.get_running_loop()
         deadline_at = loop.time() + deadline_s
+        clear_turn_source(self.anthropic_turn_source)
         await self.responses_controller.shutdown(timeout_s=deadline_s)
         await self.runtime_manager.shutdown(
             deadline_s=max(0.0, deadline_at - loop.time())
@@ -193,6 +207,11 @@ def _compose_responses_runtime(
     starter = RuntimeStartService(manager, default_role=process_spec.name)
     registry = ResponseRegistry()
     resolver = ManifestRuntimeResolver(roles, aliases)
+    anthropic_turn_source = RuntimeAnthropicTurnSource(
+        starter=starter,
+        resolve_model=lambda model: _resolve_anthropic_model(resolver, model),
+    )
+    register_turn_source(anthropic_turn_source)
     compaction_codec = LocalCompactionCodec()
     mapper = CanonicalResponsesMapper(
         resolve_runtime=resolver,
@@ -232,6 +251,7 @@ def _compose_responses_runtime(
         admission_controller=admission,
         runtime_manager=manager,
         runtime_start_service=starter,
+        anthropic_turn_source=anthropic_turn_source,
         response_registry=registry,
         runtime_resolver=resolver,
         responses_mapper=mapper,
@@ -239,6 +259,21 @@ def _compose_responses_runtime(
         responses_operations=operations,
         build_receipt=build_receipt,
     )
+
+
+def _resolve_anthropic_model(
+    resolver: ManifestRuntimeResolver,
+    model: str,
+) -> tuple[RuntimeKey, str]:
+    resolved = resolver(
+        model=model,
+        role=None,
+        revision=None,
+        adapter_path=None,
+        draft_model_id=None,
+        backend=None,
+    )
+    return resolved.runtime, resolved.role
 
 
 def compose_role_responses_runtime(

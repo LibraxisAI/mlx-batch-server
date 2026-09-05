@@ -11,19 +11,23 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
-from mlx_batch_server.runtime.events import TurnEvent
 from mlx_batch_server.utils.logger import logger
 
-from .anthropic_schema import (
-    AnthropicStreamEvent,
-    MessagesRequest,
-    MessagesResponse,
-)
 from .errors import AnthropicAPIError
 from .projector import AnthropicMessageProjector
 from .request_mapper import build_turn
 from .turn_source import AnthropicTurnSource, require_turn_source
+
+if TYPE_CHECKING:
+    from mlx_batch_server.runtime.events import TurnEvent
+
+    from .anthropic_schema import (
+        AnthropicStreamEvent,
+        MessagesRequest,
+        MessagesResponse,
+    )
 
 
 def new_message_id() -> str:
@@ -88,7 +92,7 @@ class AnthropicMessagesEngine:
             for projected in projector.fail(error.error_type, error.message):
                 yield projected
             return
-        except Exception as error:  # noqa: BLE001 - projected, not swallowed
+        except Exception as error:
             logger.error("Anthropic turn failed: %s", error, exc_info=True)
             for projected in projector.fail("api_error", str(error)):
                 yield projected
