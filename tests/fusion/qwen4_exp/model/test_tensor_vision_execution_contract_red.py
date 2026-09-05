@@ -136,9 +136,10 @@ def test_request_local_preparation_does_not_reread_checkpoint_metadata() -> None
     assert "self.plan.config" in prepare
 
 
-def test_runtime_remains_honest_b1_row_serial() -> None:
-    runtime = _segment(TENSOR_PATH, "_Qwen4ExpTensorRuntime")
-    assert "B=1 row-serial baseline" in runtime
-    assert "for row in plan.prefill_rows" in runtime
-    assert "for row, reservation in zip(" in runtime
-    assert "tensor batch" not in runtime.lower()
+def test_mrope_runtime_remains_on_honest_singleton_lane() -> None:
+    decode = _segment(TENSOR_PATH, "_decode_batch")
+    assert "Request-local M-RoPE remains on" in decode
+    assert "if any(reservation.position_table is not None" in decode
+    assert "self._decode_mtp_one(" in decode
+    assert "self._decode_ar_one(reservation)" in decode
+    assert "self._decode_mtp_batch(" in decode
