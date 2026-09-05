@@ -803,7 +803,7 @@ def test_unsupported_top_level_fields_fail_closed(field: str) -> None:
 @pytest.mark.parametrize(
     ("field", "value", "expected"),
     [
-        ("background", False, False),
+        ("background", True, True),
         ("include", [], ()),
         ("service_tier", "auto", "auto"),
         ("stream", True, True),
@@ -854,7 +854,6 @@ def test_stream_options_are_only_honoured_for_a_streaming_request() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "param"),
     [
-        ("background", True, "background"),
         ("include", ["reasoning.encrypted_content"], "include[0]"),
         ("service_tier", "priority", "service_tier"),
         ("truncation", "auto", "truncation"),

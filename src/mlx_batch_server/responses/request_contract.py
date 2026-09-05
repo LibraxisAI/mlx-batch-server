@@ -120,11 +120,14 @@ _OFFICIAL_CONTRACTS: tuple[FieldContract, ...] = (
     _official(
         "background",
         _LOCAL,
-        destination="request.metadata['background']",
-        accepted=(False,),
+        destination=(
+            "request.metadata['background'] -> ResponsesController deferred-run owner "
+            "(W4-O)"
+        ),
+        accepted=(False, True),
         reason=(
-            "this server executes one response synchronously; there is no "
-            "background scheduler that could own a deferred run"
+            "ResponsesController is the deferred-run owner implemented by W4-O; "
+            "the mapper preserves the exact boolean for controller scheduling"
         ),
         requires=("store",),
     ),
