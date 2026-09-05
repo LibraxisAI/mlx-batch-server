@@ -33,6 +33,7 @@ from .anthropic_schema import (
     ToolChoiceNone,
     ToolChoiceTool,
 )
+from .content_mapper import map_anthropic_content
 from .errors import AnthropicAPIError, UnsupportedCapabilityError
 from .turn_source import AnthropicTurn
 
@@ -82,13 +83,6 @@ def _reject_unsupported(request: MessagesRequest) -> None:
             continue
         for block_index, block in enumerate(message.content):
             path = f"messages.{index}.content.{block_index}"
-            if isinstance(block, RequestImageBlock):
-                raise UnsupportedCapabilityError(
-                    "Image content on the Anthropic Messages surface",
-                    "This runtime has no media resolution bound to this "
-                    "protocol; the request is refused rather than answered "
-                    "from text alone.",
-                )
             if isinstance(block, RequestToolResultBlock):
                 _reject_unsupported_tool_result(block, path)
 
@@ -271,8 +265,12 @@ def _build_messages(
     system_text = _system_text(system)
     if system_text:
         mapped.append({"role": "system", "content": _text_content(system_text)})
-    for message in messages:
-        new_messages, new_media = _map_message(message, start_index=len(mapped))
+    for source_index, message in enumerate(messages):
+        new_messages, new_media = _map_message(
+            message,
+            start_index=len(mapped),
+            source_index=source_index,
+        )
         mapped.extend(new_messages)
         media.extend(new_media)
     return tuple(mapped), tuple(media)
@@ -290,6 +288,7 @@ def _map_message(
     message: InputMessage,
     *,
     start_index: int,
+    source_index: int,
 ) -> tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]]:
     if isinstance(message.content, str):
         return (
@@ -302,7 +301,11 @@ def _map_message(
             (),
         )
     if message.role is MessageRole.USER:
-        return _map_user_content(message.content, start_index=start_index)
+        return _map_user_content(
+            message.content,
+            start_index=start_index,
+            source_index=source_index,
+        )
     return _map_assistant_content(message.content), ()
 
 
@@ -310,35 +313,37 @@ def _map_user_content(
     blocks: Sequence[RequestContentBlock],
     *,
     start_index: int,
+    source_index: int,
 ) -> tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]]:
     mapped: list[Mapping[str, Any]] = []
     media: list[Mapping[str, Any]] = []
-    text_parts: list[str] = []
-    for block in blocks:
+    direct: list[RequestContentBlock] = []
+    direct_offset = 0
+    for block_index, block in enumerate(blocks):
         if isinstance(block, RequestToolResultBlock):
             message_index = start_index + len(mapped)
             tool_message, tool_media = _map_tool_result(block, message_index)
             mapped.append(tool_message)
             media.extend(tool_media)
+            direct_offset = block_index + 1
             continue
-        if isinstance(block, RequestTextBlock):
-            text_parts.append(block.text)
-            continue
-        if isinstance(block, RequestThinkingBlock):
-            raise _field_error("thinking blocks are not valid on user turns")
-        if isinstance(block, RequestToolUseBlock):
-            raise _field_error("tool_use blocks are not valid on user turns")
-        # Reached only when a block type is represented on the wire but has
-        # no mapping here. Refuse rather than drop it: a skipped block is
-        # exactly the silent lie the capability preflight exists to prevent.
-        raise _field_error(f"{block.type} blocks have no mapping on user turns")
-    if text_parts:
+        direct.append(block)
+    if direct:
+        message_index = start_index + len(mapped)
+        canonical = map_anthropic_content(
+            direct,
+            role="user",
+            message_index=message_index,
+            path=f"messages.{source_index}.content",
+            block_offset=direct_offset,
+        )
         mapped.append(
             {
                 "role": "user",
-                "content": _text_content("\n".join(text_parts)),
+                "content": canonical.content,
             }
         )
+        media.extend(canonical.media)
     elif not mapped:
         mapped.append({"role": "user", "content": _text_content("")})
     return tuple(mapped), tuple(media)

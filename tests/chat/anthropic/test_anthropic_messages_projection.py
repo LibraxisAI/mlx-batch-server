@@ -400,8 +400,8 @@ def test_a_represented_field_still_needs_a_capability_owner():
         enforce_capabilities(request, detached_profile(ALIAS))
 
 
-def test_image_content_is_refused_instead_of_dropped():
-    """Unsupported media fails with the Anthropic invalid-request type."""
+def test_image_content_maps_instead_of_being_dropped():
+    """Direct media enters the canonical ABI instead of disappearing."""
 
     request = MessagesRequest.model_validate(
         {
@@ -425,10 +425,12 @@ def test_image_content_is_refused_instead_of_dropped():
         }
     )
 
-    with pytest.raises(UnsupportedCapabilityError) as raised:
-        build_turn(request)
-    assert raised.value.error_type == "invalid_request_error"
-    assert raised.value.status_code == 400
+    turn = build_turn(request)
+
+    assert turn.messages == ({"role": "user", "content": ()},)
+    assert turn.media[0]["type"] == "input_image"
+    assert turn.media[0]["image_base64"] == "data:image/png;base64,aGk="
+    assert turn.media[0]["_content_index"] == 0
 
 
 def test_unbound_inference_owner_fails_closed():
