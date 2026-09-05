@@ -62,6 +62,8 @@ class _MessageLayout:
     call_id: str | None = None
     output: str | None = None
     is_error: bool | None = None
+    name: str | None = None
+    arguments: str | None = None
 
 
 class Qwen4ExpRequestPreparer:
@@ -154,16 +156,41 @@ def _reconstruct_mixed_messages(
         if not isinstance(role_value, str) or not role_value.strip():
             raise Qwen4ExpRequestPreparationError("message role must not be empty")
         role = role_value.strip().lower()
-        text_parts = _canonical_text_parts(raw_message.get("content"))
         indexed_media = media_by_message.get(message_index, {})
         item_type = raw_message.get("type")
         call_id: str | None = None
         output: str | None = None
         is_error: bool | None = None
-        if item_type not in (None, "message", "function_call_output"):
+        name: str | None = None
+        arguments: str | None = None
+        if item_type not in (
+            None,
+            "message",
+            "function_call",
+            "function_call_output",
+        ):
             raise Qwen4ExpRequestPreparationError(
                 "canonical message type is unsupported"
             )
+        if item_type == "function_call":
+            # The call keeps its exact typed identity through preparation; it is
+            # never flattened into an ordinary assistant text message.
+            call_id, name, arguments = _function_call_identity(
+                raw_message, role=role, media=indexed_media
+            )
+            layouts.append(
+                _MessageLayout(
+                    message_index=message_index,
+                    role=role,
+                    part_indices=(),
+                    item_type=item_type,
+                    call_id=call_id,
+                    name=name,
+                    arguments=arguments,
+                )
+            )
+            continue
+        text_parts = _canonical_text_parts(raw_message.get("content"))
         if item_type == "function_call_output":
             call_id, output, is_error = _function_call_output_identity(
                 raw_message,
@@ -226,7 +253,62 @@ def _reconstruct_mixed_messages(
 
     if set(media_by_message) - set(range(len(messages))):
         raise Qwen4ExpRequestPreparationError("media refers to a foreign message")
+    _reject_orphan_tool_results(layouts)
     return tuple(parts), tuple(layouts)
+
+
+def _function_call_identity(
+    raw_message: Mapping[str, object],
+    *,
+    role: str,
+    media: Mapping[int, Mapping[str, object]],
+) -> tuple[str, str, str]:
+    """Admit one typed tool call, or refuse it — never degrade it."""
+
+    if role != "assistant":
+        raise Qwen4ExpRequestPreparationError(
+            "function_call must keep its assistant role"
+        )
+    if media:
+        raise Qwen4ExpRequestPreparationError("function_call cannot own media")
+    if raw_message.get("content"):
+        raise Qwen4ExpRequestPreparationError(
+            "function_call cannot carry message content"
+        )
+    for field in ("output", "is_error"):
+        if field in raw_message:
+            raise Qwen4ExpRequestPreparationError(
+                f"{field} belongs only to function_call_output"
+            )
+    call_id = raw_message.get("call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise Qwen4ExpRequestPreparationError("function_call call_id must not be empty")
+    name = raw_message.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise Qwen4ExpRequestPreparationError("function_call name must not be empty")
+    arguments = raw_message.get("arguments")
+    if not isinstance(arguments, str):
+        raise Qwen4ExpRequestPreparationError("function_call arguments must be text")
+    return call_id, name, arguments
+
+
+def _reject_orphan_tool_results(layouts: Sequence[_MessageLayout]) -> None:
+    """Refuse a tool receipt no typed call in this request can explain.
+
+    A request whose upstream still flattens calls into assistant text carries no
+    typed identity to judge, and its lineage was validated before it arrived.
+    """
+
+    if not any(layout.item_type == "function_call" for layout in layouts):
+        return
+    seen: set[str] = set()
+    for layout in layouts:
+        if layout.item_type == "function_call" and layout.call_id is not None:
+            seen.add(layout.call_id)
+        elif layout.item_type == "function_call_output" and layout.call_id not in seen:
+            raise Qwen4ExpRequestPreparationError(
+                "function_call_output has no preceding function_call"
+            )
 
 
 def _function_call_output_identity(
@@ -319,6 +401,8 @@ def _prepared_messages(
                 call_id=layout.call_id,
                 output=layout.output,
                 is_error=layout.is_error,
+                name=layout.name,
+                arguments=layout.arguments,
             )
         )
     if tuple(consumed) != prompt.items:

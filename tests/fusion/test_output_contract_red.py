@@ -93,6 +93,8 @@ def test_qwen_reasoning_text_and_tool_call_form_one_complete_turn_lifecycle() ->
         "function_call",
         2,
         "resp_qwen:function_call:2",
+        "resp_qwen:call_qwen_0",
+        "lookup",
     )
     tool_deltas = tuple(event for event in events if isinstance(event, ToolDelta))
     assert tool_deltas[0].name == "lookup"
@@ -247,3 +249,31 @@ def test_malformed_qwen_tool_envelope_fails_closed_without_visible_marker() -> N
     )
     with pytest.raises(Qwen4OutputError, match="unterminated"):
         encoder.finish()
+
+
+def test_fused_output_path_honours_the_shared_item_identity_invariant() -> None:
+    """The fused adapter and the legacy adapter answer to one contract."""
+
+    from tests.output_item_identity import assert_output_item_identity_contract
+
+    encoder = Qwen4TurnEventEncoder("resp_shared")
+    events = _all_events(
+        encoder,
+        (
+            Qwen4OutputChunk(reasoning_delta="thinking"),
+            Qwen4OutputChunk(text_delta="Answer: "),
+            Qwen4OutputChunk(
+                text_delta='<tool_call>{"name":"lookup","arguments":{"id":"x"}}</tool_call>'
+            ),
+        ),
+    )
+
+    assert_output_item_identity_contract(events)
+    tool_start = next(
+        event
+        for event in events
+        if isinstance(event, OutputItemStarted) and event.kind == "function_call"
+    )
+    tool_delta = next(event for event in events if isinstance(event, ToolDelta))
+    assert tool_start.call_id == tool_delta.call_id
+    assert tool_start.name == "lookup"

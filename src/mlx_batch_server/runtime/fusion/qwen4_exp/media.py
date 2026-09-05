@@ -76,6 +76,8 @@ class PreparedQwen4Message:
     call_id: str | None = None
     output: str | None = None
     is_error: bool | None = None
+    name: str | None = None
+    arguments: str | None = None
 
     def __post_init__(self) -> None:
         if self.message_index < 0:
@@ -84,9 +86,20 @@ class PreparedQwen4Message:
             raise ValueError("prepared message role must not be empty")
         object.__setattr__(self, "role", self.role.strip().lower())
         object.__setattr__(self, "items", tuple(self.items))
-        if self.item_type not in (None, "message", "function_call_output"):
+        if self.item_type not in (
+            None,
+            "message",
+            "function_call",
+            "function_call_output",
+        ):
             raise ValueError("prepared message item_type is unsupported")
-        if self.item_type == "function_call_output":
+        if self.item_type != "function_call" and (
+            self.name is not None or self.arguments is not None
+        ):
+            raise ValueError("name and arguments belong only to function_call")
+        if self.item_type == "function_call":
+            _validate_function_call(self)
+        elif self.item_type == "function_call_output":
             _validate_function_call_output(self)
         elif self.call_id is not None or self.output is not None:
             raise ValueError("call_id and output belong only to function_call_output")
@@ -349,6 +362,21 @@ def render_function_call_output_text(
         ensure_ascii=True,
         separators=(",", ":"),
     )
+
+
+def _validate_function_call(message: PreparedQwen4Message) -> None:
+    if message.role != "assistant":
+        raise ValueError("function_call must keep its assistant role")
+    if not isinstance(message.call_id, str) or not message.call_id.strip():
+        raise ValueError("function_call call_id must not be empty")
+    if not isinstance(message.name, str) or not message.name.strip():
+        raise ValueError("function_call name must not be empty")
+    if not isinstance(message.arguments, str):
+        raise ValueError("function_call arguments must be text")
+    if message.output is not None or message.is_error is not None:
+        raise ValueError("output and is_error belong only to function_call_output")
+    if message.items:
+        raise ValueError("function_call cannot carry prompt items")
 
 
 def _validate_function_call_output(message: PreparedQwen4Message) -> None:

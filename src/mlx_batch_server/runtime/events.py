@@ -77,27 +77,66 @@ def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 @dataclass(frozen=True, slots=True)
 class TurnStarted:
+    """Open one turn with its physical runtime identity.
+
+    ``model`` stays the resolved physical runtime identity every backend and
+    projection validates against. ``requested_model`` is the immutable public
+    alias the client asked for; it is carried beside the physical value so a
+    wire projection can publish one identity without ever conflating the two.
+    ``request_settings`` carries the stable request settings sourced from the
+    prepared request so a lifecycle snapshot never has to guess them.
+    """
+
     response_id: str
     model: str
     created_at: int
+    requested_model: str | None = None
+    request_settings: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_identity("response_id", self.response_id)
         _require_identity("model", self.model)
         _require_index("created_at", self.created_at)
+        if self.requested_model is not None:
+            _require_identity("requested_model", self.requested_model)
+        object.__setattr__(
+            self, "request_settings", _freeze_mapping(self.request_settings)
+        )
+
+    @property
+    def public_model(self) -> str:
+        """The identity a protocol boundary may publish."""
+
+        return self.requested_model if self.requested_model is not None else self.model
 
 
 @dataclass(frozen=True, slots=True)
 class OutputItemStarted:
+    """Open one output item, carrying tool identity from its very first event."""
+
     kind: str
     index: int
     item_id: str
+    call_id: str | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in OUTPUT_ITEM_KINDS:
             raise ValueError(f"unsupported output item kind {self.kind!r}")
         _require_index("index", self.index)
         _require_identity("item_id", self.item_id)
+        if self.kind == "function_call":
+            if self.call_id is None or self.name is None:
+                raise ValueError(
+                    "function_call output item start requires call_id and name"
+                )
+            _require_identity("call_id", self.call_id)
+            _require_identity("name", self.name)
+            return
+        if self.call_id is not None or self.name is not None:
+            raise ValueError(
+                f"{self.kind} output item start cannot carry tool identity"
+            )
 
 
 @dataclass(frozen=True, slots=True)

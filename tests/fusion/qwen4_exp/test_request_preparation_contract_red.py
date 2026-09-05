@@ -313,3 +313,157 @@ async def test_raw_media_without_mapper_provenance_fails_closed() -> None:
 
     with pytest.raises(Qwen4ExpRequestPreparationError, match="_message_index"):
         await _preparer(_Resolver()).prepare(request, _Cancel())
+
+
+def _photo_plus_tool_messages(arguments: str = '{"region":"top"}') -> tuple[dict, ...]:
+    """The W2 continuation baton: photo, typed call, typed result, next turn."""
+
+    return (
+        {
+            "type": "message",
+            "role": "user",
+            "content": ({"type": "input_text", "text": "Inspect this photo."},),
+        },
+        {
+            "type": "function_call",
+            "role": "assistant",
+            "id": "fc_1",
+            "call_id": "call_inspect",
+            "name": "inspect_region",
+            "arguments": arguments,
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "role": "tool",
+            "call_id": "call_inspect",
+            "output": '{"finding":"lesion"}',
+            "content": ({"type": "input_text", "text": '{"finding":"lesion"}'},),
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": ({"type": "input_text", "text": "What now?"},),
+        },
+    )
+
+
+def _photo_plus_tool_request(**overrides) -> GenerationRequest:
+    messages = overrides.pop("messages", _photo_plus_tool_messages())
+    return GenerationRequest(
+        response_id="resp_photo_tool",
+        runtime=RuntimeKey("flash"),
+        messages=messages,
+        media=(
+            {
+                "type": "input_image",
+                "image_base64": "aW1hZ2U=",
+                "_role": "user",
+                "_message_index": 0,
+                "_content_index": 1,
+            },
+        ),
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_photo_plus_tool_continuation_reaches_preparation_as_a_typed_call() -> (
+    None
+):
+    """The admitted call stays a typed call — never an ordinary text message."""
+
+    prepared = await _preparer(_Resolver()).prepare(
+        _photo_plus_tool_request(), _Cancel()
+    )
+    prompt = prepared.backend_payload
+    assert prompt is not None
+
+    assert [message.item_type for message in prompt.messages] == [
+        "message",
+        "function_call",
+        "function_call_output",
+        "message",
+    ]
+    assert [message.role for message in prompt.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    call = prompt.messages[1]
+    assert call.call_id == "call_inspect"
+    assert call.name == "inspect_region"
+    assert call.arguments == '{"region":"top"}'
+    assert call.items == ()
+    assert call.output is None
+    assert prompt.messages[2].call_id == "call_inspect"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ({"call_id": ""}, "call_id must not be empty"),
+        ({"name": "   "}, "name must not be empty"),
+        ({"arguments": {"region": "top"}}, "arguments must be text"),
+        ({"role": "user"}, "assistant role"),
+        ({"output": "leaked"}, "belongs only to function_call_output"),
+    ),
+)
+async def test_malformed_call_identity_is_refused_not_degraded(
+    mutation: dict,
+    match: str,
+) -> None:
+    messages = list(_photo_plus_tool_messages())
+    messages[1] = {**messages[1], **mutation}
+    with pytest.raises(Qwen4ExpRequestPreparationError, match=match):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+
+@pytest.mark.asyncio
+async def test_orphan_tool_result_is_refused_when_typed_calls_are_present() -> None:
+    messages = list(_photo_plus_tool_messages())
+    messages[2] = {**messages[2], "call_id": "call_nobody_made"}
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="no preceding function_call",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_typed_call_may_not_own_media_or_message_content() -> None:
+    messages = list(_photo_plus_tool_messages())
+    messages[1] = {
+        **messages[1],
+        "content": ({"type": "input_text", "text": "smuggled"},),
+    }
+    with pytest.raises(
+        Qwen4ExpRequestPreparationError,
+        match="cannot carry message content",
+    ):
+        await _preparer(_Resolver()).prepare(
+            _photo_plus_tool_request(messages=tuple(messages)), _Cancel()
+        )
+
+    request = GenerationRequest(
+        response_id="resp_photo_tool",
+        runtime=RuntimeKey("flash"),
+        messages=_photo_plus_tool_messages(),
+        media=(
+            {
+                "type": "input_image",
+                "image_base64": "aW1hZ2U=",
+                "_role": "assistant",
+                "_message_index": 1,
+                "_content_index": 0,
+            },
+        ),
+    )
+    with pytest.raises(Qwen4ExpRequestPreparationError, match="cannot own media"):
+        await _preparer(_Resolver()).prepare(request, _Cancel())

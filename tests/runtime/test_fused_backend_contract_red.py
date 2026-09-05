@@ -171,7 +171,13 @@ def _completed_output_events(response_id: str) -> tuple[TurnEvent, ...]:
             text="ready",
         ),
         OutputItemCompleted(kind="message", index=1, item_id=message_id, text="ready"),
-        OutputItemStarted(kind="function_call", index=2, item_id=tool_id),
+        OutputItemStarted(
+            kind="function_call",
+            index=2,
+            item_id=tool_id,
+            call_id=call_id,
+            name="lookup",
+        ),
         ToolDelta(
             index=2,
             call_id=call_id,

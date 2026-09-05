@@ -95,7 +95,7 @@ async def test_full_responses_lifecycle_has_stable_item_and_content_identity() -
         text="answer",
     )
 
-    turn.emit(OutputItemStarted("function_call", 2, "tool_2"))
+    turn.emit(OutputItemStarted("function_call", 2, "tool_2", "call_2", "search"))
     turn.emit(ToolDelta(2, "call_2", "tool_2", "search", '{"q":'))
     turn.emit(ToolDelta(2, "call_2", "tool_2", arguments_delta='"mlx"}'))
     turn.emit(ToolCompleted(2, "call_2", "tool_2", "search", '{"q":"mlx"}'))
@@ -159,7 +159,7 @@ async def test_event_order_rejects_unscoped_duplicate_and_incomplete_flows() -> 
 async def test_tool_done_requires_a_stable_call_identity_and_exact_arguments() -> None:
     turn = GenerationTurn(max_pending_events=16)
     _start(turn)
-    turn.emit(OutputItemStarted("function_call", 0, "tool_0"))
+    turn.emit(OutputItemStarted("function_call", 0, "tool_0", "call_0", "search"))
 
     with pytest.raises(RuntimeError, match="preceding tool delta"):
         turn.emit(ToolCompleted(0, "call_0", "tool_0", "search", "{}"))
@@ -452,3 +452,51 @@ async def test_closed_event_union_rejects_foreign_objects() -> None:
     turn = GenerationTurn()
     with pytest.raises(TypeError, match="TurnEvent required"):
         turn.emit(cast("TurnEvent", object()))
+
+
+def test_function_call_item_start_requires_immutable_tool_identity() -> None:
+    """A tool call is admitted with its identity or not admitted at all."""
+
+    with pytest.raises(ValueError, match="requires call_id and name"):
+        OutputItemStarted("function_call", 0, "tool_0")
+    with pytest.raises(ValueError, match="requires call_id and name"):
+        OutputItemStarted("function_call", 0, "tool_0", "call_0", None)
+    with pytest.raises(ValueError, match="requires call_id and name"):
+        OutputItemStarted("function_call", 0, "tool_0", None, "search")
+    with pytest.raises(ValueError, match="call_id"):
+        OutputItemStarted("function_call", 0, "tool_0", "  ", "search")
+    with pytest.raises(ValueError, match="name"):
+        OutputItemStarted("function_call", 0, "tool_0", "call_0", " ")
+
+    started = OutputItemStarted("function_call", 0, "tool_0", "call_0", "search")
+    assert (started.call_id, started.name) == ("call_0", "search")
+    with pytest.raises(AttributeError):
+        started.call_id = "other"  # type: ignore[misc]
+
+
+def test_message_and_reasoning_starts_cannot_carry_tool_identity() -> None:
+    for kind in ("message", "reasoning"):
+        with pytest.raises(ValueError, match="cannot carry tool identity"):
+            OutputItemStarted(kind, 0, f"{kind}_0", "call_0", "search")
+        with pytest.raises(ValueError, match="cannot carry tool identity"):
+            OutputItemStarted(kind, 0, f"{kind}_0", name="search")
+        assert OutputItemStarted(kind, 0, f"{kind}_0").call_id is None
+
+
+def test_turn_started_keeps_public_alias_and_physical_identity_apart() -> None:
+    physical = TurnStarted("resp_1", "grant-ai/Qwen3.8-Flash-Next", 7)
+    assert physical.public_model == "grant-ai/Qwen3.8-Flash-Next"
+
+    aliased = TurnStarted(
+        "resp_1",
+        "grant-ai/Qwen3.8-Flash-Next",
+        7,
+        requested_model="buddy",
+        request_settings={"tools": [], "tool_choice": "auto"},
+    )
+    assert aliased.public_model == "buddy"
+    assert aliased.model == "grant-ai/Qwen3.8-Flash-Next"
+    with pytest.raises(TypeError, match="immutable"):
+        aliased.request_settings["tools"] = ["mutated"]  # type: ignore[index]
+    with pytest.raises(ValueError, match="requested_model"):
+        TurnStarted("resp_1", "physical", 7, requested_model=" ")

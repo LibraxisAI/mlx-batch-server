@@ -269,6 +269,8 @@ class Qwen4TurnEventEncoder:
                     kind="function_call",
                     index=state.output_index,
                     item_id=state.item_id,
+                    call_id=state.call_id,
+                    name=state.name,
                 )
             )
         elif state.parser_index != delta.index:

@@ -233,7 +233,13 @@ def _complete_output_lifecycle(response_id: str) -> tuple[TurnEvent, ...]:
         OutputItemCompleted(
             kind="message", index=1, item_id=message_id, text="legacy ready"
         ),
-        OutputItemStarted(kind="function_call", index=2, item_id=tool_id),
+        OutputItemStarted(
+            kind="function_call",
+            index=2,
+            item_id=tool_id,
+            call_id=call_id,
+            name="lookup",
+        ),
         ToolDelta(
             index=2,
             call_id=call_id,
@@ -633,3 +639,25 @@ async def test_port_close_timeout_uses_total_budget_and_can_be_retried() -> None
     port.release_close()
     await handle.close(0.1)
     assert len(port.close_calls) == 2
+
+
+def test_legacy_output_path_honours_the_shared_item_identity_invariant() -> None:
+    """The legacy adapter answers to the same contract as the fused one."""
+
+    from tests.output_item_identity import assert_output_item_identity_contract
+
+    events = _complete_output_lifecycle("resp_legacy")
+    assert_output_item_identity_contract(events)
+
+    tool_start = next(
+        event
+        for event in events
+        if isinstance(event, OutputItemStarted) and event.kind == "function_call"
+    )
+    tool_done = next(
+        event
+        for event in events
+        if isinstance(event, OutputItemCompleted) and event.kind == "function_call"
+    )
+    assert tool_start.call_id == tool_done.call_id == "resp_legacy:call:2"
+    assert tool_start.name == tool_done.name == "lookup"

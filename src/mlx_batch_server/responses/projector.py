@@ -24,6 +24,12 @@ from ..runtime.events import (
     TurnStarted,
     UsageUpdate,
 )
+from .transport import (
+    ResponseSnapshotBuilder,
+    render_completed_item,
+    render_started_item,
+    render_usage,
+)
 
 if TYPE_CHECKING:
     from .transport import TransportEnvelope
@@ -41,29 +47,21 @@ def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
         return {
             **base,
             "type": "response.created",
-            "response": {
-                "id": event.response_id,
-                "object": "response",
-                "created_at": event.created_at,
-                "model": event.model,
-                "status": "in_progress",
-                "output": [],
-                "usage": None,
-            },
+            "response": _snapshot(envelope, "in_progress"),
         }
     if isinstance(event, OutputItemStarted):
         return {
             **base,
             "type": "response.output_item.added",
             "output_index": event.index,
-            "item": _output_item(event.kind, event.item_id, "in_progress"),
+            "item": render_started_item(event),
         }
     if isinstance(event, OutputItemCompleted):
         return {
             **base,
             "type": "response.output_item.done",
             "output_index": event.index,
-            "item": _completed_output_item(event),
+            "item": render_completed_item(event),
         }
     if isinstance(event, ContentPartStarted):
         if event.kind == REASONING_CONTENT_KIND:
@@ -167,50 +165,58 @@ def project_event(envelope: TransportEnvelope) -> dict[str, Any]:
             "arguments": event.arguments,
         }
     if isinstance(event, UsageUpdate):
-        return {
-            **base,
-            "type": "response.in_progress",
-            "response": {
-                "status": "in_progress",
-                "usage": _usage(event),
-            },
-        }
+        response = _snapshot(envelope, "in_progress")
+        response.setdefault("usage", None)
+        if response["usage"] is None:
+            response["usage"] = render_usage(event)
+        return {**base, "type": "response.in_progress", "response": response}
     if isinstance(event, ProgressUpdate):
         return {
             **base,
             "type": "response.in_progress",
-            "response": {"status": "in_progress"},
+            "response": _snapshot(envelope, "in_progress"),
         }
     if isinstance(event, TurnCompleted):
         incomplete = event.finish_reason == "length"
-        response: dict[str, Any] = {
-            "status": "incomplete" if incomplete else "completed"
-        }
+        status = "incomplete" if incomplete else "completed"
+        response = _snapshot(envelope, status)
         if incomplete:
             response["incomplete_details"] = {"reason": "max_output_tokens"}
         if event.usage is not None:
-            response["usage"] = _usage(event.usage)
+            response["usage"] = render_usage(event.usage)
         event_type = "response.incomplete" if incomplete else "response.completed"
         return {**base, "type": event_type, "response": response}
     if isinstance(event, TurnFailed):
-        return {
-            **base,
-            "type": "response.failed",
-            "response": {
-                "status": "failed",
-                "error": {"message": event.error, "code": event.code},
-            },
-        }
+        response = _snapshot(envelope, "failed")
+        response["error"] = {"message": event.error, "code": event.code}
+        return {**base, "type": "response.failed", "response": response}
     if isinstance(event, TurnCancelled):
-        return {
-            **base,
-            "type": "response.incomplete",
-            "response": {
-                "status": "incomplete",
-                "incomplete_details": {"reason": event.reason},
-            },
-        }
+        response = _snapshot(envelope, "incomplete")
+        response["incomplete_details"] = {"reason": event.reason}
+        return {**base, "type": "response.incomplete", "response": response}
     raise TypeError(f"unsupported turn event: {type(event).__name__}")
+
+
+def _snapshot(envelope: TransportEnvelope, status: str) -> dict[str, Any]:
+    """Return the complete Response snapshot this lifecycle event must embed.
+
+    The transport lane folds every canonical event into one shared snapshot
+    builder, so the snapshot rides on the envelope. A `TurnStarted` envelope can
+    always seed its own snapshot; any other event reaching this projector
+    without lane state has no response identity to publish and keeps the
+    status-only body it had before.
+    """
+
+    snapshot = envelope.snapshot
+    if snapshot is None and isinstance(envelope.event, TurnStarted):
+        builder = ResponseSnapshotBuilder()
+        builder.observe(envelope.event)
+        snapshot = builder.snapshot(envelope.event)
+    if snapshot is None:
+        return {"status": status}
+    projected = dict(snapshot)
+    projected["status"] = status
+    return projected
 
 
 def encode_sse(envelope: TransportEnvelope) -> bytes:
@@ -233,68 +239,3 @@ def encode_websocket(envelope: TransportEnvelope) -> str:
 
 def encode_sse_done() -> bytes:
     return b"data: [DONE]\n\n"
-
-
-def _usage(event: UsageUpdate) -> dict[str, int]:
-    return {
-        "input_tokens": event.input_tokens,
-        "output_tokens": event.output_tokens,
-        "total_tokens": event.total_tokens,
-    }
-
-
-def _output_item(kind: str, item_id: str, status: str) -> dict[str, Any]:
-    if kind == "message":
-        return {
-            "id": item_id,
-            "type": "message",
-            "status": status,
-            "role": "assistant",
-            "content": [],
-        }
-    if kind == "reasoning":
-        return {
-            "id": item_id,
-            "type": "reasoning",
-            "status": status,
-            "summary": [],
-        }
-    return {
-        "id": item_id,
-        "type": "function_call",
-        "status": status,
-        "arguments": "",
-    }
-
-
-def _completed_output_item(event: OutputItemCompleted) -> dict[str, Any]:
-    if event.kind == "message":
-        return {
-            "id": event.item_id,
-            "type": "message",
-            "status": event.status,
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": event.text,
-                    "annotations": [],
-                    "logprobs": [],
-                }
-            ],
-        }
-    if event.kind == "reasoning":
-        return {
-            "id": event.item_id,
-            "type": "reasoning",
-            "status": event.status,
-            "summary": [{"type": "summary_text", "text": event.text}],
-        }
-    return {
-        "id": event.item_id,
-        "type": "function_call",
-        "status": event.status,
-        "call_id": event.call_id,
-        "name": event.name,
-        "arguments": event.arguments,
-    }
