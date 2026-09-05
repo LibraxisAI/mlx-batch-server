@@ -524,6 +524,39 @@ message = test_client.messages.create(
 
 ### Error Handling
 
+Failures use the Anthropic error envelope and carry a correlation id both in
+the `request-id` response header and in the body:
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "messages.0.content.0.type: Input should be 'text', 'image', ..."
+  },
+  "request_id": "req_2f1c8a0b4d9e7c6a5b3f1e2d"
+}
+```
+
+Only documented Anthropic error types are emitted — `invalid_request_error`,
+`authentication_error`, `permission_error`, `not_found_error`,
+`request_too_large`, `rate_limit_error`, `timeout_error`, `api_error`,
+`overloaded_error` — so `anthropic.APIError` subclasses resolve correctly. An
+internal failure with no documented counterpart is reported as `api_error`
+rather than as an invented type.
+
+**Requests fail closed.** An unknown top-level field, an unsupported content
+block, or a `tool_choice` naming a tool that was not declared is rejected with
+`invalid_request_error`. Nothing is silently ignored: if the server answers,
+it honoured what you sent.
+
+When a failure happens after a stream has already opened, it arrives as a
+terminal `error` event on the stream instead of an HTTP status:
+
+```text
+event: error  {"type":"error","error":{"type":"overloaded_error","message":"..."},"request_id":"req_..."}
+```
+
 ```python
 try:
     message = client.messages.create(
@@ -532,9 +565,7 @@ try:
         messages=[{"role": "user", "content": "Hello"}]
     )
 except anthropic.APIError as e:
-    print(f"API Error: {e}")
-except Exception as e:
-    print(f"Unexpected error: {e}")
+    print(f"API Error: {e} (request id: {e.request_id})")
 ```
 
 ## 📊 Response Structure
@@ -564,14 +595,62 @@ except Exception as e:
 
 ### Streaming Events
 
-```python
-# Streaming event types:
-# - message_start: Initial message metadata
-# - content_block_start: New content block (text, tool_use, etc.)
-# - content_block_delta: Incremental content updates
-# - content_block_stop: Content block completion
-# - message_stop: Message completion
+A stream always opens with `message_start` and ends with `message_stop`. Every
+content block is framed by an indexed `content_block_start` /
+`content_block_stop` pair, and `message_delta` carries the stop reason together
+with **cumulative** usage for the whole message.
+
+```text
+event: message_start        {"type":"message_start","message":{... ,"content":[]}}
+event: content_block_start  {"type":"content_block_start","index":0,"content_block":{...}}
+event: content_block_delta  {"type":"content_block_delta","index":0,"delta":{...}}
+event: content_block_stop   {"type":"content_block_stop","index":0}
+event: message_delta        {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{...}}
+event: message_stop         {"type":"message_stop"}
 ```
+
+Delta bodies are discriminated by their own `type`:
+
+| Delta type | Block | Carries |
+|---|---|---|
+| `text_delta` | `text` | `text` — visible output |
+| `thinking_delta` | `thinking` | `thinking` — reasoning, never duplicated into text |
+| `signature_delta` | `thinking` | `signature` |
+| `input_json_delta` | `tool_use` | `partial_json` — tool arguments |
+
+Two events may appear at any point in the stream: `ping` (keep-alive, no
+payload) and `error` (a terminal failure delivered inside an otherwise healthy
+connection).
+
+#### Tool call streaming
+
+A `tool_use` block opens with an **empty** `input` object; the arguments arrive
+only through `input_json_delta`. Concatenating every `partial_json` for one
+block yields exactly the final arguments string — the payload is never
+replayed, so a client must accumulate rather than overwrite.
+
+```text
+event: content_block_start  {"index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}
+event: content_block_delta  {"index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\": "}}
+event: content_block_delta  {"index":1,"delta":{"type":"input_json_delta","partial_json":"\"Kielce\"}"}}
+event: content_block_stop   {"index":1}
+```
+
+#### Stop reasons
+
+`stop_reason` is mapped intentionally, not guessed. Truncation outranks tool
+use: a tool call cut off mid-arguments reports `max_tokens`, not `tool_use`.
+
+| Reason | Meaning |
+|---|---|
+| `end_turn` | The model finished on its own |
+| `max_tokens` | Output hit the requested `max_tokens` budget |
+| `stop_sequence` | A configured stop sequence matched |
+| `tool_use` | The turn ended asking for a tool |
+| `refusal` / `pause_turn` | Passed through when the runtime reports them |
+
+The `max_tokens` you send is honoured as-is; this server introduces no
+additional client-side token ceiling.
 
 ## 🔍 Troubleshooting
 
