@@ -24,8 +24,11 @@ Two truths are *given* to the projector rather than inferred by it:
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from mlx_batch_server.runtime.events import (
@@ -33,6 +36,11 @@ from mlx_batch_server.runtime.events import (
     TEXT_CONTENT_KIND,
     ContentPartCompleted,
     ContentPartStarted,
+    HostedCallCompleted,
+    HostedCallProgress,
+    HostedCallResult,
+    HostedCallStarted,
+    HostedCitation,
     OutputItemCompleted,
     ProgressUpdate,
     ReasoningCompleted,
@@ -48,13 +56,17 @@ from mlx_batch_server.runtime.events import (
     TurnStarted,
     UsageUpdate,
 )
+from mlx_batch_server.tools.hosted import HOSTED_ERROR_CODES
 
 from .anthropic_schema import (
     AnthropicStreamEvent,
+    CitationCharLocation,
+    CitationsDeltaBody,
     ContentBlock,
     ContentBlockDeltaEvent,
     ContentBlockStartEvent,
     ContentBlockStopEvent,
+    DocumentBlock,
     InputJsonDeltaBody,
     MessageDeltaBody,
     MessageDeltaEvent,
@@ -63,7 +75,9 @@ from .anthropic_schema import (
     MessageStartEvent,
     MessageStopEvent,
     PingEvent,
+    PlainTextSource,
     ResponseServiceTier,
+    ServerToolUseBlock,
     SignatureDeltaBody,
     StopReason,
     StreamErrorBody,
@@ -74,12 +88,18 @@ from .anthropic_schema import (
     ThinkingDeltaBody,
     ToolUseBlock,
     Usage,
+    WebFetchErrorCode,
+    WebFetchResultBlock,
+    WebFetchToolResultBlock,
+    WebFetchToolResultErrorBlock,
 )
 from .errors import AnthropicAPIError
 
 _TEXT = "text"
 _THINKING = "thinking"
 _TOOL_USE = "tool_use"
+_SERVER_TOOL_USE = "server_tool_use"
+_WEB_FETCH_RESULT = "web_fetch_tool_result"
 
 #: Runtime finish reasons that mean the output was truncated. Truncation is
 #: resolved before tool use: a tool call cut off mid-arguments is a
@@ -193,6 +213,22 @@ class _Block:
     pending_arguments: str = ""
     started: bool = False
     closed: bool = False
+    fixed_content: ContentBlock | None = None
+    citations: list[CitationCharLocation] = field(default_factory=list)
+
+
+@dataclass
+class _HostedCall:
+    """Protocol projection state for one neutral hosted call receipt."""
+
+    call_id: str
+    item_id: str
+    tool_use_id: str
+    action: dict[str, Any]
+    result: Mapping[str, Any] | None = None
+    document_index: int | None = None
+    completed: bool = False
+    result_emitted: bool = False
 
 
 @dataclass
@@ -236,6 +272,8 @@ class AnthropicMessageProjector:
         self._state = ProjectionState(usage=self._stamp_tier(initial_usage or Usage()))
         self._blocks: dict[tuple[Any, ...], _Block] = {}
         self._order: list[_Block] = []
+        self._hosted_calls: dict[str, _HostedCall] = {}
+        self._document_count = 0
         self._next_index = 0
         self._started = False
         self._stopped = False
@@ -280,6 +318,11 @@ class AnthropicMessageProjector:
     ) -> tuple[AnthropicStreamEvent, ...]:
         """Project one runtime event onto zero or more Anthropic events."""
 
+        if self._stopped:
+            # Cancellation, outer deadline, failure and normal completion are
+            # all hard projection barriers. A misbehaving producer cannot
+            # append a hidden continuation or a late hosted result afterward.
+            return ()
         if isinstance(event, TurnStarted):
             return self._on_turn_started()
         if isinstance(event, ContentPartStarted):
@@ -299,6 +342,16 @@ class AnthropicMessageProjector:
                 name=event.name,
                 arguments=event.arguments,
             )
+        if isinstance(event, HostedCallStarted):
+            return self._on_hosted_call_started(event)
+        if isinstance(event, HostedCallProgress):
+            return ()
+        if isinstance(event, HostedCallResult):
+            return self._on_hosted_call_result(event)
+        if isinstance(event, HostedCallCompleted):
+            return self._on_hosted_call_completed(event)
+        if isinstance(event, HostedCitation):
+            return self._on_hosted_citation(event)
         if isinstance(event, OutputItemCompleted):
             return self._on_output_item_completed(event)
         if isinstance(event, UsageUpdate):
@@ -338,7 +391,12 @@ class AnthropicMessageProjector:
         blocks: list[ContentBlock] = []
         for block in self._order:
             if block.kind == _TEXT:
-                blocks.append(TextBlock(text=block.streamed_text))
+                blocks.append(
+                    TextBlock(
+                        text=block.streamed_text,
+                        citations=block.citations or None,
+                    )
+                )
             elif block.kind == _THINKING:
                 if not block.streamed_signature:
                     # Reached only if a block escaped ``_close``. Refuse the
@@ -363,6 +421,8 @@ class AnthropicMessageProjector:
                         input=self._decode_tool_input(block),
                     )
                 )
+            elif block.fixed_content is not None:
+                blocks.append(block.fixed_content)
         return blocks
 
     def terminal_message(self) -> MessagesResponse:
@@ -388,6 +448,11 @@ class AnthropicMessageProjector:
     ) -> tuple[AnthropicStreamEvent, ...]:
         if self._stopped:
             return ()
+        if any(not call.completed for call in self._hosted_calls.values()):
+            raise AnthropicAPIError(
+                "the runtime completed with an open hosted web_fetch call",
+                error_type="api_error",
+            )
         emitted: list[AnthropicStreamEvent] = []
         emitted.extend(self._close_all_blocks())
         if event.usage is not None:
@@ -637,6 +702,267 @@ class AnthropicMessageProjector:
             )
         return decoded
 
+    # -- hosted web fetch -------------------------------------------------
+
+    def _on_hosted_call_started(
+        self, event: HostedCallStarted
+    ) -> tuple[AnthropicStreamEvent, ...]:
+        if event.tool_name != "web_fetch":
+            raise AnthropicAPIError(
+                f"Anthropic cannot project hosted tool {event.tool_name!r}",
+                error_type="api_error",
+            )
+        if event.call_id in self._hosted_calls:
+            raise AnthropicAPIError(
+                f"hosted call {event.call_id!r} started more than once",
+                error_type="api_error",
+            )
+        action = dict(event.action)
+        tool_use_id = _server_tool_use_id(event.call_id)
+        self._hosted_calls[event.call_id] = _HostedCall(
+            call_id=event.call_id,
+            item_id=event.item_id,
+            tool_use_id=tool_use_id,
+            action=action,
+        )
+        payload = json.dumps(
+            action,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        block = _Block(
+            index=self._next_index,
+            kind=_SERVER_TOOL_USE,
+            call_id=tool_use_id,
+            name="web_fetch",
+            streamed_arguments=payload,
+            started=True,
+            closed=True,
+            fixed_content=ServerToolUseBlock(
+                id=tool_use_id,
+                name="web_fetch",
+                input=action,
+            ),
+        )
+        self._next_index += 1
+        self._order.append(block)
+        return (
+            ContentBlockStartEvent(
+                index=block.index,
+                content_block=ServerToolUseBlock(
+                    id=tool_use_id,
+                    name="web_fetch",
+                    input={},
+                ),
+            ),
+            ContentBlockDeltaEvent(
+                index=block.index,
+                delta=InputJsonDeltaBody(partial_json=payload),
+            ),
+            ContentBlockStopEvent(index=block.index),
+        )
+
+    def _on_hosted_call_result(
+        self, event: HostedCallResult
+    ) -> tuple[AnthropicStreamEvent, ...]:
+        call = self._require_hosted_call(event.call_id, event.item_id, event.tool_name)
+        if call.result is not None:
+            raise AnthropicAPIError(
+                f"hosted call {event.call_id!r} produced more than one result",
+                error_type="api_error",
+            )
+        if event.result.get("kind") != "document":
+            raise AnthropicAPIError(
+                "Anthropic web_fetch cannot project a PDF or search-result payload",
+                error_type="api_error",
+            )
+        call.result = event.result
+        return ()
+
+    def _on_hosted_call_completed(
+        self, event: HostedCallCompleted
+    ) -> tuple[AnthropicStreamEvent, ...]:
+        call = self._require_hosted_call(event.call_id, event.item_id, event.tool_name)
+        if call.completed:
+            raise AnthropicAPIError(
+                f"hosted call {event.call_id!r} completed more than once",
+                error_type="api_error",
+            )
+        call.completed = True
+        if event.status == "completed":
+            if call.result is None:
+                raise AnthropicAPIError(
+                    f"hosted call {event.call_id!r} completed without a result",
+                    error_type="api_error",
+                )
+            if event.receipt.get("final_url") != call.result.get(
+                "url"
+            ) or event.receipt.get("result_digest") != call.result.get("digest"):
+                raise AnthropicAPIError(
+                    f"hosted call {event.call_id!r} result contradicts its receipt",
+                    error_type="api_error",
+                )
+            content = self._web_fetch_success(call)
+            call.document_index = self._document_count
+            self._document_count += 1
+        else:
+            if call.result is not None:
+                raise AnthropicAPIError(
+                    f"failed hosted call {event.call_id!r} carried a success result",
+                    error_type="api_error",
+                )
+            content = WebFetchToolResultBlock(
+                tool_use_id=call.tool_use_id,
+                content=WebFetchToolResultErrorBlock(
+                    error_code=_web_fetch_error_code(event.receipt),
+                ),
+            )
+        return self._emit_whole_hosted_result(call, content)
+
+    def _web_fetch_success(self, call: _HostedCall) -> WebFetchToolResultBlock:
+        result = call.result
+        if result is None:
+            raise AssertionError("success projection requires a stored result")
+        url = result.get("url")
+        content = result.get("content")
+        media_type = result.get("media_type")
+        retrieved_at = result.get("retrieved_at")
+        if not isinstance(url, str) or not url:
+            raise AnthropicAPIError(
+                "web_fetch result has no final URL", error_type="api_error"
+            )
+        if not isinstance(content, str):
+            raise AnthropicAPIError(
+                "web_fetch result has no bounded text", error_type="api_error"
+            )
+        if not isinstance(media_type, str) or not _is_text_media_type(media_type):
+            raise AnthropicAPIError(
+                f"web_fetch result media_type {media_type!r} is not text-family",
+                error_type="api_error",
+            )
+        if isinstance(retrieved_at, bool) or not isinstance(retrieved_at, int):
+            raise AnthropicAPIError(
+                "web_fetch result has no integer retrieval time",
+                error_type="api_error",
+            )
+        timestamp = (
+            datetime.fromtimestamp(retrieved_at, UTC).isoformat().replace("+00:00", "Z")
+        )
+        return WebFetchToolResultBlock(
+            tool_use_id=call.tool_use_id,
+            content=WebFetchResultBlock(
+                url=url,
+                retrieved_at=timestamp,
+                content=DocumentBlock(
+                    source=PlainTextSource(data=content),
+                    title=url,
+                ),
+            ),
+        )
+
+    def _emit_whole_hosted_result(
+        self,
+        call: _HostedCall,
+        content: WebFetchToolResultBlock,
+    ) -> tuple[AnthropicStreamEvent, ...]:
+        if call.result_emitted:
+            raise AnthropicAPIError(
+                f"hosted call {call.call_id!r} projected more than one result",
+                error_type="api_error",
+            )
+        call.result_emitted = True
+        block = _Block(
+            index=self._next_index,
+            kind=_WEB_FETCH_RESULT,
+            started=True,
+            closed=True,
+            fixed_content=content,
+        )
+        self._next_index += 1
+        self._order.append(block)
+        return (
+            ContentBlockStartEvent(index=block.index, content_block=content),
+            ContentBlockStopEvent(index=block.index),
+        )
+
+    def _on_hosted_citation(
+        self, event: HostedCitation
+    ) -> tuple[AnthropicStreamEvent, ...]:
+        call = self._hosted_calls.get(event.source_call_id)
+        if (
+            call is None
+            or not call.completed
+            or not call.result_emitted
+            or call.document_index is None
+            or call.result is None
+        ):
+            raise AnthropicAPIError(
+                "hosted citation names no completed web_fetch receipt",
+                error_type="api_error",
+            )
+        source_url = call.result.get("url")
+        source_text = call.result.get("content")
+        if source_url != event.source_url or not isinstance(source_text, str):
+            raise AnthropicAPIError(
+                "hosted citation contradicts its web_fetch result URL",
+                error_type="api_error",
+            )
+        if event.source_end > len(source_text):
+            raise AnthropicAPIError(
+                "hosted citation source range exceeds its web_fetch document",
+                error_type="api_error",
+            )
+        key = self._content_key(event.output_index, event.content_index)
+        block = self._blocks.get(key)
+        if block is None or block.kind != _TEXT:
+            raise AnthropicAPIError(
+                "hosted citation names no active continuation text block",
+                error_type="api_error",
+            )
+        if (
+            event.output_end > len(block.streamed_text)
+            or block.streamed_text[event.output_start : event.output_end]
+            != event.cited_text
+        ):
+            raise AnthropicAPIError(
+                "hosted citation output range is not verbatim continuation text",
+                error_type="api_error",
+            )
+        citation = CitationCharLocation(
+            cited_text=event.cited_text,
+            document_index=call.document_index,
+            document_title=event.source_url,
+            start_char_index=event.source_start,
+            end_char_index=event.source_end,
+        )
+        if citation in block.citations:
+            raise AnthropicAPIError(
+                "hosted citation was projected more than once",
+                error_type="api_error",
+            )
+        block.citations.append(citation)
+        return (
+            ContentBlockDeltaEvent(
+                index=block.index,
+                delta=CitationsDeltaBody(citation=citation),
+            ),
+        )
+
+    def _require_hosted_call(
+        self,
+        call_id: str,
+        item_id: str,
+        tool_name: str,
+    ) -> _HostedCall:
+        call = self._hosted_calls.get(call_id)
+        if call is None or call.item_id != item_id or tool_name != "web_fetch":
+            raise AnthropicAPIError(
+                f"hosted event does not match web_fetch call {call_id!r}",
+                error_type="api_error",
+            )
+        return call
+
     # -- output items -----------------------------------------------------
 
     def _on_output_item_completed(
@@ -774,6 +1100,74 @@ class AnthropicMessageProjector:
             stop_sequence=self._state.stop_sequence,
             usage=self._state.usage,
         )
+
+
+def _server_tool_use_id(call_id: str) -> str:
+    digest = hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:24]
+    return f"srvtoolu_{digest}"
+
+
+def _is_text_media_type(media_type: str) -> bool:
+    normalized = media_type.partition(";")[0].strip().lower()
+    return normalized.startswith("text/") or normalized in {
+        "application/json",
+        "application/xml",
+        "application/xhtml+xml",
+    }
+
+
+def _web_fetch_error_code(receipt: Mapping[str, Any]) -> WebFetchErrorCode:
+    error = receipt.get("error")
+    code = error.get("code") if isinstance(error, Mapping) else None
+    if not isinstance(code, str) or code not in HOSTED_ERROR_CODES:
+        raise AnthropicAPIError(
+            "failed web_fetch receipt has no registered hosted error code",
+            error_type="api_error",
+        )
+    mapped: WebFetchErrorCode
+    if code == "tool_round_limit":
+        mapped = "max_uses_exceeded"
+    elif code == "fetch_url_fetch_status" and receipt.get("http_status") == 429:
+        mapped = "too_many_requests"
+    elif code in {
+        "fetch_unsupported_media_type",
+        "fetch_missing_media_type",
+        "fetch_invalid_media_type",
+        "fetch_invalid_fetch_media_types",
+    }:
+        mapped = "unsupported_content_type"
+    elif code in {
+        "invalid_tool_arguments",
+        "invalid_tool_result",
+        "tool_not_allowed",
+        "fetch_invalid_fetch_budget",
+        "fetch_token_budget",
+    }:
+        mapped = "invalid_tool_input"
+    elif code == "tool_arguments_too_large":
+        mapped = "url_too_long"
+    elif code in {
+        "fetch_invalid_url",
+        "fetch_invalid_url_scheme",
+        "fetch_url_credentials_forbidden",
+        "fetch_url_target_blocked",
+        "fetch_redirect_not_allowed",
+        "fetch_url_not_allowed",
+    }:
+        mapped = "url_not_allowed"
+    elif code in {
+        "fetch_dns_resolution_failed",
+        "fetch_redirect_limit_exceeded",
+        "fetch_invalid_redirect",
+        "fetch_url_fetch_status",
+        "fetch_url_fetch_timeout",
+        "fetch_url_fetch_failed",
+        "fetch_url_fetch_cancelled",
+    }:
+        mapped = "url_not_accessible"
+    else:
+        mapped = "unavailable"
+    return mapped
 
 
 __all__ = [
