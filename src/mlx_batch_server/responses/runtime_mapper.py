@@ -143,7 +143,7 @@ class CanonicalResponsesMapper:
             _canonical_message(item, "parent_messages") for item in parent_messages
         )
         instructions = _instruction_messages(raw)
-        materialized = (*parents, *instructions, *current)
+        materialized = _instructions_first((*instructions, *parents, *current))
 
         messages = tuple(_text_message(item) for item in materialized)
         media = _media_parts(materialized)
@@ -493,6 +493,22 @@ def _instruction_messages(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any]
     if system is not None:
         return (_message("system", system),)
     return ()
+
+
+def _instructions_first(
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Keep Qwen instruction roles ahead of inherited conversation turns."""
+    instructions: list[Mapping[str, Any]] = []
+    conversation: list[Mapping[str, Any]] = []
+    for message in messages:
+        target = (
+            instructions
+            if message.get("role") in {"system", "developer"}
+            else conversation
+        )
+        target.append(message)
+    return (*instructions, *conversation)
 
 
 def _current_messages(
