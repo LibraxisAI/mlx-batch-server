@@ -216,28 +216,21 @@ async def test_pdf_has_no_builtin_rasterization_or_hidden_file_io() -> None:
 
 
 @pytest.mark.asyncio
-async def test_remote_url_needs_exact_allowlist_and_explicit_fetcher() -> None:
+async def test_remote_url_succeeds_without_allowlist_and_keeps_optional_lockdown() -> (
+    None
+):
     image = ImageInput(
         part_index=1,
         image_url="https://media.3more.test/cases/a.png",
     )
     materializer = RecordingImageMaterializer()
 
-    with pytest.raises(MediaResolverError) as denied:
-        await SourceMediaResolver(image_materializer=materializer).resolve(_plan(image))
-    assert denied.value.code == "url_not_allowed"
-
-    policy = AllowedUrlPolicy(frozenset({"https://media.3more.test"}))
     with pytest.raises(MediaResolverError) as missing_fetcher:
-        await SourceMediaResolver(
-            url_policy=policy,
-            image_materializer=materializer,
-        ).resolve(_plan(image))
+        await SourceMediaResolver(image_materializer=materializer).resolve(_plan(image))
     assert missing_fetcher.value.code == "url_fetcher_required"
 
     fetcher = RecordingUrlFetcher()
     bundle = await SourceMediaResolver(
-        url_policy=policy,
         url_fetcher=fetcher,
         image_materializer=materializer,
     ).resolve(_plan(image))
@@ -248,6 +241,22 @@ async def test_remote_url_needs_exact_allowlist_and_explicit_fetcher() -> None:
         "image/png",
         "image/webp",
     )
+
+    lockdown = AllowedUrlPolicy(frozenset({"https://media.3more.test"}))
+    with pytest.raises(MediaResolverError) as denied:
+        await SourceMediaResolver(
+            url_policy=lockdown,
+            url_fetcher=RecordingUrlFetcher(),
+            image_materializer=materializer,
+        ).resolve(
+            _plan(
+                ImageInput(
+                    part_index=1,
+                    image_url="https://elsewhere.test/cases/a.png",
+                )
+            )
+        )
+    assert denied.value.code == "url_not_allowed"
 
 
 @pytest.mark.asyncio

@@ -77,11 +77,14 @@ class MediaResolverLimits:
 
 @dataclass(frozen=True, slots=True)
 class AllowedUrlPolicy:
-    """Exact-origin allowlist for injected URL fetchers.
+    """Optional exact-origin lockdown for injected URL fetchers.
 
-    The empty default denies every URL. Origins must be canonical HTTP(S)
-    origins such as ``https://media.3more.ai`` and cannot carry paths,
-    credentials, queries, or fragments.
+    The empty default is public HTTP(S): SafePublicFetch still rejects
+    credentials, non-HTTP schemes, and non-public targets. A non-empty
+    origin set is an additional lockdown, not the public API default.
+    Origins must be canonical HTTP(S) origins such as
+    ``https://media.3more.ai`` and cannot carry paths, credentials,
+    queries, or fragments.
     """
 
     origins: frozenset[str] = field(default_factory=frozenset)
@@ -96,7 +99,11 @@ class AllowedUrlPolicy:
             origin = _origin_from_split(parsed)
         except ValueError:
             return False
-        return not parsed.fragment and origin in self.origins
+        if parsed.fragment:
+            return False
+        if not self.origins:
+            return True
+        return origin in self.origins
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,13 +704,13 @@ class SourceMediaResolver:
         if not self._url_policy.permits(source_value):
             raise MediaResolverError(
                 "url_not_allowed",
-                "URL origin is not explicitly allowed",
+                "URL origin is outside the configured lockdown",
                 part_index,
             )
         if self._url_fetcher is None:
             raise MediaResolverError(
                 "url_fetcher_required",
-                "allowed URL requires an injected fetcher",
+                "URL fetch requires an injected fetcher",
                 part_index,
             )
         url_request = UrlFetchRequest(
