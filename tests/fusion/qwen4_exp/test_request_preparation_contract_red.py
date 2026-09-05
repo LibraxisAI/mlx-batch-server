@@ -194,7 +194,69 @@ async def test_vision_preparation_seals_function_output_identity() -> None:
     assert receipt.call_id == "call_inspect_canvas"
     assert receipt.output == output
     assert receipt.items[0].text == output
+    assert receipt.is_error is None
     assert prompt.messages[1].item_type == "message"
+
+
+@pytest.mark.asyncio
+async def test_vision_preparation_seals_is_error_and_nested_tool_image() -> None:
+    output = "see photo"
+    success_request = GenerationRequest(
+        response_id="resp_tool_image_ok",
+        runtime=RuntimeKey("flash"),
+        messages=(
+            {
+                "type": "function_call_output",
+                "role": "tool",
+                "call_id": "toolu_1",
+                "output": output,
+                "is_error": False,
+                "content": ({"type": "input_text", "text": output},),
+            },
+        ),
+        media=(
+            {
+                "type": "input_image",
+                "image_base64": "aW1hZ2U=",
+                "_role": "tool",
+                "_message_index": 0,
+                "_content_index": 1,
+            },
+        ),
+    )
+    error_request = GenerationRequest(
+        response_id="resp_tool_image_err",
+        runtime=RuntimeKey("flash"),
+        messages=(
+            {
+                "type": "function_call_output",
+                "role": "tool",
+                "call_id": "toolu_1",
+                "output": output,
+                "is_error": True,
+                "content": ({"type": "input_text", "text": output},),
+            },
+        ),
+        media=success_request.media,
+    )
+
+    success = await _preparer(_Resolver()).prepare(success_request, _Cancel())
+    error = await _preparer(_Resolver()).prepare(error_request, _Cancel())
+
+    success_receipt = success.backend_payload.messages[0]
+    error_receipt = error.backend_payload.messages[0]
+    assert success_receipt.is_error is False
+    assert error_receipt.is_error is True
+    assert success_receipt.output == output
+    assert error_receipt.output == output
+    assert success_receipt.call_id == "toolu_1"
+    assert [type(item) for item in success_receipt.items] == [
+        PreparedTextItem,
+        PreparedMediaItem,
+    ]
+    assert (
+        success.backend_payload.content_digest != error.backend_payload.content_digest
+    )
 
 
 @pytest.mark.asyncio

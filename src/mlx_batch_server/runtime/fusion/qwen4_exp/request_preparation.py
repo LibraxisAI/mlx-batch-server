@@ -61,6 +61,7 @@ class _MessageLayout:
     item_type: str | None = None
     call_id: str | None = None
     output: str | None = None
+    is_error: bool | None = None
 
 
 class Qwen4ExpRequestPreparer:
@@ -158,38 +159,24 @@ def _reconstruct_mixed_messages(
         item_type = raw_message.get("type")
         call_id: str | None = None
         output: str | None = None
+        is_error: bool | None = None
         if item_type not in (None, "message", "function_call_output"):
             raise Qwen4ExpRequestPreparationError(
                 "canonical message type is unsupported"
             )
         if item_type == "function_call_output":
-            call_id_value = raw_message.get("call_id")
-            output_value = raw_message.get("output")
-            if role != "tool":
-                raise Qwen4ExpRequestPreparationError(
-                    "function_call_output must use the tool role"
-                )
-            if not isinstance(call_id_value, str) or not call_id_value.strip():
-                raise Qwen4ExpRequestPreparationError(
-                    "function_call_output call_id must not be empty"
-                )
-            if not isinstance(output_value, str):
-                raise Qwen4ExpRequestPreparationError(
-                    "function_call_output output must be text"
-                )
-            if indexed_media:
-                raise Qwen4ExpRequestPreparationError(
-                    "function_call_output cannot carry media"
-                )
-            if len(text_parts) != 1 or text_parts[0].get("text") != output_value:
-                raise Qwen4ExpRequestPreparationError(
-                    "function_call_output content must preserve its exact output"
-                )
-            call_id = call_id_value
-            output = output_value
+            call_id, output, is_error = _function_call_output_identity(
+                raw_message,
+                role=role,
+                text_parts=text_parts,
+            )
         elif "call_id" in raw_message or "output" in raw_message:
             raise Qwen4ExpRequestPreparationError(
                 "call_id and output belong only to function_call_output"
+            )
+        elif "is_error" in raw_message:
+            raise Qwen4ExpRequestPreparationError(
+                "is_error belongs only to function_call_output"
             )
         for item in indexed_media.values():
             if str(item.get("_role", "")).strip().lower() != role:
@@ -233,12 +220,61 @@ def _reconstruct_mixed_messages(
                 item_type=item_type,
                 call_id=call_id,
                 output=output,
+                is_error=is_error,
             )
         )
 
     if set(media_by_message) - set(range(len(messages))):
         raise Qwen4ExpRequestPreparationError("media refers to a foreign message")
     return tuple(parts), tuple(layouts)
+
+
+def _function_call_output_identity(
+    raw_message: Mapping[str, object],
+    *,
+    role: str,
+    text_parts: tuple[Mapping[str, object], ...],
+) -> tuple[str, str, bool | None]:
+    call_id_value = raw_message.get("call_id")
+    output_value = raw_message.get("output")
+    if role != "tool":
+        raise Qwen4ExpRequestPreparationError(
+            "function_call_output must use the tool role"
+        )
+    if not isinstance(call_id_value, str) or not call_id_value.strip():
+        raise Qwen4ExpRequestPreparationError(
+            "function_call_output call_id must not be empty"
+        )
+    if not isinstance(output_value, str):
+        raise Qwen4ExpRequestPreparationError(
+            "function_call_output output must be text"
+        )
+    texts = tuple(part.get("text") for part in text_parts)
+    if texts:
+        if len(texts) == 1:
+            if texts[0] != output_value:
+                raise Qwen4ExpRequestPreparationError(
+                    "function_call_output content must preserve its exact output"
+                )
+        elif "\n".join(str(item) for item in texts) != output_value:
+            raise Qwen4ExpRequestPreparationError(
+                "function_call_output content must preserve its exact output"
+            )
+    elif output_value:
+        raise Qwen4ExpRequestPreparationError(
+            "function_call_output content must preserve its exact output"
+        )
+    is_error: bool | None
+    if "is_error" not in raw_message:
+        is_error = None
+    else:
+        is_error_value = raw_message.get("is_error")
+        if not isinstance(is_error_value, bool):
+            raise Qwen4ExpRequestPreparationError(
+                "function_call_output is_error must be a boolean"
+            )
+        is_error = is_error_value
+    return call_id_value, output_value, is_error
 
 
 def _canonical_text_parts(content: object) -> tuple[Mapping[str, object], ...]:
@@ -282,6 +318,7 @@ def _prepared_messages(
                 item_type=layout.item_type,
                 call_id=layout.call_id,
                 output=layout.output,
+                is_error=layout.is_error,
             )
         )
     if tuple(consumed) != prompt.items:

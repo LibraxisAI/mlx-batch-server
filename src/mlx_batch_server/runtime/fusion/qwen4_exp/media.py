@@ -75,6 +75,7 @@ class PreparedQwen4Message:
     item_type: str | None = None
     call_id: str | None = None
     output: str | None = None
+    is_error: bool | None = None
 
     def __post_init__(self) -> None:
         if self.message_index < 0:
@@ -86,22 +87,11 @@ class PreparedQwen4Message:
         if self.item_type not in (None, "message", "function_call_output"):
             raise ValueError("prepared message item_type is unsupported")
         if self.item_type == "function_call_output":
-            if self.role != "tool":
-                raise ValueError("function_call_output must use the tool role")
-            if not isinstance(self.call_id, str) or not self.call_id.strip():
-                raise ValueError("function_call_output call_id must not be empty")
-            if not isinstance(self.output, str):
-                raise ValueError("function_call_output output must be text")
-            if (
-                len(self.items) != 1
-                or not isinstance(self.items[0], PreparedTextItem)
-                or self.items[0].text != self.output
-            ):
-                raise ValueError(
-                    "function_call_output items must preserve the exact output"
-                )
+            _validate_function_call_output(self)
         elif self.call_id is not None or self.output is not None:
             raise ValueError("call_id and output belong only to function_call_output")
+        elif self.is_error is not None:
+            raise ValueError("is_error belongs only to function_call_output")
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +336,48 @@ def _content_payload(item: PreparedPromptItem) -> dict[str, object]:
     return payload
 
 
+def render_function_call_output_text(
+    output: str,
+    is_error: bool | None,
+) -> str:
+    """Template-visible tool receipt. Success text is unchanged."""
+
+    if is_error is not True:
+        return output
+    return json.dumps(
+        {"is_error": True, "content": output},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def _validate_function_call_output(message: PreparedQwen4Message) -> None:
+    if message.role != "tool":
+        raise ValueError("function_call_output must use the tool role")
+    if not isinstance(message.call_id, str) or not message.call_id.strip():
+        raise ValueError("function_call_output call_id must not be empty")
+    if not isinstance(message.output, str):
+        raise ValueError("function_call_output output must be text")
+    if message.is_error is not None and not isinstance(message.is_error, bool):
+        raise ValueError("function_call_output is_error must be a boolean")
+    texts = tuple(
+        item.text for item in message.items if isinstance(item, PreparedTextItem)
+    )
+    if texts:
+        joined = "\n".join(texts)
+        if len(texts) == 1:
+            if texts[0] != message.output:
+                raise ValueError(
+                    "function_call_output items must preserve the exact output"
+                )
+        elif joined != message.output:
+            raise ValueError(
+                "function_call_output items must preserve the exact output"
+            )
+    elif message.output:
+        raise ValueError("function_call_output items must preserve the exact output")
+
+
 def _messages_digest(messages: tuple[PreparedQwen4Message, ...]) -> str:
     return _json_digest(
         [
@@ -355,6 +387,7 @@ def _messages_digest(messages: tuple[PreparedQwen4Message, ...]) -> str:
                 "type": message.item_type,
                 "call_id": message.call_id,
                 "output": message.output,
+                "is_error": message.is_error,
                 "items": [_content_payload(item) for item in message.items],
             }
             for message in messages
@@ -402,4 +435,5 @@ __all__ = [
     "Qwen4PromptBuilder",
     "Qwen4PromptError",
     "bind_prepared_messages",
+    "render_function_call_output_text",
 ]

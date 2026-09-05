@@ -483,39 +483,6 @@ def test_tool_controls_are_normalized_to_the_shared_runtime_abi(
     assert turn.sampling["parallel_tool_calls"] is expected_parallel
 
 
-def test_tool_result_image_is_refused_instead_of_silently_dropped():
-    request = MessagesRequest.model_validate(
-        {
-            "model": ALIAS,
-            "max_tokens": 16,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "toolu_1",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": "image/png",
-                                        "data": "aGk=",
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ],
-        }
-    )
-
-    with pytest.raises(UnsupportedCapabilityError):
-        build_turn(request)
-
-
 # ---------------------------------------------------------------------------
 # Engine over the seam
 # ---------------------------------------------------------------------------
@@ -607,8 +574,112 @@ async def test_engine_non_stream_raises_on_a_failed_turn():
     assert raised.value.error_type == "overloaded_error"
 
 
+def _tool_result_request(
+    *,
+    result_content: object = "boom",
+    is_error: bool = True,
+    extra_user_blocks: list | None = None,
+    tool_use_id: str = "toolu_1",
+) -> MessagesRequest:
+    user_content = [
+        {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": result_content,
+            "is_error": is_error,
+        }
+    ]
+    user_content.extend(extra_user_blocks or [])
+    return MessagesRequest.model_validate(
+        {
+            "model": ALIAS,
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "lookup Kielce"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {"city": "Kielce"},
+                        }
+                    ],
+                },
+                {"role": "user", "content": user_content},
+            ],
+        }
+    )
+
+
 def test_tool_results_map_to_tool_messages_without_losing_the_error_flag():
+    request = _tool_result_request(
+        extra_user_blocks=[{"type": "text", "text": "what now?"}]
+    )
+
+    turn = build_turn(request)
+    roles = [message["role"] for message in turn.messages]
+    assert roles == ["user", "assistant", "tool", "user"]
+    receipt = turn.messages[2]
+    assert receipt["type"] == "function_call_output"
+    assert receipt["call_id"] == "toolu_1"
+    assert receipt["output"] == "boom"
+    assert receipt["is_error"] is True
+    assert receipt["content"] == ({"type": "input_text", "text": "boom"},)
+    assert turn.messages[3]["content"] == ({"type": "input_text", "text": "what now?"},)
+
+
+def test_explicit_is_error_false_is_preserved_and_success_text_is_unchanged():
+    request = _tool_result_request(result_content="15 degrees", is_error=False)
+
+    turn = build_turn(request)
+    receipt = turn.messages[2]
+    assert receipt["is_error"] is False
+    assert receipt["output"] == "15 degrees"
+    assert receipt["content"] == ({"type": "input_text", "text": "15 degrees"},)
+
+
+def test_tool_result_after_user_text_is_refused_not_reordered():
     request = MessagesRequest.model_validate(
+        {
+            "model": ALIAS,
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "lookup"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "ignore this order"},
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "ok",
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(AnthropicAPIError, match="must precede later text") as raised:
+        build_turn(request)
+    assert raised.value.error_type == "invalid_request_error"
+
+
+def test_orphan_duplicate_and_mismatched_tool_results_fail_closed():
+    orphan = MessagesRequest.model_validate(
         {
             "model": ALIAS,
             "max_tokens": 8,
@@ -618,22 +689,180 @@ def test_tool_results_map_to_tool_messages_without_losing_the_error_flag():
                     "content": [
                         {
                             "type": "tool_result",
-                            "tool_use_id": "toolu_1",
-                            "content": "boom",
-                            "is_error": True,
-                        },
-                        {"type": "text", "text": "what now?"},
+                            "tool_use_id": "toolu_missing",
+                            "content": "nope",
+                        }
                     ],
                 }
             ],
         }
     )
+    with pytest.raises(AnthropicAPIError, match="no preceding tool_use"):
+        build_turn(orphan)
+
+    duplicate = MessagesRequest.model_validate(
+        {
+            "model": ALIAS,
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "lookup"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "one",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "two",
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+    with pytest.raises(AnthropicAPIError, match="duplicates"):
+        build_turn(duplicate)
+
+    mismatched = _tool_result_request(tool_use_id="toolu_other")
+    with pytest.raises(AnthropicAPIError, match="do not match"):
+        build_turn(mismatched)
+
+
+def test_nested_tool_result_image_maps_through_canonical_media():
+    request = _tool_result_request(
+        result_content=[
+            {"type": "text", "text": "see photo"},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aW1hZ2U=",
+                },
+            },
+        ],
+        is_error=False,
+    )
 
     turn = build_turn(request)
-    roles = [message["role"] for message in turn.messages]
-    assert roles == ["tool", "user"]
-    assert turn.messages[0]["type"] == "function_call_output"
-    assert turn.messages[0]["call_id"] == "toolu_1"
-    assert turn.messages[0]["output"] == "boom"
-    assert turn.messages[0]["is_error"] is True
-    assert turn.messages[1]["content"] == ({"type": "input_text", "text": "what now?"},)
+    receipt = turn.messages[2]
+    assert receipt["output"] == "see photo"
+    assert receipt["is_error"] is False
+    assert len(turn.media) == 1
+    assert turn.media[0]["type"] == "input_image"
+    assert turn.media[0]["_role"] == "tool"
+    assert turn.media[0]["_message_index"] == 2
+    assert turn.media[0]["_content_index"] == 1
+    assert turn.media[0]["image_base64"].startswith("data:image/png;base64,")
+
+
+def test_nested_search_result_and_plaintext_document_fail_closed():
+    search = _tool_result_request(
+        result_content=[
+            {
+                "type": "search_result",
+                "source": "https://example.test/doc",
+                "title": "Doc",
+                "content": [{"type": "text", "text": "hit"}],
+            }
+        ]
+    )
+    with pytest.raises(UnsupportedCapabilityError, match="search_result") as search_err:
+        build_turn(search)
+    assert search_err.value.error_type == "invalid_request_error"
+
+    document = _tool_result_request(
+        result_content=[
+            {
+                "type": "document",
+                "source": {
+                    "type": "text",
+                    "media_type": "text/plain",
+                    "data": "plain notes",
+                },
+            }
+        ]
+    )
+    with pytest.raises(UnsupportedCapabilityError, match="plaintext document"):
+        build_turn(document)
+
+
+def test_nested_pdf_document_maps_to_canonical_file_media():
+    request = _tool_result_request(
+        result_content=[
+            {
+                "type": "document",
+                "title": "lab.pdf",
+                "source": {
+                    "type": "url",
+                    "url": "https://media.3more.ai/lab.pdf",
+                },
+            }
+        ],
+        is_error=False,
+    )
+
+    turn = build_turn(request)
+    assert turn.media[0]["type"] == "input_file"
+    assert turn.media[0]["file_url"] == "https://media.3more.ai/lab.pdf"
+    assert turn.media[0]["filename"] == "lab.pdf"
+
+
+def test_official_sdk_shaped_tool_results_parse():
+    payload = {
+        "model": ALIAS,
+        "max_tokens": 8,
+        "messages": [
+            {"role": "user", "content": "lookup"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "lookup",
+                        "input": {"q": "1"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "is_error": False,
+                        "content": [
+                            {"type": "text", "text": "ok"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "url",
+                                    "url": "https://media.3more.ai/a.png",
+                                },
+                            },
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+    parsed = MessagesRequest.model_validate(payload)
+    turn = build_turn(parsed)
+    assert turn.messages[2]["is_error"] is False
+    assert turn.media[0]["image_url"] == "https://media.3more.ai/a.png"

@@ -136,6 +136,7 @@ async def test_runtime_source_maps_one_turn_to_the_canonical_owner() -> None:
     request = starter.requests[0]
     assert request.runtime is RUNTIME
     assert request.messages == turn.messages
+    assert request.media == ()
     assert request.tools == turn.tools
     assert request.sampling == {"max_output_tokens": 32, "tool_choice": "auto"}
     assert request.reasoning == turn.reasoning
@@ -146,6 +147,42 @@ async def test_runtime_source_maps_one_turn_to_the_canonical_owner() -> None:
         "runtime_role": "main",
         "protocol": "anthropic_messages",
     }
+
+
+@pytest.mark.asyncio
+async def test_runtime_source_copies_canonical_tool_result_media() -> None:
+    starter = _Starter()
+    source = RuntimeAnthropicTurnSource(
+        starter=starter,
+        resolve_model=lambda alias: (RUNTIME, "main"),
+    )
+    media = (
+        {
+            "type": "input_image",
+            "image_url": "https://media.3more.ai/a.png",
+            "_role": "tool",
+            "_message_index": 0,
+            "_content_index": 1,
+        },
+    )
+    turn = AnthropicTurn(
+        model_alias="buddy",
+        messages=(
+            {
+                "type": "function_call_output",
+                "role": "tool",
+                "call_id": "toolu_1",
+                "output": "see photo",
+                "is_error": False,
+                "content": ({"type": "input_text", "text": "see photo"},),
+            },
+        ),
+        media=media,
+    )
+
+    await _collect(source, turn)
+
+    assert starter.requests[0].media == media
 
 
 @pytest.mark.asyncio

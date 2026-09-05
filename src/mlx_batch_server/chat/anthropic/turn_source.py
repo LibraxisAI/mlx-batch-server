@@ -37,6 +37,7 @@ class AnthropicTurn:
     sampling: Mapping[str, Any] = field(default_factory=dict)
     reasoning: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    media: Sequence[Mapping[str, Any]] = ()
 
 
 @runtime_checkable
