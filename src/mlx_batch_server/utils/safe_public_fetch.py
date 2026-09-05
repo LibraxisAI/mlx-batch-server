@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import zlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -67,14 +68,17 @@ _BLOCKED_HOST_SUFFIXES = (
     ".invalid",
 )
 _USER_AGENT = "mlx-batch-server-media/1"
+_ALLOWED_CONTENT_ENCODINGS = frozenset({"identity", "gzip", "deflate"})
+_MAX_DECODE_RATIO = 64
 
 
 class SafePublicFetchError(ValueError):
     """Structured fail-closed error from the public fetch boundary."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, http_status: int | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.http_status = http_status
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +92,8 @@ class SafePublicFetchLimits:
     pool_timeout: float = 5.0
     max_redirects: int = 3
     chunk_bytes: int = 64 * 1024
+    max_decoded_bytes: int = 32 * 1024 * 1024
+    max_decode_ratio: int = _MAX_DECODE_RATIO
 
     def __post_init__(self) -> None:
         if self.max_bytes < 1:
@@ -106,6 +112,68 @@ class SafePublicFetchLimits:
             raise ValueError("max_redirects must not be negative")
         if self.chunk_bytes < 1:
             raise ValueError("chunk_bytes must be positive")
+        if self.max_decoded_bytes < 1 or self.max_decode_ratio < 1:
+            raise ValueError("decode limits must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class FetchHopReceipt:
+    requested_url: str
+    dns_answers: tuple[str, ...]
+    selected_address: str
+    connected_peer: str
+    http_status: int
+    redirect_url: str | None
+    content_encoding: str
+    raw_bytes: int
+    decoded_bytes: int
+
+    def __post_init__(self) -> None:
+        if not self.requested_url or not self.dns_answers:
+            raise ValueError("fetch hop receipt requires URL and DNS answers")
+        if self.selected_address not in self.dns_answers:
+            raise ValueError("selected address must belong to the DNS answer set")
+        if self.connected_peer != self.selected_address:
+            raise ValueError("connected peer must equal the selected address")
+        if self.content_encoding not in _ALLOWED_CONTENT_ENCODINGS:
+            raise ValueError("fetch hop receipt content encoding is unsupported")
+        if self.raw_bytes < 0 or self.decoded_bytes < 0:
+            raise ValueError("fetch hop byte counts must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class FetchTransportReceipt:
+    requested_url: str
+    final_url: str
+    hops: tuple[FetchHopReceipt, ...]
+
+    def __post_init__(self) -> None:
+        if not self.requested_url or not self.final_url or not self.hops:
+            raise ValueError("transport receipt requires URL identities and hops")
+        if self.hops[0].requested_url != self.requested_url:
+            raise ValueError("transport receipt first hop disagrees with requested URL")
+        if self.hops[-1].requested_url != self.final_url:
+            raise ValueError("transport receipt final hop disagrees with final URL")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "requested_url": self.requested_url,
+            "final_url": self.final_url,
+            "hops": [
+                {
+                    "requested_url": hop.requested_url,
+                    "dns_answers": list(hop.dns_answers),
+                    "selected_address": hop.selected_address,
+                    "connected_peer": hop.connected_peer,
+                    "http_status": hop.http_status,
+                    "redirect_url": hop.redirect_url,
+                    "content_encoding": hop.content_encoding,
+                    "raw_bytes": hop.raw_bytes,
+                    "decoded_bytes": hop.decoded_bytes,
+                }
+                for hop in self.hops
+            ],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +185,7 @@ class FetchedResource:
     final_url: str
     http_status: int = 200
     redirect_count: int = 0
+    transport_receipt: FetchTransportReceipt | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.content, bytes) or not self.content:
@@ -136,6 +205,11 @@ class FetchedResource:
             or self.redirect_count < 0
         ):
             raise ValueError("redirect_count must be a non-negative integer")
+        if self.transport_receipt is not None:
+            if self.transport_receipt.final_url != self.final_url:
+                raise ValueError("transport receipt final URL disagrees with resource")
+            if len(self.transport_receipt.hops) != self.redirect_count + 1:
+                raise ValueError("transport receipt hop count disagrees with redirects")
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,16 +316,25 @@ class SafePublicFetch:
         cancel: FetchCancelCheck | None = None,
     ) -> FetchedResource:
         current = logical_url
+        hop_receipts: list[FetchHopReceipt] = []
         for redirects in range(self._limits.max_redirects + 1):
             _raise_if_cancelled(cancel)
             hop = self._prepare_hop(current, redirect_hop=redirects > 0)
-            pinned_ip = self._resolve_public_ip(hop)
+            dns_answers = self._resolve_public_addresses(hop)
+            pinned_ip = dns_answers[0]
             async with client.stream(
                 "GET",
                 _pinned_url(hop, pinned_ip),
                 headers=_hop_headers(hop, accepted),
                 extensions=_hop_extensions(hop),
             ) as response:
+                connected_peer = _connected_peer(response)
+                if connected_peer != str(pinned_ip):
+                    raise SafePublicFetchError(
+                        "connected_peer_mismatch",
+                        "URL fetch connected peer did not match the admitted address",
+                    )
+                content_encoding = _content_encoding(response)
                 if response.status_code in _REDIRECT_STATUSES:
                     if redirects >= self._limits.max_redirects:
                         raise SafePublicFetchError(
@@ -265,11 +348,26 @@ class SafePublicFetch:
                             "URL redirect is missing a location",
                         )
                     current = urljoin(hop.logical_url, location)
+                    hop_receipts.append(
+                        FetchHopReceipt(
+                            requested_url=hop.logical_url,
+                            dns_answers=tuple(str(item) for item in dns_answers),
+                            selected_address=str(pinned_ip),
+                            connected_peer=connected_peer,
+                            http_status=response.status_code,
+                            redirect_url=current,
+                            content_encoding=content_encoding,
+                            raw_bytes=0,
+                            decoded_bytes=0,
+                        )
+                    )
                     continue
                 if response.status_code < 200 or response.status_code >= 300:
+                    code = "rate_limited" if response.status_code == 429 else "url_fetch_status"
                     raise SafePublicFetchError(
-                        "url_fetch_status",
+                        code,
                         "URL fetch returned an unsuccessful HTTP status",
+                        http_status=response.status_code,
                     )
                 media_type = _response_media_type(response)
                 if media_type not in accepted:
@@ -278,13 +376,36 @@ class SafePublicFetch:
                         "URL returned an unsupported media type",
                     )
                 _validate_content_length(response, budget)
-                content = await self._read_bounded(response, budget, cancel=cancel)
+                content, raw_bytes = await self._read_bounded(
+                    response,
+                    budget,
+                    content_encoding=content_encoding,
+                    cancel=cancel,
+                )
+                hop_receipts.append(
+                    FetchHopReceipt(
+                        requested_url=hop.logical_url,
+                        dns_answers=tuple(str(item) for item in dns_answers),
+                        selected_address=str(pinned_ip),
+                        connected_peer=connected_peer,
+                        http_status=response.status_code,
+                        redirect_url=None,
+                        content_encoding=content_encoding,
+                        raw_bytes=raw_bytes,
+                        decoded_bytes=len(content),
+                    )
+                )
                 return FetchedResource(
                     content=content,
                     media_type=media_type,
                     final_url=hop.logical_url,
                     http_status=response.status_code,
                     redirect_count=redirects,
+                    transport_receipt=FetchTransportReceipt(
+                        requested_url=logical_url,
+                        final_url=hop.logical_url,
+                        hops=tuple(hop_receipts),
+                    ),
                 )
         raise SafePublicFetchError(
             "redirect_limit_exceeded",
@@ -305,10 +426,10 @@ class SafePublicFetch:
             )
         return hop
 
-    def _resolve_public_ip(
+    def _resolve_public_addresses(
         self,
         hop: _Hop,
-    ) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
         try:
             literal = ipaddress.ip_address(hop.hostname)
         except ValueError:
@@ -322,7 +443,7 @@ class SafePublicFetch:
         else:
             addresses = (literal,)
         _require_public_addresses(addresses)
-        return addresses[0]
+        return addresses
 
     def _lookup(self, host: str, port: int) -> object:
         try:
@@ -338,23 +459,30 @@ class SafePublicFetch:
         response: httpx.Response,
         max_bytes: int,
         *,
+        content_encoding: str,
         cancel: FetchCancelCheck | None = None,
-    ) -> bytes:
-        content = bytearray()
-        async for chunk in response.aiter_bytes(self._limits.chunk_bytes):
+    ) -> tuple[bytes, int]:
+        raw = bytearray()
+        async for chunk in response.aiter_raw(self._limits.chunk_bytes):
             _raise_if_cancelled(cancel)
-            content.extend(chunk)
-            if len(content) > max_bytes:
+            raw.extend(chunk)
+            if len(raw) > max_bytes:
                 raise SafePublicFetchError(
                     "source_bytes_exceeded",
                     "URL response exceeds the remaining source byte budget",
                 )
-        if not content:
+        if not raw:
             raise SafePublicFetchError(
                 "empty_source",
                 "URL response body must not be empty",
             )
-        return bytes(content)
+        content = _decode_bounded(
+            bytes(raw),
+            content_encoding,
+            max_decoded=min(max_bytes, self._limits.max_decoded_bytes),
+            max_ratio=self._limits.max_decode_ratio,
+        )
+        return content, len(raw)
 
 
 def _raise_if_cancelled(cancel: FetchCancelCheck | None) -> None:
@@ -572,6 +700,72 @@ def _response_media_type(response: httpx.Response) -> str:
     return _normalize_media_type(value)
 
 
+def _content_encoding(response: httpx.Response) -> str:
+    value = response.headers.get("content-encoding", "identity").strip().lower()
+    if value not in _ALLOWED_CONTENT_ENCODINGS:
+        raise SafePublicFetchError(
+            "unsupported_content_encoding",
+            "URL returned an unsupported content encoding",
+        )
+    return value
+
+
+def _connected_peer(response: httpx.Response) -> str:
+    explicit = response.extensions.get("mlx_batch_server.connected_peer")
+    if isinstance(explicit, str):
+        address = explicit
+    else:
+        stream = response.extensions.get("network_stream")
+        get_extra_info = getattr(stream, "get_extra_info", None)
+        peer = get_extra_info("server_addr") if callable(get_extra_info) else None
+        address = peer[0] if isinstance(peer, tuple) and peer else peer
+    if not isinstance(address, str):
+        raise SafePublicFetchError(
+            "connected_peer_unverified",
+            "URL fetch could not verify the connected peer",
+        )
+    try:
+        return str(_canonical_ip(ipaddress.ip_address(address)))
+    except ValueError as error:
+        raise SafePublicFetchError(
+            "connected_peer_unverified",
+            "URL fetch could not verify the connected peer",
+        ) from error
+
+
+def _decode_bounded(
+    raw: bytes,
+    encoding: str,
+    *,
+    max_decoded: int,
+    max_ratio: int,
+) -> bytes:
+    if encoding == "identity":
+        decoded = raw
+    else:
+        window_bits = 16 + zlib.MAX_WBITS if encoding == "gzip" else zlib.MAX_WBITS
+        decoder = zlib.decompressobj(window_bits)
+        try:
+            decoded = decoder.decompress(raw, max_decoded + 1)
+            if decoder.unconsumed_tail or len(decoded) > max_decoded:
+                raise SafePublicFetchError(
+                    "decoded_bytes_exceeded",
+                    "URL response exceeds the decoded byte budget",
+                )
+            decoded += decoder.flush(max_decoded + 1 - len(decoded))
+        except zlib.error as error:
+            raise SafePublicFetchError(
+                "invalid_content_encoding",
+                "URL response content encoding is invalid",
+            ) from error
+    if len(decoded) > max_decoded or len(decoded) > max(1, len(raw)) * max_ratio:
+        raise SafePublicFetchError(
+            "decoded_bytes_exceeded",
+            "URL response exceeds the decoded byte budget",
+        )
+    return decoded
+
+
 def _validate_content_length(response: httpx.Response, max_bytes: int) -> None:
     value = response.headers.get("content-length")
     if value is None:
@@ -598,6 +792,8 @@ def _validate_content_length(response: httpx.Response, max_bytes: int) -> None:
 __all__ = [
     "FetchCancelCheck",
     "FetchedResource",
+    "FetchHopReceipt",
+    "FetchTransportReceipt",
     "SafePublicFetch",
     "SafePublicFetchError",
     "SafePublicFetchLimits",

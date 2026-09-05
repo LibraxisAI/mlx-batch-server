@@ -1,8 +1,9 @@
 """Bounded protocol-neutral admission evidence for hosted tool turns.
 
 This store is deliberately not a response store: its closed dataclasses have
-no place for prompts, bodies, headers, provider payloads, IP addresses or
-credentials. Candidates become acceptance evidence only after sink delivery.
+no place for prompts, bodies, headers, provider payloads or credentials. The
+only network topology it admits is the transport-issued public fetch receipt.
+Candidates become acceptance evidence only after sink delivery.
 """
 
 from __future__ import annotations
@@ -10,9 +11,10 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 
 DeliveryState = Literal["prepared", "delivered", "delivery_failed"]
@@ -58,6 +60,7 @@ class HostedCallEvidence:
     delivery_state: DeliveryState
     first_event_sequence: int
     last_event_sequence: int
+    transport_receipt: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -417,6 +417,25 @@ def test_cancel_is_a_hard_barrier_against_late_result_and_continuation() -> None
     assert [block.type for block in projector.content_blocks()] == ["server_tool_use"]
 
 
+def test_typed_fetch_rate_limit_projects_as_anthropic_too_many_requests() -> None:
+    projector = AnthropicMessageProjector(message_id="msg_rate", model_alias="m")
+    projector.observe(
+        HostedCallStarted(0, "hosted_fetch", "call_rate", "web_fetch", {"url": _URL})
+    )
+    projector.observe(
+        HostedCallCompleted(
+            0,
+            "hosted_fetch",
+            "call_rate",
+            "web_fetch",
+            "failed",
+            {"error": {"code": "fetch_rate_limited", "message": "rate limited"}},
+        )
+    )
+    blocks = projector.content_blocks()
+    assert blocks[1].content.error_code == "too_many_requests"
+
+
 def test_sdk_parses_unary_and_streamed_success_with_the_same_blocks() -> None:
     source = _ScriptedSource(_success_events())
     register_turn_source(source)

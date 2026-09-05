@@ -86,6 +86,23 @@ def test_delivery_failure_never_satisfies_delivered_acceptance() -> None:
     )
 
 
+def test_terminal_sink_delivery_failure_is_sealed_as_delivery_failed() -> None:
+    registry = _registry()
+    response_id = _begin(registry)
+    token = registry.prepare_terminal(
+        response_id,
+        state="completed",
+        cancel_reason=None,
+        terminal_usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    )
+    registry.mark_terminal(response_id, token, delivered=False)
+
+    snapshot = registry.by_response(response_id)
+    assert snapshot is not None
+    assert snapshot.state == "failed"
+    assert snapshot.terminal_delivery_state == "delivery_failed"
+
+
 def test_rounds_are_contiguous_and_usage_is_frozen() -> None:
     registry = _registry()
     response_id = _begin(registry)

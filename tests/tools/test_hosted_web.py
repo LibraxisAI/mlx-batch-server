@@ -32,6 +32,8 @@ from mlx_batch_server.tools.hosted_web import (
 )
 from mlx_batch_server.tools.parser import ParsedToolCall
 from mlx_batch_server.utils.safe_public_fetch import (
+    FetchHopReceipt,
+    FetchTransportReceipt,
     FetchedResource,
     SafePublicFetch,
     SafePublicFetchLimits,
@@ -48,9 +50,14 @@ def _addrinfo(ip: str = "1.1.1.1"):
 
 
 def _fetch(handler, *, max_bytes: int = 4096) -> SafePublicFetch:
+    def attested_handler(request: httpx.Request) -> httpx.Response:
+        response = handler(request)
+        response.extensions["mlx_batch_server.connected_peer"] = request.url.host
+        return response
+
     return SafePublicFetch(
         limits=SafePublicFetchLimits(max_bytes=max_bytes, timeout=2.0),
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(attested_handler),
         getaddrinfo=_addrinfo(),
     )
 
@@ -237,8 +244,13 @@ async def test_successful_fetch_produces_digest_provenance() -> None:
     assert result["content"] == "hosted fetch body"
     assert result["digest"] == fields["result_digest"]
     assert isinstance(result["retrieved_at"], int) and result["retrieved_at"] > 0
+    transport = fields["transport_receipt"]
+    assert transport["requested_url"] == "https://cdn.example/page"
+    assert transport["hops"][0]["connected_peer"] == "1.1.1.1"
     with pytest.raises(TypeError):
         fields["final_url"] = "https://attacker.example"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        transport["hops"][0]["connected_peer"] = "127.0.0.1"
 
 
 @pytest.mark.asyncio
@@ -365,7 +377,16 @@ class _ResourceFetch:
 
     async def fetch(self, url: str, **kwargs):
         self.calls += 1
-        return FetchedResource(self.content, self.media_type, url)
+        hop = FetchHopReceipt(
+            url, ("1.1.1.1",), "1.1.1.1", "1.1.1.1", 200, None,
+            "identity", len(self.content), len(self.content),
+        )
+        return FetchedResource(
+            self.content,
+            self.media_type,
+            url,
+            transport_receipt=FetchTransportReceipt(url, url, (hop,)),
+        )
 
 
 @pytest.mark.asyncio
@@ -450,7 +471,7 @@ async def test_open_and_find_require_prior_url_and_find_is_bounded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pdf_roundtrip_keeps_raw_bytes_and_ignores_text_token_limit(
+async def test_pdf_roundtrip_keeps_raw_bytes_and_honors_text_token_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw = b"%PDF-1.7\nclosed fixture"
@@ -490,5 +511,10 @@ async def test_pdf_roundtrip_keeps_raw_bytes_and_ignores_text_token_limit(
     )
     assert result.result is not None
     assert base64.b64decode(result.result["content"], validate=True) == raw
-    assert "content_tokens" not in result.receipt_fields
-    assert result.receipt_fields["content_truncation"] == "not_applicable_pdf"
+    assert result.receipt_fields["content_token_limit"] == 1
+    assert result.receipt_fields["content_tokens"] <= 1
+    assert result.receipt_fields["content_truncation"] == "max_content_tokens"
+    assert len(result.result["extracted_text"]) < len("extracted fixture")
+    transport = result.receipt_fields["transport_receipt"]
+    assert transport["requested_url"] == url
+    assert transport["hops"][0]["connected_peer"] == "1.1.1.1"

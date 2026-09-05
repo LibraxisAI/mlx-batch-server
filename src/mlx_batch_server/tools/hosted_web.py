@@ -193,6 +193,15 @@ class HostedWebFetchTool:
             "result_digest": digest,
             "source_bytes": len(resource.content),
         }
+        if resource.transport_receipt is None:
+            raise HostedToolError(
+                "fetch_connected_peer_unverified",
+                "URL fetch produced no transport attestation",
+            )
+        common_receipt["transport_receipt"] = resource.transport_receipt.as_dict()
+        terminal_hop = resource.transport_receipt.hops[-1]
+        common_receipt["raw_source_bytes"] = terminal_hop.raw_bytes
+        common_receipt["decoded_source_bytes"] = terminal_hop.decoded_bytes
         if resource.media_type == "application/pdf":
             return _pdf_success(
                 resource.content,
@@ -200,6 +209,7 @@ class HostedWebFetchTool:
                 digest=digest,
                 retrieved_at=retrieved_at,
                 receipt=common_receipt,
+                max_content_tokens=policy.max_content_tokens,
             )
         text = resource.content.decode("utf-8", errors="replace")
         if len(text) > self._max_text_chars:
@@ -431,6 +441,7 @@ def _pdf_success(
     digest: str,
     retrieved_at: int,
     receipt: Mapping[str, Any],
+    max_content_tokens: int | None,
 ) -> HostedToolSuccess:
     if len(raw) > _PDF_MAX_BYTES or not raw.startswith(b"%PDF-"):
         raise HostedToolError("fetch_invalid_pdf", "fetched PDF is invalid or too large")
@@ -444,6 +455,10 @@ def _pdf_success(
     except Exception as error:
         raise HostedToolError("fetch_invalid_pdf", "fetched PDF could not be parsed") from error
     extracted = extracted[:262_144]
+    tokenizer = AnthropicApproxTextTokenizer()
+    extracted, token_count, truncated = tokenizer.truncate(
+        extracted, max_content_tokens
+    )
     encoded = base64.b64encode(raw).decode("ascii")
     result = {
         "kind": "document",
@@ -465,8 +480,16 @@ def _pdf_success(
         receipt_fields={
             **dict(receipt),
             "content_encoding": "base64",
-            "content_tokenizer": "not_applicable_pdf",
-            "content_truncation": "not_applicable_pdf",
+            "content_tokenizer": ANTHROPIC_APPROX_TOKENIZER,
+            "content_tokens": token_count,
+            "content_truncation": (
+                "max_content_tokens" if truncated else "none"
+            ),
+            **(
+                {}
+                if max_content_tokens is None
+                else {"content_token_limit": max_content_tokens}
+            ),
         },
         result=result,
     )

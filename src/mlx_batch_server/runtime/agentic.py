@@ -97,6 +97,10 @@ FAILURE_CONTINUATION_PREPARATION = (
     "what failed, then answer as well as you can without the tool output. "
     "Do not fabricate tool results, fetched content, or citations."
 )
+HOSTED_FAILURE_DISCLOSURE = (
+    "The hosted tool failed, so I could not verify the requested external "
+    "information. I will continue with that limitation stated explicitly."
+)
 NO_WEB_PREPARATION = (
     "No hosted web tools are available for this request. You have no web, "
     "search, or network access. Do not claim to have browsed, fetched, or "
@@ -254,6 +258,9 @@ class _HostedAgenticTurn:
         )
         self._prior_urls = set(_message_urls(request.messages))
         self._hosted_uses = 0
+        # Request-global authority. AgentLoop round ids are scheduling detail,
+        # never a namespace in which an outward call id may become a new effect.
+        self._claimed_hosted_calls: dict[str, tuple[str, str]] = {}
         self._event_sequence = 0
         self._loop = asyncio.get_running_loop()
         self._lock = threading.Lock()
@@ -432,6 +439,7 @@ class _HostedAgenticTurn:
                 raise HostedRuntimeIntegrityError(
                     "failure continuation emitted a forbidden hosted tool call"
                 )
+            self._claim_request_calls(calls)
             self._raise_if_cancelled()
             hosted_attempted = True
             current_scope = HostedExecutionScope(
@@ -460,6 +468,7 @@ class _HostedAgenticTurn:
                 # continuation; the trusted preparation quotes nothing from
                 # the untrusted error payload.
                 terminal_continuation = True
+                self._emit_failure_disclosure()
                 messages.append(
                     {
                         "role": "system",
@@ -594,7 +603,11 @@ class _HostedAgenticTurn:
                 tools=tools,
                 sampling=sampling,
             )
-        collector = _ChildSink(self, first_round=round_index == 0)
+        collector = _ChildSink(
+            self,
+            first_round=round_index == 0,
+            failure_continuation=mode is HostedRoundMode.FAILURE_CONTINUATION,
+        )
         handle = await self._starter._inner.start(
             child_request,
             collector,
@@ -616,6 +629,7 @@ class _HostedAgenticTurn:
         finally:
             self._current_child = None
         child_usage = collector.last_child_usage
+        collector.finalize_action_selection()
         if child_usage is not None:
             self._usage_base = _add_usage(self._usage_base, child_usage)
         if self._evidence is not None and self._plan is not None:
@@ -646,6 +660,63 @@ class _HostedAgenticTurn:
             terminal=terminal,
             tool_calls=collector.tool_calls(),
             saw_text=collector.saw_text,
+        )
+
+    def _claim_request_calls(self, calls: Sequence[ParsedToolCall]) -> None:
+        for call in calls:
+            identity = (call.name, call.arguments)
+            previous = self._claimed_hosted_calls.get(call.call_id)
+            if previous is not None:
+                raise HostedRuntimeIntegrityError(
+                    f"tool call_id {call.call_id} was reused in a later round"
+                )
+            self._claimed_hosted_calls[call.call_id] = identity
+
+    def _emit_failure_disclosure(self) -> None:
+        index = self._alloc_index()
+        item_id = self._alloc_item_id(f"msg_hosted_failure_{index}")
+        text = HOSTED_FAILURE_DISCLOSURE
+        self._forward(OutputItemStarted(index=index, item_id=item_id, kind="message"))
+        self._forward(
+            ContentPartStarted(
+                output_index=index,
+                item_id=item_id,
+                content_index=0,
+                kind="output_text",
+            )
+        )
+        self._forward(
+            TextDelta(
+                delta=text,
+                output_index=index,
+                item_id=item_id,
+                content_index=0,
+            )
+        )
+        self._forward(
+            TextCompleted(
+                text=text,
+                output_index=index,
+                item_id=item_id,
+                content_index=0,
+            )
+        )
+        self._forward(
+            ContentPartCompleted(
+                output_index=index,
+                item_id=item_id,
+                content_index=0,
+                kind="output_text",
+                text=text,
+            )
+        )
+        self._forward(
+            OutputItemCompleted(
+                index=index,
+                item_id=item_id,
+                kind="message",
+                text=text,
+            )
         )
 
     # -- outer event emission ------------------------------------------------
@@ -775,7 +846,12 @@ class _HostedAgenticTurn:
         )
         evidence_token: str | None = None
         if self._evidence is not None:
-            requested_url = sealed_action.get("url")
+            transport_receipt = receipt.get("transport_receipt")
+            requested_url = (
+                transport_receipt.get("requested_url")
+                if isinstance(transport_receipt, Mapping)
+                else None
+            )
             error = receipt.get("error")
             try:
                 evidence_token = self._evidence.prepare_call(
@@ -814,7 +890,15 @@ class _HostedAgenticTurn:
                         ended_monotonic_ns=time.monotonic_ns(),
                         delivery_state="prepared",
                         first_event_sequence=self._event_sequence,
-                        last_event_sequence=self._event_sequence + (2 if result_event is not None else 1),
+                        last_event_sequence=(
+                            self._event_sequence
+                            + (2 if result_event is not None else 1)
+                        ),
+                        transport_receipt=(
+                            transport_receipt
+                            if isinstance(transport_receipt, Mapping)
+                            else None
+                        ),
                     ),
                 )
             except Exception as evidence_error:
@@ -848,9 +932,10 @@ class _HostedAgenticTurn:
             )
         receipt = dict(raw_receipt)
         scoped = receipt.get("call_id")
-        if scoped is not None and scoped != call.call_id:
-            receipt["scoped_call_id"] = scoped
-        receipt["call_id"] = call.call_id
+        if scoped != call.call_id:
+            raise HostedRuntimeIntegrityError(
+                "hosted receipt call_id disagrees with the admitted call identity"
+            )
         # Receipt/event consistency (§3.4): a receipt disagreeing with the
         # events it closes is a server fault, never a terminal success.
         if receipt.get("tool_name") != call.name:
@@ -1052,7 +1137,13 @@ class _HostedAgenticTurn:
 class _ChildSink:
     """Private per-round sink: child terminals never reach the outer stream."""
 
-    def __init__(self, owner: _HostedAgenticTurn, *, first_round: bool) -> None:
+    def __init__(
+        self,
+        owner: _HostedAgenticTurn,
+        *,
+        first_round: bool,
+        failure_continuation: bool,
+    ) -> None:
         self._owner = owner
         self._first_round = first_round
         self._lock = threading.Lock()
@@ -1062,6 +1153,9 @@ class _ChildSink:
         self._tool_calls: list[ParsedToolCall] = []
         self._last_child_usage: UsageUpdate | None = None
         self.saw_text = False
+        self._quarantine = bool(owner._hosted_names)
+        self._quarantined_events: list[TurnEvent] = []
+        self._failure_continuation = failure_continuation
         # The citation filter arms only for a continuation round that follows
         # at least one immutable success result with citations requested; on
         # every other path this sink is byte-identical to the baseline.
@@ -1079,6 +1173,55 @@ class _ChildSink:
     def tool_calls(self) -> tuple[ParsedToolCall, ...]:
         with self._lock:
             return tuple(self._tool_calls)
+
+    def finalize_action_selection(self) -> None:
+        """Publish model prose iff this round selected no hosted action."""
+        with self._lock:
+            events = tuple(self._quarantined_events)
+            self._quarantined_events.clear()
+            has_hosted_call = bool(self._tool_calls)
+        if not has_hosted_call:
+            if self._failure_continuation:
+                text = " ".join(
+                    event.text
+                    for event in events
+                    if isinstance(event, TextCompleted)
+                ).casefold()
+                forbidden = (
+                    "tool succeeded",
+                    "search succeeded",
+                    "fetch succeeded",
+                    "successfully searched",
+                    "successfully fetched",
+                )
+                if any(claim in text for claim in forbidden):
+                    # The runtime-authored disclosure is already a non-empty,
+                    # honest assistant answer. Contradictory model bytes stay
+                    # quarantined while the turn can still settle normally.
+                    return
+            for event in events:
+                self._owner._forward(event)
+            return
+        for event in events:
+            if isinstance(event, UsageUpdate):
+                self._owner._forward(event)
+        # Nothing in the quarantine reached the outer stream. Reclaim its
+        # provisional identities before hosted items are allocated, keeping
+        # outward indices contiguous and preventing snapshot ghosts.
+        with self._lock:
+            mapped = tuple(self._index_map.values())
+            self._index_map.clear()
+        with self._owner._lock:
+            for _, item_id in mapped:
+                self._owner._used_item_ids.discard(item_id)
+            self._owner._next_index -= len(mapped)
+
+    def _publish(self, event: TurnEvent) -> None:
+        if self._quarantine:
+            with self._lock:
+                self._quarantined_events.append(event)
+            return
+        self._owner._forward(event)
 
     async def wait_terminal(self) -> TerminalEvent:
         return await self._terminal
@@ -1102,7 +1245,7 @@ class _ChildSink:
         elif isinstance(event, UsageUpdate):
             with self._lock:
                 self._last_child_usage = event
-            owner._forward(owner._merged_usage(event))
+            self._publish(owner._merged_usage(event))
         elif isinstance(event, OutputItemStarted):
             self._emit_item_started(event)
         elif isinstance(event, OutputItemCompleted | ToolDelta | ToolCompleted):
@@ -1131,7 +1274,7 @@ class _ChildSink:
         outer_item_id = owner._alloc_item_id(event.item_id)
         with self._lock:
             self._index_map[event.index] = (outer_index, outer_item_id)
-        owner._forward(replace(event, index=outer_index, item_id=outer_item_id))
+        self._publish(replace(event, index=outer_index, item_id=outer_item_id))
 
     def _emit_item_scoped(
         self,
@@ -1158,7 +1301,7 @@ class _ChildSink:
             if filtered is not None:
                 event = replace(event, text=filtered)
         outer_index, outer_item_id = self._mapped(event.index)
-        self._owner._forward(replace(event, index=outer_index, item_id=outer_item_id))
+        self._publish(replace(event, index=outer_index, item_id=outer_item_id))
 
     def _emit_content_scoped(
         self,
@@ -1182,7 +1325,7 @@ class _ChildSink:
         ):
             self.saw_text = True
         outer_index, outer_item_id = self._mapped(event.output_index)
-        self._owner._forward(
+        self._publish(
             replace(event, output_index=outer_index, item_id=outer_item_id)
         )
 
@@ -1218,7 +1361,7 @@ class _ChildSink:
         filtered_text = content_filter.filtered_text
         if filtered_text:
             self.saw_text = True
-        self._owner._forward(
+        self._publish(
             replace(
                 event,
                 output_index=outer_index,
@@ -1238,7 +1381,7 @@ class _ChildSink:
             if isinstance(piece, str):
                 if piece:
                     self.saw_text = True
-                self._owner._forward(
+                self._publish(
                     TextDelta(
                         delta=piece,
                         item_id=outer_item_id,
@@ -1247,7 +1390,7 @@ class _ChildSink:
                     )
                 )
                 continue
-            self._owner._forward(
+            self._publish(
                 HostedCitation(
                     output_index=outer_index,
                     item_id=outer_item_id,
@@ -1540,6 +1683,7 @@ def _usage_mapping(usage: UsageUpdate) -> MappingProxyType:
 __all__ = [
     "CITATIONS_METADATA_KEY",
     "FAILURE_CONTINUATION_PREPARATION",
+    "HOSTED_FAILURE_DISCLOSURE",
     "INTERNAL_FAILURE_MESSAGE",
     "NO_WEB_PREPARATION",
     "HostedAgenticRuntimeStarter",

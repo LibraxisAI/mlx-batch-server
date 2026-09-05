@@ -7,6 +7,7 @@ connect-time IP pinning and fail-closed classification can be proven.
 from __future__ import annotations
 
 import socket
+import gzip
 
 import httpx
 import pytest
@@ -62,7 +63,12 @@ def _fetcher(
     record: bool = False,
     max_bytes: int = 1024,
 ):
-    inner = httpx.MockTransport(handler)
+    def attested_handler(request: httpx.Request) -> httpx.Response:
+        response = handler(request)
+        response.extensions["mlx_batch_server.connected_peer"] = request.url.host
+        return response
+
+    inner = httpx.MockTransport(attested_handler)
     transport: httpx.AsyncBaseTransport = (
         _RecordingTransport(inner) if record else inner
     )
@@ -104,6 +110,60 @@ async def test_connect_pins_validated_ip_and_keeps_logical_host() -> None:
     assert request.headers["host"] == "cdn.example"
     assert request.extensions.get("sni_hostname") == "cdn.example"
     assert resource.final_url == "https://cdn.example/pixel.png"
+    assert resource.transport_receipt is not None
+    assert resource.transport_receipt.requested_url == "https://cdn.example/pixel.png"
+    assert resource.transport_receipt.hops[0].connected_peer == _PUBLIC_IP
+
+
+@pytest.mark.asyncio
+async def test_connected_peer_drift_fails_before_body_acceptance() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/png"},
+            content=_PNG,
+            request=request,
+            extensions={"mlx_batch_server.connected_peer": "8.8.8.8"},
+        )
+
+    fetch = SafePublicFetch(
+        transport=httpx.MockTransport(handler),
+        getaddrinfo=_addrinfo(_PUBLIC_IP),
+    )
+    with pytest.raises(SafePublicFetchError, match="connected peer") as caught:
+        await fetch.fetch("https://cdn.example/x", accepted_media_types=("image/png",))
+    assert caught.value.code == "connected_peer_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_compressed_bomb_is_rejected_by_decoded_budget() -> None:
+    bomb = gzip.compress(b"x" * 4096)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+            content=bomb,
+            request=request,
+        )
+
+    fetch, _ = _fetcher(handler, max_bytes=1024)
+    with pytest.raises(SafePublicFetchError) as caught:
+        await fetch.fetch("https://cdn.example/bomb", accepted_media_types=("text/plain",))
+    assert caught.value.code == "decoded_bytes_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_http_429_survives_as_typed_rate_limit_without_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, content=b"provider secret", request=request)
+
+    fetch, _ = _fetcher(handler)
+    with pytest.raises(SafePublicFetchError) as caught:
+        await fetch.fetch("https://cdn.example/limited", accepted_media_types=("text/plain",))
+    assert caught.value.code == "rate_limited"
+    assert caught.value.http_status == 429
+    assert "secret" not in str(caught.value)
 
 
 @pytest.mark.asyncio
@@ -186,6 +246,39 @@ async def test_redirect_to_private_fails_closed_before_private_body() -> None:
     assert error.value.code == "url_target_blocked"
     assert consumed_private is False
     assert "127.0.0.1" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_redirect_receipt_preserves_ordered_dns_and_peer_attestation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["host"] == "start.example":
+            return httpx.Response(
+                302,
+                headers={"location": "https://final.example/page"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            content=b"final",
+            request=request,
+        )
+
+    fetch, _ = _fetcher(handler, getaddrinfo=_addrinfo("1.1.1.1", "8.8.8.8"))
+    resource = await fetch.fetch(
+        "https://start.example/root", accepted_media_types=("text/plain",)
+    )
+
+    receipt = resource.transport_receipt
+    assert receipt is not None
+    assert receipt.requested_url == "https://start.example/root"
+    assert receipt.final_url == "https://final.example/page"
+    assert [hop.requested_url for hop in receipt.hops] == [
+        "https://start.example/root",
+        "https://final.example/page",
+    ]
+    assert receipt.hops[0].dns_answers == ("1.1.1.1", "8.8.8.8")
+    assert all(hop.connected_peer == hop.selected_address for hop in receipt.hops)
 
 
 @pytest.mark.asyncio

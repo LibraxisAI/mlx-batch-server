@@ -1921,6 +1921,8 @@ def test_hosted_started_item_fails_closed_for_unknown_or_invalid_actions() -> No
 
 
 def test_open_page_and_find_in_page_render_as_official_web_search_actions() -> None:
+    from openai.types.responses import ResponseFunctionWebSearch
+
     opened = render_started_item(
         OutputItemStarted(
             "hosted_call",
@@ -1947,6 +1949,8 @@ def test_open_page_and_find_in_page_render_as_official_web_search_actions() -> N
         "url": "https://example.com",
         "pattern": "needle",
     }
+    assert ResponseFunctionWebSearch.model_validate(opened).action.type == "open_page"
+    assert ResponseFunctionWebSearch.model_validate(found).action.type == "find_in_page"
 
 
 def test_non_hosted_started_item_goldens_are_unchanged() -> None:

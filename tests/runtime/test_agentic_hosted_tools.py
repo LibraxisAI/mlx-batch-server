@@ -25,6 +25,7 @@ from mlx_batch_server.runtime import citations as citations_module
 from mlx_batch_server.runtime.agentic import (
     CITATIONS_METADATA_KEY,
     FAILURE_CONTINUATION_PREPARATION,
+    HOSTED_FAILURE_DISCLOSURE,
     NO_WEB_PREPARATION,
     HostedAgenticRuntimeStarter,
 )
@@ -638,7 +639,8 @@ async def test_post_failure_hosted_call_is_not_executed() -> None:
     assert receipts[0].receipt["error"]["code"] == "provider_auth_failed"
     assert inner.requests[1].tools == ()
     assert inner.requests[1].sampling["tool_choice"] == "none"
-    assert _of(events, TurnFailed)
+    assert _of(events, TurnCompleted)
+    assert not _of(events, TurnFailed)
     assert not _of(events, TurnCompleted)
 
 
@@ -693,6 +695,98 @@ async def test_later_round_tool_failure_still_gets_one_final_model_reply() -> No
     assert inner.requests[2].sampling["tool_choice"] == "none"
     assert _of(events, TextCompleted)[-1].text
     assert len(_of(events, TurnCompleted)) == 1
+    assert not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_later_round_call_id_reuse_is_rejected_before_second_effect() -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_same", "web_search", '{"query":"first"}'),)),
+            _Round(tool_calls=(("call_same", "web_search", '{"query":"second"}'),)),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    assert len(_of(events, HostedCallStarted)) == 1
+    assert len(_of(events, HostedCallCompleted)) == 1
+    assert _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_later_round_call_id_reuse_is_request_global() -> None:
+    url = "https://example.test/page"
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("fetch_same", "web_fetch", f'{{"url":"{url}"}}'),)),
+            _Round(tool_calls=(("fetch_same", "web_fetch", f'{{"url":"{url}"}}'),)),
+        )
+    )
+
+    async def fetch_behavior(arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        return _document_success(str(arguments["url"]), "body")
+
+    tool = _CountingTool("web_fetch", fetch_behavior)
+    starter, _ = _starter(inner, (tool,))
+    request = _request(
+        ({"type": "web_fetch", "name": "web_fetch", "max_content_tokens": 32},)
+    )
+    events, _ = await _drive(starter, request)
+
+    assert tool.invocations == 1
+    assert len(_of(events, HostedCallStarted)) == 1
+    assert _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+async def test_pre_call_success_claim_is_quarantined_on_hosted_failure() -> None:
+    lie = "The tool succeeded."
+    inner = _FakeInner(
+        (
+            _Round(
+                text=lie,
+                reasoning="I already know it worked.",
+                tool_calls=(("call_fail", "web_search", '{"query":"q"}'),),
+            ),
+            _Round(text="The lookup failed, so I cannot verify current information."),
+        )
+    )
+    tool = _CountingTool(
+        "web_search", _raising_behavior("provider_unavailable", "unavailable")
+    )
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    emitted = "".join(event.delta for event in _of(events, TextDelta))
+    assert lie not in emitted
+    assert "I already know" not in emitted
+    assert HOSTED_FAILURE_DISCLOSURE in emitted
+    assert inner.requests[-1].tools == ()
+    assert inner.requests[-1].sampling["tool_choice"] == "none"
+    assert len(_of(events, TurnCompleted)) == 1
+
+
+@pytest.mark.asyncio
+async def test_failure_continuation_cannot_publish_a_success_claim() -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_fail", "web_search", '{"query":"q"}'),)),
+            _Round(text="The tool succeeded and I verified everything."),
+        )
+    )
+    tool = _CountingTool(
+        "web_search", _raising_behavior("provider_unavailable", "unavailable")
+    )
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    emitted = "".join(event.delta for event in _of(events, TextDelta))
+    assert "verified everything" not in emitted
+    assert HOSTED_FAILURE_DISCLOSURE in emitted
+    assert _of(events, TurnCompleted)
     assert not _of(events, TurnFailed)
 
 

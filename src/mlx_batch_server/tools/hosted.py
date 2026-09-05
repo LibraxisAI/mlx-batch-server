@@ -56,6 +56,12 @@ _FETCH_CODES = frozenset(
         "invalid_fetch_budget",
         "invalid_fetch_media_types",
         "token_budget",
+        "rate_limited",
+        "connected_peer_mismatch",
+        "connected_peer_unverified",
+        "unsupported_content_encoding",
+        "invalid_content_encoding",
+        "decoded_bytes_exceeded",
     }
 )
 
@@ -100,11 +106,14 @@ RECEIPT_EXTRA_FIELDS: Mapping[str, type] = MappingProxyType(
         "result_digest": str,
         "result_count": int,
         "source_bytes": int,
+        "raw_source_bytes": int,
+        "decoded_source_bytes": int,
         "content_encoding": str,
         "content_tokenizer": str,
         "content_tokens": int,
         "content_token_limit": int,
         "content_truncation": str,
+        "transport_receipt": Mapping,
     }
 )
 
@@ -695,10 +704,24 @@ class HostedToolSuccess:
         result: Mapping[str, Any] | None = None,
     ) -> None:
         self.payload = payload
-        self.receipt_fields: Mapping[str, Any] = MappingProxyType(
-            dict(receipt_fields or {})
-        )
+        self.receipt_fields = _freeze_json_mapping(receipt_fields or {})
         self.result = result
+
+
+def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    def freeze(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            if any(not isinstance(key, str) for key in item):
+                raise TypeError("receipt field keys must be strings")
+            return MappingProxyType({key: freeze(val) for key, val in item.items()})
+        if isinstance(item, list | tuple):
+            return tuple(freeze(val) for val in item)
+        return item
+
+    frozen = freeze(value)
+    if not isinstance(frozen, Mapping):  # pragma: no cover - type guard
+        raise TypeError("receipt fields must be a mapping")
+    return frozen
 
 
 class HostedToolCatalog:

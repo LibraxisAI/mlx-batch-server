@@ -1162,7 +1162,7 @@ def _web_fetch_error_code(receipt: Mapping[str, Any]) -> WebFetchErrorCode:
     mapped: WebFetchErrorCode
     if code == "tool_round_limit":
         mapped = "max_uses_exceeded"
-    elif code == "fetch_url_fetch_status" and receipt.get("http_status") == 429:
+    elif code == "fetch_rate_limited":
         mapped = "too_many_requests"
     elif code in {
         "fetch_unsupported_media_type",

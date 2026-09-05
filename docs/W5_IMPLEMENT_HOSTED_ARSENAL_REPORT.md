@@ -1,5 +1,22 @@
 # W5-IMPLEMENT Hosted Arsenal Source Report
 
+## W5b independent-review correction
+
+This follow-up is source-only under Compile Embargo. It adds request-global
+hosted `call_id` authority, action-round prose quarantine, a deterministic
+runtime-authored failure disclosure, PDF extracted-text token limiting, and a
+transport-issued SafePublicFetch receipt covering every redirect/DNS/pin/peer
+hop plus bounded content decoding. A typed `fetch_rate_limited` outcome makes
+Anthropic `too_many_requests` reachable without admitting response bodies or
+topology into error text.
+
+The production composition oracles read committed Git objects for the excluded
+P6 files. They therefore cannot become green because of uncommitted wiring in
+`main.py` or `responses/runtime_bootstrap.py`. P6 remains sequenced after W2c.
+
+Authored tests are RED contracts and were not executed. BUILD, LINT, TEST and
+RUNTIME remain NOT_ASSESSED.
+
 ## Identity
 
 - Runtime class: Fleet Worktree
