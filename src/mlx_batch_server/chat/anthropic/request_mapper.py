@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from mlx_batch_server.runtime.agentic import CITATIONS_METADATA_KEY
+
 from .anthropic_schema import (
     AnthropicTool,
     InputMessage,
@@ -33,12 +35,14 @@ from .anthropic_schema import (
     ToolChoiceNone,
     ToolChoiceTool,
 )
-from .content_mapper import map_anthropic_content
+from .content_mapper import map_anthropic_content, normalize_web_fetch_domains
 from .errors import AnthropicAPIError, UnsupportedCapabilityError
 from .turn_source import AnthropicTurn
 
 _IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 _FILE_MEDIA_TYPES = frozenset({"application/pdf", "text/plain"})
+_WEB_FETCH_TYPE = "web_fetch_20250910"
+_WEB_FETCH_NAME = "web_fetch"
 
 
 def build_turn(request: MessagesRequest) -> AnthropicTurn:
@@ -78,6 +82,7 @@ def _reject_unsupported(request: MessagesRequest) -> None:
                 "stop_sequences entries must not be empty",
                 error_type="invalid_request_error",
             )
+    _validate_tools(request)
     for index, message in enumerate(request.messages):
         if isinstance(message.content, str):
             continue
@@ -85,6 +90,66 @@ def _reject_unsupported(request: MessagesRequest) -> None:
             path = f"messages.{index}.content.{block_index}"
             if isinstance(block, RequestToolResultBlock):
                 _reject_unsupported_tool_result(block, path)
+
+
+def _validate_tools(request: MessagesRequest) -> None:
+    hosted: list[int] = []
+    custom: list[int] = []
+    for index, tool in enumerate(request.tools or ()):
+        path = f"tools.{index}"
+        declared = (tool.type or "custom").strip()
+        if declared == "custom":
+            custom.append(index)
+            if tool.input_schema is None:
+                raise _field_error(f"{path}.input_schema is required")
+            continue
+        if declared != _WEB_FETCH_TYPE:
+            raise UnsupportedCapabilityError(
+                "Anthropic hosted tool version",
+                f"{path}.type={declared!r} is unsupported; only "
+                f"{_WEB_FETCH_TYPE!r} is admitted.",
+            )
+        hosted.append(index)
+        if tool.name != _WEB_FETCH_NAME:
+            raise _field_error(f"{path}.name must equal {_WEB_FETCH_NAME!r}")
+        if tool.description is not None:
+            raise UnsupportedCapabilityError(
+                "Anthropic web_fetch description",
+                f"{path}.description is not part of the admitted server-tool form.",
+            )
+        if tool.input_schema is not None:
+            raise UnsupportedCapabilityError(
+                "Anthropic web_fetch input_schema",
+                f"{path}.input_schema is client-tool syntax, not a server-tool field.",
+            )
+        for field_name in ("allowed_callers", "defer_loading", "strict"):
+            if getattr(tool, field_name) is not None:
+                raise UnsupportedCapabilityError(
+                    f"Anthropic web_fetch {field_name}",
+                    f"{path}.{field_name} is outside the admitted basic subset.",
+                )
+        if tool.allowed_domains is not None and tool.blocked_domains is not None:
+            raise _field_error(
+                f"{path}.allowed_domains and {path}.blocked_domains are mutually exclusive"
+            )
+        normalize_web_fetch_domains(
+            tool.allowed_domains,
+            path=f"{path}.allowed_domains",
+        )
+        normalize_web_fetch_domains(
+            tool.blocked_domains,
+            path=f"{path}.blocked_domains",
+        )
+    if hosted and custom:
+        raise UnsupportedCapabilityError(
+            "Anthropic mixed hosted and client tools",
+            f"tools.{custom[0]} cannot execute beside hosted tools.{hosted[0]}.",
+        )
+    if hosted and request.tool_choice is not None:
+        raise UnsupportedCapabilityError(
+            "Anthropic tool_choice with web_fetch",
+            "tool_choice is outside the admitted basic web_fetch subset.",
+        )
 
 
 def _reject_unsupported_tool_result(
@@ -534,6 +599,30 @@ def _document_media(
 
 
 def _map_tool(tool: AnthropicTool) -> Mapping[str, Any]:
+    if tool.type == _WEB_FETCH_TYPE:
+        mapped: dict[str, Any] = {
+            "type": _WEB_FETCH_NAME,
+            "name": _WEB_FETCH_NAME,
+        }
+        for field_name in ("max_uses", "max_content_tokens"):
+            value = getattr(tool, field_name)
+            if value is not None:
+                mapped[field_name] = value
+        allowed = normalize_web_fetch_domains(
+            tool.allowed_domains,
+            path="tools.allowed_domains",
+        )
+        blocked = normalize_web_fetch_domains(
+            tool.blocked_domains,
+            path="tools.blocked_domains",
+        )
+        if allowed is not None:
+            mapped["allowed_domains"] = allowed
+        if blocked is not None:
+            mapped["blocked_domains"] = blocked
+        if tool.citations is not None:
+            mapped["citations"] = {"enabled": tool.citations.enabled}
+        return mapped
     if tool.input_schema is None:
         raise _field_error(f"tools entry {tool.name!r} requires input_schema")
     schema = tool.input_schema.model_dump(mode="json", exclude_none=True)
@@ -604,6 +693,13 @@ def _map_metadata(request: MessagesRequest) -> Mapping[str, Any]:
         metadata["user_id"] = request.metadata.user_id
     if request.service_tier is not None:
         metadata["service_tier"] = request.service_tier.value
+    if any(
+        tool.type == _WEB_FETCH_TYPE
+        and tool.citations is not None
+        and tool.citations.enabled
+        for tool in request.tools or ()
+    ):
+        metadata[CITATIONS_METADATA_KEY] = True
     return metadata
 
 

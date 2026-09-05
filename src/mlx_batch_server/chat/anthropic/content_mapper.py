@@ -8,6 +8,7 @@ consumed by :class:`GenerationRequest` and the backend-owned media resolver.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +30,7 @@ _SEARCH_START = (
 _SEARCH_END = "[END CALLER-SUPPLIED UNTRUSTED SEARCH RESULT]"
 _DOCUMENT_START = "[BEGIN CALLER-SUPPLIED DOCUMENT CONTEXT]"
 _DOCUMENT_END = "[END CALLER-SUPPLIED DOCUMENT CONTEXT]"
+_DOMAIN_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,38 @@ class CanonicalAnthropicContent:
 
     content: tuple[Mapping[str, Any], ...]
     media: tuple[Mapping[str, Any], ...]
+
+
+def normalize_web_fetch_domains(
+    domains: Sequence[str] | None,
+    *,
+    path: str,
+) -> tuple[str, ...] | None:
+    """Normalize one Anthropic domain filter without widening its meaning."""
+
+    if domains is None:
+        return None
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for index, raw_domain in enumerate(domains):
+        field = f"{path}.{index}"
+        domain = raw_domain.strip().rstrip(".")
+        if not domain or "://" in domain or any(char in domain for char in "/?#:@*"):
+            raise _field_error(f"{field} must be a bare domain name")
+        try:
+            ascii_domain = domain.encode("idna").decode("ascii").lower()
+        except UnicodeError as error:
+            raise _field_error(f"{field} is not a valid IDNA domain") from error
+        if len(ascii_domain) > 253 or any(
+            _DOMAIN_LABEL.fullmatch(label) is None for label in ascii_domain.split(".")
+        ):
+            raise _field_error(f"{field} is not a valid domain name")
+        if ascii_domain not in seen:
+            seen.add(ascii_domain)
+            normalized.append(ascii_domain)
+    if not normalized:
+        raise _field_error(f"{path} must contain at least one domain")
+    return tuple(sorted(normalized))
 
 
 def map_anthropic_content(
@@ -289,4 +323,8 @@ def _field_error(message: str) -> AnthropicAPIError:
     return AnthropicAPIError(message, error_type="invalid_request_error")
 
 
-__all__ = ["CanonicalAnthropicContent", "map_anthropic_content"]
+__all__ = [
+    "CanonicalAnthropicContent",
+    "map_anthropic_content",
+    "normalize_web_fetch_domains",
+]

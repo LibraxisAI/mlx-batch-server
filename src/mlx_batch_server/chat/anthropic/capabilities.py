@@ -326,6 +326,47 @@ _BASE_FIELDS: Final[tuple[FieldClassification, ...]] = (
     ),
     _implemented("tool_choice", _MAPPER),
     _implemented("tools.custom", _MAPPER),
+    _implemented(
+        "tools.web_fetch_20250910",
+        "hosted runtime plus request_mapper.build_turn",
+        "the exact basic text-family web_fetch server tool",
+    ),
+    _normalized(
+        "tools.web_fetch.max_uses",
+        _MAPPER,
+        "bounded to the admitted eight-round hosted runtime ceiling",
+    ),
+    _normalized(
+        "tools.web_fetch.allowed_domains",
+        _MAPPER,
+        "IDNA-normalized, lower-cased, deduplicated and mutually exclusive",
+    ),
+    _normalized(
+        "tools.web_fetch.blocked_domains",
+        _MAPPER,
+        "IDNA-normalized, lower-cased, deduplicated and mutually exclusive",
+    ),
+    _implemented("tools.web_fetch.citations", "runtime citation binder"),
+    _normalized(
+        "tools.web_fetch.max_content_tokens",
+        _MAPPER,
+        "bounded before inference and carried on the neutral hosted descriptor",
+    ),
+    _unsupported(
+        "tools.web_fetch.allowed_callers",
+        "hosted caller routing",
+        _NO_SEMANTIC_OWNER,
+    ),
+    _unsupported(
+        "tools.web_fetch.defer_loading",
+        "deferred tool loading",
+        _NO_SEMANTIC_OWNER,
+    ),
+    _unsupported(
+        "tools.web_fetch.strict",
+        "strict server-tool validation",
+        _NO_SEMANTIC_OWNER,
+    ),
     _implemented("content.text", _MAPPER),
     _implemented("content.tool_use", _MAPPER),
     _implemented("content.tool_result", _W2_TOOL_RESULT),
@@ -436,6 +477,11 @@ _TOOLS_WITHOUT_ROLE_SUPPORT: Final[tuple[FieldClassification, ...]] = (
     ),
     _unsupported(
         "tools.custom",
+        "runtime role capability directory",
+        "The selected runtime role declares no tool capability.",
+    ),
+    _unsupported(
+        "tools.web_fetch_20250910",
         "runtime role capability directory",
         "The selected runtime role declares no tool capability.",
     ),
@@ -608,6 +654,21 @@ def _tool(tool: AnthropicTool, path: str) -> Iterator[tuple[str, str]]:
     declared = (tool.type or "custom").strip()
     if declared == "custom":
         yield "tools.custom", f"{path}.type"
+    elif declared == "web_fetch_20250910":
+        yield "tools.web_fetch_20250910", f"{path}.type"
+        for field_name in (
+            "max_uses",
+            "allowed_domains",
+            "blocked_domains",
+            "allowed_callers",
+            "defer_loading",
+            "max_content_tokens",
+            "strict",
+        ):
+            if getattr(tool, field_name) is not None:
+                yield f"tools.web_fetch.{field_name}", f"{path}.{field_name}"
+        if tool.citations is not None:
+            yield "tools.web_fetch.citations", f"{path}.citations.enabled"
     else:
         yield "tools.hosted", f"{path}.type"
     yield from _cache_control(tool, f"{path}")

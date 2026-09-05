@@ -57,6 +57,26 @@ class ResponseServiceTier(StrEnum):
 # ---------------------------------------------------------------------------
 
 
+class CitationsConfig(BaseModel):
+    model_config = _STRICT
+
+    enabled: bool = False
+
+
+class CitationCharLocation(BaseModel):
+    """A verbatim source range proven by the neutral hosted runtime."""
+
+    model_config = _STRICT
+
+    type: Literal["char_location"] = "char_location"
+    cited_text: str
+    document_index: int = Field(..., ge=0)
+    document_title: str | None = None
+    end_char_index: int = Field(..., ge=1)
+    file_id: str | None = None
+    start_char_index: int = Field(..., ge=0)
+
+
 class TextBlock(BaseModel):
     """Assistant text content."""
 
@@ -64,6 +84,69 @@ class TextBlock(BaseModel):
 
     type: Literal["text"] = "text"
     text: str
+    citations: list[CitationCharLocation] | None = None
+
+
+class PlainTextSource(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["text"] = "text"
+    media_type: Literal["text/plain"] = "text/plain"
+    data: str
+
+
+class DocumentBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["document"] = "document"
+    source: PlainTextSource
+    title: str | None = None
+    citations: CitationsConfig | None = None
+
+
+class WebFetchResultBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["web_fetch_result"] = "web_fetch_result"
+    url: str
+    retrieved_at: str | None = None
+    content: DocumentBlock
+
+
+WebFetchErrorCode = Literal[
+    "invalid_tool_input",
+    "url_too_long",
+    "url_not_allowed",
+    "url_not_accessible",
+    "unsupported_content_type",
+    "too_many_requests",
+    "max_uses_exceeded",
+    "unavailable",
+]
+
+
+class WebFetchToolResultErrorBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["web_fetch_tool_result_error"] = "web_fetch_tool_result_error"
+    error_code: WebFetchErrorCode
+
+
+class WebFetchToolResultBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["web_fetch_tool_result"] = "web_fetch_tool_result"
+    tool_use_id: str
+    content: Union[WebFetchResultBlock, WebFetchToolResultErrorBlock]
+
+
+class ServerToolUseBlock(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: Literal["web_fetch"] = "web_fetch"
+    input: dict[str, Any]
 
 
 class ThinkingBlock(BaseModel):
@@ -93,7 +176,13 @@ class ToolUseBlock(BaseModel):
 
 
 ContentBlock = Annotated[
-    Union[TextBlock, ThinkingBlock, ToolUseBlock],
+    Union[
+        TextBlock,
+        ThinkingBlock,
+        ToolUseBlock,
+        ServerToolUseBlock,
+        WebFetchToolResultBlock,
+    ],
     Field(discriminator="type"),
 ]
 
@@ -202,12 +291,6 @@ class RequestContainerUploadBlock(BaseModel):
     type: Literal["container_upload"] = "container_upload"
     file_id: str = Field(..., min_length=1)
     cache_control: CacheControl | None = None
-
-
-class CitationsConfig(BaseModel):
-    model_config = _STRICT
-
-    enabled: bool = False
 
 
 class DocumentSource(BaseModel):
@@ -366,6 +449,14 @@ class AnthropicTool(BaseModel):
     input_schema: ToolInputSchema | None = None
     type: str | None = None
     cache_control: CacheControl | None = None
+    allowed_callers: list[str] | None = None
+    allowed_domains: list[str] | None = Field(None, max_length=64)
+    blocked_domains: list[str] | None = Field(None, max_length=64)
+    citations: CitationsConfig | None = None
+    defer_loading: bool | None = None
+    max_content_tokens: int | None = Field(None, ge=1, le=262_144)
+    max_uses: int | None = Field(None, ge=1, le=8)
+    strict: bool | None = None
 
 
 class ToolChoiceAuto(BaseModel):
@@ -578,8 +669,21 @@ class InputJsonDeltaBody(BaseModel):
     partial_json: str
 
 
+class CitationsDeltaBody(BaseModel):
+    model_config = _STRICT
+
+    type: Literal["citations_delta"] = "citations_delta"
+    citation: CitationCharLocation
+
+
 ContentBlockDeltaBody = Annotated[
-    Union[TextDeltaBody, ThinkingDeltaBody, SignatureDeltaBody, InputJsonDeltaBody],
+    Union[
+        TextDeltaBody,
+        ThinkingDeltaBody,
+        SignatureDeltaBody,
+        InputJsonDeltaBody,
+        CitationsDeltaBody,
+    ],
     Field(discriminator="type"),
 ]
 
