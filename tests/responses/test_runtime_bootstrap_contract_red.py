@@ -20,6 +20,7 @@ from mlx_batch_server.responses.controller import ResponsesController
 from mlx_batch_server.responses.registry import ResponseRegistry
 from mlx_batch_server.responses.runtime_bootstrap import (
     RoleRuntimeCompositionReceipt,
+    compose_production_hosted_catalog,
     compose_responses_runtime,
     compose_role_responses_runtime,
 )
@@ -37,6 +38,11 @@ from mlx_batch_server.runtime.readiness import ReadinessService
 from mlx_batch_server.runtime.role_manifest import packaged_role_manifest_path
 from mlx_batch_server.runtime.roles import RoleDirectory
 from mlx_batch_server.runtime.service import RuntimeStartService
+from mlx_batch_server.tools.brave_search import BraveSearchProvider
+from mlx_batch_server.tools.hosted import HostedToolExecutor
+from mlx_batch_server.tools.hosted_web import HostedWebFetchTool, HostedWebSearchTool
+from mlx_batch_server.tools.parser import ParsedToolCall
+from mlx_batch_server.utils.safe_public_fetch import SafePublicFetch
 from mlx_batch_server.vision.input import MediaSourceField
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -514,5 +520,98 @@ def test_default_composition_has_an_empty_hosted_catalog() -> None:
     try:
         assert not receipt.hosted_catalog
         assert isinstance(receipt.runtime_start_service, HostedAgenticRuntimeStarter)
+    finally:
+        clear_turn_source()
+
+
+@pytest.mark.parametrize("brave_api_key", [None, "", "   \t"])
+def test_production_catalog_retains_search_when_provider_is_absent(
+    brave_api_key: str | None,
+) -> None:
+    catalog = compose_production_hosted_catalog(brave_api_key=brave_api_key)
+
+    assert catalog.names == frozenset({"web_search", "web_fetch"})
+    search = catalog.get("web_search")
+    fetch = catalog.get("web_fetch")
+    assert isinstance(search, HostedWebSearchTool)
+    assert search._provider is None
+    assert isinstance(fetch, HostedWebFetchTool)
+    assert isinstance(fetch._fetch, SafePublicFetch)
+
+
+def test_production_catalog_owns_exact_fresh_public_fetch_policy() -> None:
+    first = compose_production_hosted_catalog(brave_api_key=None)
+    second = compose_production_hosted_catalog(brave_api_key=None)
+    first_fetch = first.get("web_fetch")
+    second_fetch = second.get("web_fetch")
+
+    assert isinstance(first_fetch, HostedWebFetchTool)
+    assert isinstance(second_fetch, HostedWebFetchTool)
+    assert first_fetch._fetch is not second_fetch._fetch
+    assert first_fetch._accepted_media_types == (
+        "text/html",
+        "text/plain",
+        "text/markdown",
+        "application/json",
+    )
+    assert first_fetch._max_bytes == 1_048_576
+    assert first_fetch._max_text_chars == 262_144
+    safe_fetch = first_fetch._fetch
+    assert isinstance(safe_fetch, SafePublicFetch)
+    assert safe_fetch._allowed_origins == frozenset()
+    assert safe_fetch._limits.max_bytes == 1_048_576
+    assert safe_fetch._limits.timeout == 20.0
+    assert safe_fetch._limits.connect_timeout == 5.0
+    assert safe_fetch._limits.write_timeout == 5.0
+    assert safe_fetch._limits.pool_timeout == 5.0
+    assert safe_fetch._limits.max_redirects == 3
+    assert safe_fetch._limits.chunk_bytes == 65_536
+
+
+def test_production_catalog_injects_one_closed_brave_provider() -> None:
+    catalog = compose_production_hosted_catalog(brave_api_key="  test-key  ")
+    search = catalog.get("web_search")
+
+    assert isinstance(search, HostedWebSearchTool)
+    assert isinstance(search._provider, BraveSearchProvider)
+    assert search._provider._api_key == "test-key"
+
+
+@pytest.mark.asyncio
+async def test_production_catalog_missing_provider_is_a_typed_failure() -> None:
+    catalog = compose_production_hosted_catalog(brave_api_key=None)
+    executor = HostedToolExecutor(catalog)
+
+    result = await executor.execute(
+        ParsedToolCall(
+            index=0,
+            call_id="search_1",
+            name="web_search",
+            arguments='{"query":"loctree"}',
+        )
+    )
+
+    assert result.ok is False
+    assert result.metadata is not None
+    assert result.metadata["error_code"] == "provider_unavailable"
+    assert result.metadata["receipt"]["status"] == "failed"
+
+
+def test_role_composition_preserves_exact_production_catalog_identity() -> None:
+    catalog = compose_production_hosted_catalog(brave_api_key=None)
+    receipt = compose_role_responses_runtime(
+        process_role=RoleName.MAIN,
+        role_manifest_path=ROLE_MANIFEST,
+        request_preparer=_DormantRequestPreparer(),
+        execution_factory=_DormantExecutionFactory(),
+        hosted_tools=catalog,
+    )
+    try:
+        starter = receipt.responses.runtime_start_service
+        assert receipt.responses.hosted_catalog is catalog
+        assert starter.hosted_catalog is catalog
+        assert starter._executor.catalog is catalog
+        assert receipt.responses.responses_controller._starter is starter
+        assert receipt.responses.anthropic_turn_source._starter is starter
     finally:
         clear_turn_source()

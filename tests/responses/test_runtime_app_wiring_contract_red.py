@@ -10,7 +10,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from mlx_batch_server import main as main_module
 from mlx_batch_server import provenance
+from mlx_batch_server.core import config as core_config
 from mlx_batch_server.main import (
     _compose_process_runtime,
     build_parser,
@@ -175,13 +177,34 @@ def test_process_role_composes_the_exact_manifest_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
+    catalog_calls: list[dict[str, Any]] = []
+    settings_calls: list[None] = []
     sentinel = object()
     build_receipt = object()
+    hosted_catalog = object()
+
+    class _Secret:
+        def get_secret_value(self) -> str:
+            return "brave-test-key"
+
+    def get_settings() -> object:
+        settings_calls.append(None)
+        return SimpleNamespace(brave_api_key=_Secret())
+
+    def compose_catalog(**kwargs: Any) -> object:
+        catalog_calls.append(kwargs)
+        return hosted_catalog
 
     def compose(**kwargs: Any) -> object:
         calls.append(kwargs)
         return sentinel
 
+    monkeypatch.setattr(core_config, "get_settings", get_settings)
+    monkeypatch.setattr(
+        runtime_bootstrap,
+        "compose_production_hosted_catalog",
+        compose_catalog,
+    )
     monkeypatch.setattr(runtime_bootstrap, "compose_role_responses_runtime", compose)
     monkeypatch.setattr(
         provenance,
@@ -196,12 +219,55 @@ def test_process_role_composes_the_exact_manifest_lane(
     )
 
     assert result is sentinel
+    assert settings_calls == [None]
+    assert catalog_calls == [{"brave_api_key": "brave-test-key"}]
     assert calls == [
         {
             "process_role": RoleName.MAIN,
             "role_manifest_path": packaged_role_manifest_path(),
             "allowed_url_origins": ("https://media.example",),
             "build_receipt": build_receipt,
+            "hosted_tools": hosted_catalog,
+        }
+    ]
+
+
+def test_lazy_application_path_delegates_role_composition_to_the_one_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = object()
+    application = object()
+
+    def compose(**kwargs: Any) -> object:
+        calls.append(kwargs)
+        return runtime
+
+    monkeypatch.setenv("MLX_BATCH_RUNTIME_ROLE", "main")
+    monkeypatch.setenv("MLX_BATCH_PORT", "8100")
+    monkeypatch.setenv(
+        "MLX_BATCH_MEDIA_URL_ORIGINS",
+        "https://media.example, https://images.example",
+    )
+    monkeypatch.setattr(main_module, "_compose_process_runtime", compose)
+    monkeypatch.setattr(
+        main_module,
+        "create_app",
+        lambda **kwargs: (
+            application if kwargs == {"responses_runtime": runtime} else None
+        ),
+    )
+    monkeypatch.setattr(main_module, "_app_instance", None)
+
+    assert main_module._get_app() is application
+    assert calls == [
+        {
+            "runtime_role": "main",
+            "port": 8100,
+            "media_url_origins": (
+                "https://media.example",
+                "https://images.example",
+            ),
         }
     ]
 

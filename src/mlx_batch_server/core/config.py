@@ -12,7 +12,7 @@ import json
 from functools import lru_cache
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
     deepinfra_api_key: str | None = Field(default=None, description="DeepInfra API key")
+    brave_api_key: SecretStr | None = Field(
+        default=None,
+        description="Brave Search API key for the hosted web search provider",
+    )
 
     # === Cloud Provider URLs ===
     openai_base_url: str = Field(
@@ -463,6 +467,7 @@ class Settings(BaseSettings):
             "openai_api_key": "***" if self.openai_api_key else None,
             "anthropic_api_key": "***" if self.anthropic_api_key else None,
             "deepinfra_api_key": "***" if self.deepinfra_api_key else None,
+            "brave_api_key": "***" if self.brave_api_key else None,
         }
 
 
