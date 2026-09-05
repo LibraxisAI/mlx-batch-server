@@ -5,6 +5,13 @@ the bound inference owner (``turn_source``) for typed runtime events, and lets
 the projector turn those events into Anthropic protocol shapes. Both
 transports walk the same projector, so a streamed message and its non-stream
 equivalent describe the same generation.
+
+Capability policy is decided once, by ``capabilities``, and travels here as a
+``CapabilityAdmission``. The engine consumes that receipt rather than
+re-deciding, so the streaming and non-streaming paths cannot drift apart. A
+caller that drives the engine directly — the documented substitution seam —
+gets the ``detached`` profile classified here, so no request can reach the
+turn source unclassified.
 """
 
 from __future__ import annotations
@@ -15,6 +22,11 @@ from typing import TYPE_CHECKING
 
 from mlx_batch_server.utils.logger import logger
 
+from .capabilities import (
+    CapabilityAdmission,
+    detached_profile,
+    enforce_capabilities,
+)
 from .errors import AnthropicAPIError
 from .projector import AnthropicMessageProjector
 from .request_mapper import build_turn
@@ -46,8 +58,12 @@ class AnthropicMessagesEngine:
         return self._turn_source or require_turn_source()
 
     def _prepare(
-        self, request: MessagesRequest
+        self,
+        request: MessagesRequest,
+        admission: CapabilityAdmission | None,
     ) -> tuple[AnthropicMessageProjector, AsyncIterator[TurnEvent]]:
+        if admission is None:
+            enforce_capabilities(request, detached_profile(request.model))
         turn = build_turn(request)
         projector = AnthropicMessageProjector(
             message_id=new_message_id(),
@@ -56,10 +72,15 @@ class AnthropicMessagesEngine:
         )
         return projector, self._source().stream(turn).__aiter__()
 
-    async def generate(self, request: MessagesRequest) -> MessagesResponse:
+    async def generate(
+        self,
+        request: MessagesRequest,
+        *,
+        admission: CapabilityAdmission | None = None,
+    ) -> MessagesResponse:
         """Run one turn and return the terminal Anthropic message."""
 
-        projector, events = self._prepare(request)
+        projector, events = self._prepare(request, admission)
         async for event in events:
             projector.observe(event)
         failure = projector.failure
@@ -73,11 +94,14 @@ class AnthropicMessagesEngine:
         return projector.terminal_message()
 
     async def generate_stream(
-        self, request: MessagesRequest
+        self,
+        request: MessagesRequest,
+        *,
+        admission: CapabilityAdmission | None = None,
     ) -> AsyncIterator[AnthropicStreamEvent]:
         """Run one turn and yield its Anthropic streaming lifecycle."""
 
-        projector, events = self._prepare(request)
+        projector, events = self._prepare(request, admission)
         # message_start opens every Anthropic stream, before any runtime event
         # is observed, so the lifecycle is well-formed even if the inference
         # owner starts by reporting a failure.

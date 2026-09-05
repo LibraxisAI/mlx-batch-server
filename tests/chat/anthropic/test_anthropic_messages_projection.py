@@ -16,6 +16,10 @@ from mlx_batch_server.chat.anthropic.anthropic_schema import (
     MessagesRequest,
     StopReason,
 )
+from mlx_batch_server.chat.anthropic.capabilities import (
+    detached_profile,
+    enforce_capabilities,
+)
 from mlx_batch_server.chat.anthropic.errors import (
     REQUEST_ID_FIELD,
     AnthropicAPIError,
@@ -371,9 +375,29 @@ def test_unknown_request_field_fails_closed():
                 "model": ALIAS,
                 "max_tokens": 16,
                 "messages": [{"role": "user", "content": "hi"}],
-                "container": "srv_unsupported",
+                "not_an_anthropic_field": "srv_unsupported",
             }
         )
+
+
+def test_a_represented_field_still_needs_a_capability_owner():
+    """Representation is not admission.
+
+    ``container`` is now named by the schema so the preflight can refuse it
+    precisely. Parsing it must not be mistaken for honouring it.
+    """
+
+    request = MessagesRequest.model_validate(
+        {
+            "model": ALIAS,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "container": "srv_unsupported",
+        }
+    )
+
+    with pytest.raises(UnsupportedCapabilityError, match="container"):
+        enforce_capabilities(request, detached_profile(ALIAS))
 
 
 def test_image_content_is_refused_instead_of_dropped():

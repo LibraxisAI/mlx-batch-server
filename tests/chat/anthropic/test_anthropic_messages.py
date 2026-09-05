@@ -324,19 +324,17 @@ class TestAnthropicMessages:
             raise
 
     def test_messages_thinking_stream(self, anthropic_client):
-        """Test streaming message completion with thinking mode enabled"""
-        try:
-            # Validate streaming response with thinking
-            event_count = 0
-            thinking_content = ""
-            text_content = ""
-            message_start_received = False
-            message_delta_received = False
-            message_stop_received = False
-            thinking_deltas_received = 0
-            text_deltas_received = 0
-            _signature_delta_received = False
-            with anthropic_client.messages.stream(
+        """Streaming: enabled thinking is refused before the stream opens.
+
+        ``budget_tokens`` has no semantic owner on this runtime. Opening a
+        200 SSE stream and quietly ignoring the budget would tell the client
+        a reasoning tier was honoured, so W3-AA refuses the request instead
+        and W3-AB owns admitting a truthful tier.
+        """
+
+        with (
+            pytest.raises(anthropic.BadRequestError) as failure,
+            anthropic_client.messages.stream(
                 model=self.thinking_model,
                 max_tokens=self.max_tokens,
                 thinking={"type": "enabled", "budget_tokens": 1024},
@@ -346,60 +344,16 @@ class TestAnthropicMessages:
                         "content": "Solve this step by step: What is 15 + 27?",
                     }
                 ],
-            ) as stream:
-                for event in stream:
-                    event_count += 1
+            ) as stream,
+        ):
+            for _event in stream:
+                pass
 
-                    if event.type == "message_start":
-                        message_start_received = True
-
-                    elif event.type == "content_block_delta":
-                        delta = event.delta
-                        if delta.type == "thinking_delta" and hasattr(
-                            delta, "thinking"
-                        ):
-                            thinking_content += delta.thinking
-                            thinking_deltas_received += 1
-                        elif delta.type == "text_delta" and delta.text:
-                            text_content += delta.text
-                            text_deltas_received += 1
-                        elif delta.type == "signature_delta":
-                            _signature_delta_received = True
-
-                    elif event.type == "message_delta":
-                        message_delta_received = True
-
-                    elif event.type == "message_stop":
-                        message_stop_received = True
-
-            # Validate overall streaming response
-            assert event_count > 0, "No stream events received"
-            assert message_start_received, "No message_start event received"
-            assert message_delta_received, "No message_delta event received"
-            assert message_stop_received, "No message_stop event received"
-
-            # Check that we received either thinking or text content (or both)
-            assert (
-                thinking_deltas_received > 0 or text_deltas_received > 0
-            ), "No content deltas received"
-
-            if thinking_deltas_received > 0:
-                assert thinking_content.strip(), "Thinking content is empty"
-                logger.info(f"Thinking content: {thinking_content}")
-                logger.info(
-                    f"Received {thinking_deltas_received} thinking delta events"
-                )
-                # If we had thinking content, we should have received signature delta
-                # Note: signature_delta is only sent if there was thinking content
-
-            if text_deltas_received > 0:
-                assert text_content.strip(), "Text content is empty"
-                logger.info(f"Text content: {text_content}")
-                logger.info(f"Received {text_deltas_received} text delta events")
-
-        except Exception as e:
-            logger.error(f"Test error: {e!s}")
-            raise
+        body = failure.value.response.json()
+        assert failure.value.status_code == 400
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "thinking.type" in body["error"]["message"]
+        assert "W3-AB" in body["error"]["message"]
 
     def test_messages_stream_event_order(self, anthropic_client):
         """验证流式事件的严格顺序：message_start → content_block_start → deltas → content_block_stop → message_delta → message_stop"""
@@ -492,134 +446,45 @@ class TestAnthropicMessages:
             raise
 
     def test_messages_stream_thinking_then_text(self, anthropic_client):
-        """测试先有thinking再有text的流式事件序列"""
-        try:
-            # 跟踪事件和内容块
-            events_order = []
-            content_blocks = {}  # index -> block_info
-            thinking_content = ""
-            text_content = ""
+        """The same refusal reaches the streaming transport as an HTTP error.
 
-            with anthropic_client.messages.stream(
+        The SDK raises before any event is yielded, which is the proof that
+        no SSE byte was written for a request the runtime cannot honour.
+        """
+
+        with (
+            pytest.raises(anthropic.BadRequestError),
+            anthropic_client.messages.stream(
                 model=self.thinking_model,
                 max_tokens=self.max_tokens,
                 thinking={"type": "enabled", "budget_tokens": 1024},
-                messages=[
-                    {
-                        "role": "user",
-                        "content": "Think step by step and then answer: What is 2+3?",
-                    }
-                ],
-            ) as stream:
-                for event in stream:
-                    event_type = event.type
+                messages=[{"role": "user", "content": "Explain your reasoning."}],
+            ) as stream,
+        ):
+            for _event in stream:
+                pytest.fail("a refused request must not emit stream events")
 
-                    if event_type:
-                        events_order.append(event_type)
+        # Disabled thinking is honoured, so the surface is narrowed, not shut.
+        with anthropic_client.messages.stream(
+            model=self.thinking_model,
+            max_tokens=self.max_tokens,
+            thinking={"type": "disabled"},
+            messages=[{"role": "user", "content": "Explain your reasoning."}],
+        ) as stream:
+            types = [event.type for event in stream]
 
-                        if event_type == "content_block_start":
-                            current_block_index = event.index
-                            content_block = event.content_block
-                            block_type = content_block.type if content_block else None
-                            content_blocks[current_block_index] = {
-                                "type": block_type,
-                                "deltas": [],
-                            }
-                            logger.info(
-                                f"Started content block {current_block_index} of type: {block_type}"
-                            )
-
-                        elif event_type == "content_block_delta":
-                            delta = event.delta
-                            delta_type = delta.type if delta else None
-                            index = event.index
-
-                            if index is not None and index in content_blocks:
-                                content_blocks[index]["deltas"].append(delta_type)
-
-                            if delta_type == "thinking_delta" and hasattr(
-                                delta, "thinking"
-                            ):
-                                thinking_content += delta.thinking
-                            elif delta_type == "text_delta" and delta.text:
-                                text_content += delta.text
-
-                        elif event_type == "content_block_stop":
-                            index = event.index
-                            if index is not None and index in content_blocks:
-                                logger.info(
-                                    f"Stopped content block {index}, deltas: {content_blocks[index]['deltas']}"
-                                )
-
-            logger.info(f"Events order: {events_order}")
-            logger.info(f"Content blocks: {content_blocks}")
-            logger.info(f"Thinking content: '{thinking_content}'")
-            logger.info(f"Text content: '{text_content}'")
-
-            # 验证基本事件存在
-            assert "message_start" in events_order, "Missing message_start event"
-            assert "message_delta" in events_order, "Missing message_delta event"
-            assert "message_stop" in events_order, "Missing message_stop event"
-
-            # 验证内容块结构
-            assert len(content_blocks) > 0, "No content blocks found"
-
-            # 如果有thinking内容，验证thinking block的存在和顺序
-            if thinking_content.strip():
-                # 找到thinking block
-                thinking_block_found = False
-                text_block_found = False
-                thinking_block_index = None
-                text_block_index = None
-
-                for index, block_info in content_blocks.items():
-                    if block_info["type"] == "thinking":
-                        thinking_block_found = True
-                        thinking_block_index = index
-                        assert (
-                            "thinking_delta" in block_info["deltas"]
-                        ), f"Thinking block {index} should have thinking_delta"
-
-                    elif block_info["type"] == "text":
-                        text_block_found = True
-                        text_block_index = index
-                        assert (
-                            "text_delta" in block_info["deltas"]
-                        ), f"Text block {index} should have text_delta"
-
-                if thinking_block_found:
-                    logger.info(f"Found thinking block at index {thinking_block_index}")
-
-                    # 如果同时有thinking和text，验证thinking在text之前
-                    if text_block_found:
-                        assert (
-                            thinking_block_index < text_block_index
-                        ), "Thinking block should come before text block"
-                        logger.info(
-                            f"Verified thinking block {thinking_block_index} comes before text block {text_block_index}"
-                        )
-
-                assert thinking_content.strip(), "Thinking content should not be empty"
-                logger.info("✅ Thinking content validation passed")
-
-            # 验证至少有一些内容（thinking或text）
-            assert (
-                thinking_content.strip() or text_content.strip()
-            ), "Should have either thinking or text content"
-
-        except Exception as e:
-            logger.error(f"Test error: {e!s}")
-            raise
+        assert types[0] == "message_start"
+        assert "message_stop" in types
+        assert "error" not in types
 
     def test_messages_thinking_mode(self, anthropic_client):
-        """Test message completion with thinking mode enabled"""
-        try:
-            model = self.thinking_model
+        """Non-streaming: the identical classification and error body."""
 
-            response = anthropic_client.messages.create(
-                model=model,
+        with pytest.raises(anthropic.BadRequestError) as failure:
+            anthropic_client.messages.create(
+                model=self.thinking_model,
                 max_tokens=self.max_tokens,
-                thinking={"type": "enabled", "budget_tokens": 1024},  # Must be >= 1024
+                thinking={"type": "enabled", "budget_tokens": 1024},
                 messages=[
                     {
                         "role": "user",
@@ -628,22 +493,18 @@ class TestAnthropicMessages:
                 ],
             )
 
-            logger.info(f"Thinking Mode Response:\\n{response}\\n")
+        body = failure.value.response.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "thinking.type" in body["error"]["message"]
 
-            # Validate response structure
-            assert response.model == model, "Model name is not correct"
-            assert response.usage is not None, "No usage in response"
-            assert len(response.content) > 0, "No content blocks in response"
-
-            # Check if thinking content is present (might be in separate block)
-            has_thinking = any(block.type == "thinking" for block in response.content)
-            has_text = any(block.type == "text" for block in response.content)
-
-            assert has_thinking, "No thinking content block found"
-            assert has_text, "No text content block found"
-        except Exception as e:
-            logger.error(f"Test error: {e!s}")
-            raise
+        # A turn without the unhonoured control still completes.
+        response = anthropic_client.messages.create(
+            model=self.thinking_model,
+            max_tokens=self.max_tokens,
+            messages=[{"role": "user", "content": "What is 15 + 27?"}],
+        )
+        assert response.usage is not None
+        assert any(block.type == "text" for block in response.content)
 
     def test_messages_error_handling(self, anthropic_client):
         """Test error handling for invalid requests"""

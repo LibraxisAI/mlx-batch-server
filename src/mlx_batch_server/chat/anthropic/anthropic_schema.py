@@ -82,11 +82,25 @@ ContentBlock = Annotated[
 # ---------------------------------------------------------------------------
 
 
+class CacheControl(BaseModel):
+    """An Anthropic prompt-cache breakpoint.
+
+    Represented so the capability preflight can refuse it at its exact block
+    location. Naming it here is not a claim that this runtime caches.
+    """
+
+    model_config = _STRICT
+
+    type: Literal["ephemeral"] = "ephemeral"
+    ttl: Literal["5m", "1h"] | None = None
+
+
 class RequestTextBlock(BaseModel):
     model_config = _STRICT
 
     type: Literal["text"] = "text"
     text: str
+    cache_control: CacheControl | None = None
 
 
 class ImageSource(BaseModel):
@@ -111,6 +125,7 @@ class RequestImageBlock(BaseModel):
 
     type: Literal["image"] = "image"
     source: ImageSource
+    cache_control: CacheControl | None = None
 
 
 class RequestThinkingBlock(BaseModel):
@@ -119,6 +134,21 @@ class RequestThinkingBlock(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
     signature: str = ""
+    cache_control: CacheControl | None = None
+
+
+class RequestRedactedThinkingBlock(BaseModel):
+    """Opaque reasoning returned by Anthropic and replayed by a client.
+
+    Represented so a continuation carrying redacted reasoning is refused at
+    its exact location instead of being dropped on the way to inference.
+    """
+
+    model_config = _STRICT
+
+    type: Literal["redacted_thinking"] = "redacted_thinking"
+    data: str
+    cache_control: CacheControl | None = None
 
 
 class RequestToolUseBlock(BaseModel):
@@ -128,6 +158,29 @@ class RequestToolUseBlock(BaseModel):
     id: str = Field(..., min_length=1)
     name: str
     input: dict[str, Any]
+    cache_control: CacheControl | None = None
+
+
+class RequestServerToolUseBlock(BaseModel):
+    """An Anthropic-hosted server tool invocation, represented then refused."""
+
+    model_config = _STRICT
+
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str = Field(..., min_length=1)
+    name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    cache_control: CacheControl | None = None
+
+
+class RequestContainerUploadBlock(BaseModel):
+    """A code-execution container upload, represented then refused."""
+
+    model_config = _STRICT
+
+    type: Literal["container_upload"] = "container_upload"
+    file_id: str = Field(..., min_length=1)
+    cache_control: CacheControl | None = None
 
 
 class CitationsConfig(BaseModel):
@@ -161,6 +214,7 @@ class RequestDocumentBlock(BaseModel):
     title: str | None = None
     context: str | None = None
     citations: CitationsConfig | None = None
+    cache_control: CacheControl | None = None
 
 
 class RequestSearchResultBlock(BaseModel):
@@ -171,6 +225,7 @@ class RequestSearchResultBlock(BaseModel):
     title: str
     content: list[RequestTextBlock]
     citations: CitationsConfig | None = None
+    cache_control: CacheControl | None = None
 
 
 class RequestToolReferenceBlock(BaseModel):
@@ -178,6 +233,7 @@ class RequestToolReferenceBlock(BaseModel):
 
     type: Literal["tool_reference"] = "tool_reference"
     tool_name: str
+    cache_control: CacheControl | None = None
 
 
 ToolResultContent = Annotated[
@@ -199,15 +255,36 @@ class RequestToolResultBlock(BaseModel):
     tool_use_id: str = Field(..., min_length=1)
     content: Union[str, list[ToolResultContent]] = ""
     is_error: bool = False
+    cache_control: CacheControl | None = None
 
 
+class RequestWebSearchToolResultBlock(BaseModel):
+    """A hosted web-search result replayed by a client, represented then refused."""
+
+    model_config = _STRICT
+
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str = Field(..., min_length=1)
+    content: Union[str, list[dict[str, Any]], dict[str, Any], None] = None
+    cache_control: CacheControl | None = None
+
+
+#: Every official request-content discriminator W3 must be able to *name*.
+#: Membership here is representation, never a capability claim: the profile
+#: in ``capabilities`` decides which of these may execute.
 RequestContentBlock = Annotated[
     Union[
         RequestTextBlock,
         RequestImageBlock,
+        RequestDocumentBlock,
+        RequestSearchResultBlock,
         RequestThinkingBlock,
+        RequestRedactedThinkingBlock,
         RequestToolUseBlock,
         RequestToolResultBlock,
+        RequestServerToolUseBlock,
+        RequestWebSearchToolResultBlock,
+        RequestContainerUploadBlock,
     ],
     Field(discriminator="type"),
 ]
@@ -225,6 +302,7 @@ class SystemTextBlock(BaseModel):
 
     type: Literal["text"] = "text"
     text: str
+    cache_control: CacheControl | None = None
 
 
 SystemPrompt = Union[str, list[SystemTextBlock]]
@@ -250,19 +328,23 @@ class ToolInputSchema(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    """A client-defined (custom) tool.
+    """A tool definition on the wire.
 
-    Anthropic-hosted server tools carry a ``type`` discriminator such as
-    ``web_search_20250305``; those are rejected by the request mapper because
-    this runtime executes no hosted tools.
+    ``type`` is deliberately open: an Anthropic-hosted server tool carries a
+    discriminator such as ``web_search_20250305``, and representing it is
+    what lets the capability preflight refuse it by name instead of emitting
+    a generic union mismatch. ``input_schema`` is optional for the same
+    reason — hosted definitions omit it — and is required back by the
+    preflight for every custom tool.
     """
 
     model_config = _STRICT
 
     name: str = Field(..., max_length=200, pattern=r"^[a-zA-Z0-9_-]+$")
     description: str | None = None
-    input_schema: ToolInputSchema
-    type: Literal["custom"] | None = None
+    input_schema: ToolInputSchema | None = None
+    type: str | None = None
+    cache_control: CacheControl | None = None
 
 
 class ToolChoiceAuto(BaseModel):
@@ -322,6 +404,19 @@ class Metadata(BaseModel):
     model_config = _STRICT
 
     user_id: str | None = Field(None, max_length=256)
+
+
+class OutputConfig(BaseModel):
+    """Structured-output and effort controls, represented then refused.
+
+    Both wire placements of ``effort`` are named — nested here and top-level
+    on the request — so neither shape can slip past preflight unclassified.
+    """
+
+    model_config = _STRICT
+
+    format: dict[str, Any] | None = None
+    effort: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +479,13 @@ class MessagesRequest(BaseModel):
     thinking: ThinkingConfig | None = None
     metadata: Metadata | None = None
     service_tier: ServiceTier | None = None
+
+    # Represented so preflight can refuse each by name. Presence in this
+    # model is not a capability claim; see ``capabilities``.
+    container: Union[str, dict[str, Any], None] = None
+    inference_geo: str | None = None
+    output_config: OutputConfig | None = None
+    effort: str | None = None
 
 
 class MessagesResponse(BaseModel):
@@ -543,6 +645,7 @@ AnthropicStreamEvent = Union[
 __all__ = [
     "AnthropicStreamEvent",
     "AnthropicTool",
+    "CacheControl",
     "CitationsConfig",
     "ContentBlock",
     "ContentBlockDeltaBody",
@@ -562,16 +665,21 @@ __all__ = [
     "MessagesRequest",
     "MessagesResponse",
     "Metadata",
+    "OutputConfig",
     "PingEvent",
+    "RequestContainerUploadBlock",
     "RequestContentBlock",
     "RequestDocumentBlock",
     "RequestImageBlock",
+    "RequestRedactedThinkingBlock",
     "RequestSearchResultBlock",
+    "RequestServerToolUseBlock",
     "RequestTextBlock",
     "RequestThinkingBlock",
     "RequestToolReferenceBlock",
     "RequestToolResultBlock",
     "RequestToolUseBlock",
+    "RequestWebSearchToolResultBlock",
     "ServiceTier",
     "SignatureDeltaBody",
     "StopReason",

@@ -25,6 +25,11 @@ from .anthropic_schema import (
     MessagesRequest,
     MessagesResponse,
 )
+from .capabilities import (
+    enforce_capabilities,
+    resolve_capability_profile,
+    role_receipt,
+)
 from .errors import (
     REQUEST_ID_HEADER,
     AnthropicAPIError,
@@ -103,11 +108,23 @@ async def create_message(
     request_id = new_request_id()
     try:
         request = await _parse_request(http_request)
-        # Pre-flight the mapping so a malformed or unsupported request fails
-        # with an HTTP status, not with a 200 that carries an SSE error.
-        # Resolution of the inference owner deliberately stays inside the
-        # engine: it is a substitution seam, and an unbound owner is reported
-        # as an Anthropic overloaded_error on whichever transport is in use.
+        # Capability preflight runs exactly once, here: before any model is
+        # acquired and — for stream=true — before the StreamingResponse
+        # exists, so an unsupported control can never become a 200 carrying
+        # an SSE error. The admission receipt it produces is the single
+        # classification both transports below then execute against.
+        profile = resolve_capability_profile(
+            request.model,
+            receipt=role_receipt(
+                getattr(http_request.app.state, "responses_runtime", None)
+            ),
+        )
+        admission = enforce_capabilities(request, profile)
+        # Pre-flight the mapping so a malformed request fails with an HTTP
+        # status too. Resolution of the inference owner deliberately stays
+        # inside the engine: it is a substitution seam, and an unbound owner
+        # is reported as an Anthropic overloaded_error on whichever transport
+        # is in use.
         build_turn(request)
     except AnthropicAPIError as error:
         return _error_response(error, request_id)
@@ -115,7 +132,9 @@ async def create_message(
     if not request.stream:
         try:
             engine = _create_request_engine(http_request, request.model)
-            completion = await _maybe_await(engine.generate(request))
+            completion = await _maybe_await(
+                engine.generate(request, admission=admission)
+            )
         except AnthropicAPIError as error:
             return _error_response(error, request_id)
         except Exception as error:
@@ -129,7 +148,7 @@ async def create_message(
     async def anthropic_event_generator() -> AsyncIterator[str]:
         try:
             engine = _create_request_engine(http_request, request.model)
-            async for event in engine.generate_stream(request):
+            async for event in engine.generate_stream(request, admission=admission):
                 yield _encode_event(event)
         except AnthropicAPIError as error:
             yield _encode_error(error.error_type, error.message, request_id)

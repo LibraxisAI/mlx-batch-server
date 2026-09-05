@@ -328,6 +328,10 @@ def _map_user_content(
             raise _field_error("thinking blocks are not valid on user turns")
         if isinstance(block, RequestToolUseBlock):
             raise _field_error("tool_use blocks are not valid on user turns")
+        # Reached only when a block type is represented on the wire but has
+        # no mapping here. Refuse rather than drop it: a skipped block is
+        # exactly the silent lie the capability preflight exists to prevent.
+        raise _field_error(f"{block.type} blocks have no mapping on user turns")
     if text_parts:
         mapped.append(
             {
@@ -361,6 +365,10 @@ def _map_assistant_content(
             )
         elif isinstance(block, RequestToolResultBlock):
             raise _field_error("tool_result blocks are not valid on assistant")
+        else:
+            raise _field_error(
+                f"{block.type} blocks have no mapping on assistant turns"
+            )
     primary: dict[str, Any] = {"role": "assistant"}
     if text_parts:
         primary["content"] = _text_content("\n".join(text_parts))
@@ -521,6 +529,8 @@ def _document_media(
 
 
 def _map_tool(tool: AnthropicTool) -> Mapping[str, Any]:
+    if tool.input_schema is None:
+        raise _field_error(f"tools entry {tool.name!r} requires input_schema")
     schema = tool.input_schema.model_dump(mode="json", exclude_none=True)
     return {
         "type": "function",
