@@ -197,14 +197,20 @@ def _multirow_checks(root: Path) -> tuple[SourceCheck, ...]:
     runtime = _class_or_none(tree, "_Qwen4ExpTensorRuntime")
     execute = _method_or_none(runtime, "execute")
     decode_batch = _method_or_none(runtime, "_decode_batch")
+    decode_mtp_batch = _method_or_none(runtime, "_decode_mtp_batch")
     target_batch = _method_or_none(runtime, "_target_forward_batch")
+    mtp_forward_batch = _method_or_none(runtime, "_mtp_forward_batch")
+    mtp_singleton = _method_or_none(runtime, "_decode_mtp_one")
     execute_source = ast.unparse(execute) if execute is not None else ""
     decode_source = ast.unparse(decode_batch) if decode_batch is not None else ""
-    target_source = ast.unparse(target_batch) if target_batch is not None else ""
+    mtp_source = ast.unparse(decode_mtp_batch) if decode_mtp_batch is not None else ""
+    scatter = _function_or_none(tree, "_scatter_batch_cache")
+    scatter_source = ast.unparse(scatter) if scatter is not None else ""
     model_calls = _self_model_calls(target_batch)
+    draft_model_calls = _self_model_attribute_calls(mtp_forward_batch, "mtp_forward")
     tensor_batch_builders = sum(
         1
-        for method in (decode_batch, target_batch)
+        for method in (decode_batch, target_batch, mtp_forward_batch)
         if method is not None
         for node in ast.walk(method)
         if isinstance(node, ast.Call)
@@ -232,11 +238,52 @@ def _multirow_checks(root: Path) -> tuple[SourceCheck, ...]:
             "multirow decode does not build a batch and issue exactly one model forward",
         ),
         SourceCheck(
-            "multirow-mtp-enabled",
-            "mtp" in decode_source.lower()
+            "multirow-mtp-wired",
+            decode_mtp_batch is not None
+            and mtp_singleton is not None
+            and _self_method_call_count(decode_batch, "_decode_mtp_batch") == 1
+            and "mtp_decision.enabled" in decode_source
             and "MULTIROW_NOT_PROVEN" not in execute_source
-            and "MULTIROW_NOT_PROVEN" not in target_source,
-            "multirow execution still disables MTP instead of preserving per-row state",
+            and "MULTIROW_NOT_PROVEN" not in decode_source
+            and "MULTIROW_NOT_PROVEN" not in mtp_source,
+            "_decode_batch does not route admitted cohorts into concrete multi-row MTP",
+        ),
+        SourceCheck(
+            "batched-recursive-drafts",
+            mtp_forward_batch is not None
+            and len(draft_model_calls) == 1
+            and _call_inside_loop(decode_mtp_batch, "_mtp_forward_batch")
+            and "mx.concatenate" in ast.unparse(mtp_forward_batch)
+            and "mx.stack" in ast.unparse(mtp_forward_batch),
+            "recursive draft depths are not issued as one batched MTP model call",
+        ),
+        SourceCheck(
+            "shared-verify-and-variable-commit",
+            _call_with_keyword_value(
+                decode_mtp_batch,
+                "_target_forward_batch",
+                "phase",
+                "verify",
+            )
+            and len(
+                _self_model_attribute_calls(
+                    decode_mtp_batch,
+                    "commit_verified_window",
+                )
+            )
+            == 1
+            and "accepted_counts[row_index]" in mtp_source
+            and "verified_tokens=len(verify_token_rows[row_index])" in mtp_source,
+            "multi-row MTP lacks one shared verify call or row-local verified-window commits",
+        ),
+        SourceCheck(
+            "capture-scatter-and-batched-repair",
+            "_qwen4_exp_verify_rows" in scatter_source
+            and "_qwen4_exp_verify_ple" in scatter_source
+            and "correction_indices" in mtp_source
+            and _self_method_call_count(decode_mtp_batch, "_mtp_update_batch") == 1
+            and "history_depth" in mtp_source,
+            "verify captures, stochastic corrections, or MTP history are not scattered by row",
         ),
     )
 
@@ -364,6 +411,23 @@ def _class_or_none(tree: ast.Module | None, name: str) -> ast.ClassDef | None:
     )
 
 
+def _function_or_none(
+    tree: ast.Module | None,
+    name: str,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    if tree is None:
+        return None
+    return next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == name
+        ),
+        None,
+    )
+
+
 def _method_or_none(
     class_node: ast.ClassDef | None,
     name: str,
@@ -413,6 +477,86 @@ def _self_model_calls(
         and node.func.value.id == "self"
         and node.func.attr == "model"
     )
+
+
+def _self_model_attribute_calls(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    name: str,
+) -> tuple[ast.Call, ...]:
+    if method is None:
+        return ()
+    return tuple(
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == name
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "model"
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "self"
+    )
+
+
+def _self_method_call_count(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    name: str,
+) -> int:
+    if method is None:
+        return 0
+    return sum(
+        1
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == name
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    )
+
+
+def _call_inside_loop(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    name: str,
+) -> bool:
+    if method is None:
+        return False
+    for loop in (
+        node for node in ast.walk(method) if isinstance(node, ast.For | ast.While)
+    ):
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == name
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            for node in ast.walk(loop)
+        ):
+            return True
+    return False
+
+
+def _call_with_keyword_value(
+    method: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    name: str,
+    keyword_name: str,
+    keyword_value: object,
+) -> bool:
+    if method is None:
+        return False
+    for node in ast.walk(method):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != name:
+            continue
+        if any(
+            keyword.arg == keyword_name
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == keyword_value
+            for keyword in node.keywords
+        ):
+            return True
+    return False
 
 
 def _parser() -> argparse.ArgumentParser:

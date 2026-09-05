@@ -187,10 +187,10 @@ def test_tensor_runtime_preserves_qsa_gdn_ple_mtp_and_rollback_contracts() -> No
         "rollback_after_verify",
         "mtp_forward",
         "mtp_update_cache",
-        '_require_b1(inputs, "text inputs")',
+        '_require_supported_batch(inputs, "text inputs", cache)',
     ):
         assert marker in source
-    assert "B=1 row-serial baseline" in source
+    assert "multi-row input requires a packed QSA cache" in source
 
 
 def test_tensor_execution_consumes_policy_and_runs_exact_recursive_mtp() -> None:
@@ -223,6 +223,9 @@ def test_tensor_execution_consumes_policy_and_runs_exact_recursive_mtp() -> None
 
 def test_tensor_execution_reports_mtp_and_fallback_accounting() -> None:
     source = _source(_TENSOR_PATH)
+    runtime = _class(_tree(_TENSOR_PATH), "_Qwen4ExpTensorRuntime")
+    fallback = ast.unparse(_method(runtime, "_mtp_fallback"))
+    mtp_batch = ast.unparse(_method(runtime, "_decode_mtp_batch"))
 
     for marker in (
         "mtp_rounds=mtp_rounds",
@@ -230,9 +233,12 @@ def test_tensor_execution_reports_mtp_and_fallback_accounting() -> None:
         "mtp_accepted_tokens=mtp_accepted_tokens",
         "mtp_rejected_tokens=mtp_rejected_tokens",
         "mtp_fallbacks=fallbacks",
-        "MtpDisableReason.MULTIROW_NOT_PROVEN",
     ):
         assert marker in source
+    assert "reason = decision.disable_reason" in fallback
+    assert "MULTIROW_NOT_PROVEN" not in fallback
+    assert "mtp_rounds=1" in mtp_batch
+    assert "mtp_rejected_tokens=int(rejected_rows[row_index])" in mtp_batch
 
 
 def test_tensor_prefix_cache_restores_whole_semantic_boundaries_only() -> None:
