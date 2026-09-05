@@ -49,6 +49,7 @@ from .citations import (
     CitationSource,
     CitationStreamFilter,
     ItemCitationBudget,
+    PreparedCitationCorpus,
     ProvenCitation,
 )
 from .events import (
@@ -272,6 +273,9 @@ class _HostedAgenticTurn:
         # Within-turn only: the frozen success result events this turn emitted
         # (citation source authority). Dies with the turn; no store, no cache.
         self._success_results: list[HostedCallResult] = []
+        # Persistent immutable snapshots let every filter share each prepared
+        # source while later successful rounds extend without recomputing it.
+        self._citation_corpus = PreparedCitationCorpus()
         self._citations_requested = _citations_requested(request)
         self._citation_preparation_added = False
 
@@ -648,9 +652,13 @@ class _HostedAgenticTurn:
             result_event.result if result_event is not None else None,
             status,
         )
+        extended_corpus = self._citation_corpus
+        if result_event is not None and self._citations_requested:
+            extended_corpus = extended_corpus.extend(_citation_sources((result_event,)))
         if result_event is not None:
             self._forward(result_event)
             self._success_results.append(result_event)
+            self._citation_corpus = extended_corpus
         self._forward(
             HostedCallCompleted(
                 index=item.index,
@@ -860,12 +868,10 @@ class _ChildSink:
         # The citation filter arms only for a continuation round that follows
         # at least one immutable success result with citations requested; on
         # every other path this sink is byte-identical to the baseline.
-        self._citation_sources: tuple[CitationSource, ...] = ()
         self._citation_armed = bool(
-            owner._citations_requested and owner._success_results
+            owner._citations_requested and owner._citation_corpus
         )
-        if self._citation_armed:
-            self._citation_sources = _citation_sources(owner._success_results)
+        self._citation_corpus = owner._citation_corpus
         self._filters: dict[tuple[int, int], CitationStreamFilter] = {}
         self._item_budgets: dict[int, ItemCitationBudget] = {}
 
@@ -1073,7 +1079,7 @@ class _ChildSink:
                     budget = ItemCitationBudget()
                     self._item_budgets[output_index] = budget
                 content_filter = CitationStreamFilter(
-                    self._citation_sources,
+                    self._citation_corpus,
                     budget=budget,
                 )
                 self._filters[key] = content_filter

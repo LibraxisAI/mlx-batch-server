@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from .events import MAX_CITED_TEXT_CHARS
@@ -98,48 +99,146 @@ class ItemCitationBudget:
         return True
 
 
+def _nfd_units_with_spans(text: str) -> list[tuple[str, int, int]]:
+    """Return the full canonical decomposition with original-codepoint spans."""
+
+    decomposed_units: list[tuple[str, int, int]] = []
+    for index, char in enumerate(text):
+        for decomposed in unicodedata.normalize("NFD", char):
+            decomposed_units.append((decomposed, index, index + 1))
+
+    # Canonical ordering is a stable sort of each non-starter run. It may cross
+    # original-codepoint boundaries, so the source span travels with its unit.
+    units: list[tuple[str, int, int]] = []
+    nonstarters: list[tuple[str, int, int]] = []
+    for unit in decomposed_units:
+        if unicodedata.combining(unit[0]) == 0:
+            units.extend(
+                sorted(nonstarters, key=lambda item: unicodedata.combining(item[0]))
+            )
+            nonstarters.clear()
+            units.append(unit)
+        else:
+            nonstarters.append(unit)
+    units.extend(sorted(nonstarters, key=lambda item: unicodedata.combining(item[0])))
+    if "".join(char for char, _, _ in units) != unicodedata.normalize("NFD", text):
+        raise RuntimeError("canonical decomposition span alignment failed")
+    return units
+
+
+def _nfc_with_spans(text: str) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Normalize the entire string to NFC and align output to original spans."""
+
+    units = _nfd_units_with_spans(text)
+    normalized = unicodedata.normalize("NFC", text)
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for char in normalized:
+        decomposition = unicodedata.normalize("NFD", char)
+        consumed = units[cursor : cursor + len(decomposition)]
+        if "".join(unit[0] for unit in consumed) != decomposition:
+            raise RuntimeError("canonical composition span alignment failed")
+        spans.append(
+            (
+                min(unit[1] for unit in consumed),
+                max(unit[2] for unit in consumed),
+            )
+        )
+        cursor += len(decomposition)
+    if cursor != len(units):
+        raise RuntimeError("canonical composition left unaligned input")
+    return normalized, tuple(spans)
+
+
 def _normalize_with_spans(text: str) -> tuple[str, tuple[tuple[int, int], ...]]:
-    """NFC + whitespace-collapse with a normalized→original span map.
+    """Full-string NFC plus whitespace-collapse and exact original spans."""
 
-    Whitespace runs collapse to one space; base+combining segments are
-    NFC-composed. Each normalized character maps to the half-open original
-    span that produced it, so proven matches yield exact original offsets.
-    """
-
+    nfc, nfc_spans = _nfc_with_spans(text)
     normalized: list[str] = []
     spans: list[tuple[int, int]] = []
-    i = 0
-    length = len(text)
-    while i < length:
-        if text[i].isspace():
-            start = i
-            while i < length and text[i].isspace():
-                i += 1
-            normalized.append(" ")
-            spans.append((start, i))
+    index = 0
+    while index < len(nfc):
+        if not nfc[index].isspace():
+            normalized.append(nfc[index])
+            spans.append(nfc_spans[index])
+            index += 1
             continue
-        start = i
-        i += 1
-        while i < length and unicodedata.combining(text[i]):
-            i += 1
-        for out_ch in unicodedata.normalize("NFC", text[start:i]):
-            normalized.append(out_ch)
-            spans.append((start, i))
+        end = index + 1
+        while end < len(nfc) and nfc[end].isspace():
+            end += 1
+        whitespace_spans = nfc_spans[index:end]
+        normalized.append(" ")
+        spans.append(
+            (
+                min(span[0] for span in whitespace_spans),
+                max(span[1] for span in whitespace_spans),
+            )
+        )
+        index = end
     return "".join(normalized), tuple(spans)
 
 
 def _normalize_quote(text: str) -> str:
     normalized, _ = _normalize_with_spans(text)
-    return normalized.strip(" ")
+    return normalized
 
 
+@dataclass(frozen=True, slots=True)
 class _PreparedSource:
-    __slots__ = ("call_id", "normalized", "spans", "url")
+    call_id: str
+    url: str
+    normalized: str
+    spans: tuple[tuple[int, int], ...]
 
-    def __init__(self, source: CitationSource) -> None:
-        self.call_id = source.call_id
-        self.url = source.url
-        self.normalized, self.spans = _normalize_with_spans(source.content)
+
+def _prepare_source(source: CitationSource) -> _PreparedSource:
+    if not isinstance(source, CitationSource):
+        raise TypeError("sources must be CitationSource instances")
+    normalized, spans = _normalize_with_spans(source.content)
+    return _PreparedSource(source.call_id, source.url, normalized, spans)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCitationCorpus:
+    """Persistent per-turn corpus sharing each immutable prepared source once."""
+
+    _parent: PreparedCitationCorpus | None = None
+    _added: tuple[_PreparedSource, ...] = ()
+
+    @classmethod
+    def from_sources(
+        cls,
+        sources: Sequence[CitationSource],
+    ) -> PreparedCitationCorpus:
+        return cls().extend(sources)
+
+    def extend(
+        self,
+        sources: Sequence[CitationSource],
+    ) -> PreparedCitationCorpus:
+        prepared = tuple(_prepare_source(source) for source in sources)
+        if not prepared:
+            return self
+        return type(self)(_parent=self, _added=prepared)
+
+    def candidates(self, url: str) -> Iterator[_PreparedSource]:
+        generations: list[tuple[_PreparedSource, ...]] = []
+        corpus: PreparedCitationCorpus | None = self
+        while corpus is not None:
+            generations.append(corpus._added)
+            corpus = corpus._parent
+        for generation in reversed(generations):
+            for source in generation:
+                if source.url == url:
+                    yield source
+
+    def __bool__(self) -> bool:
+        corpus: PreparedCitationCorpus | None = self
+        while corpus is not None:
+            if corpus._added:
+                return True
+            corpus = corpus._parent
+        return False
 
 
 class CitationStreamFilter:
@@ -153,15 +252,13 @@ class CitationStreamFilter:
 
     def __init__(
         self,
-        sources: tuple[CitationSource, ...] | list[CitationSource],
+        corpus: PreparedCitationCorpus,
         *,
         budget: ItemCitationBudget | None = None,
     ) -> None:
-        self._by_url: dict[str, list[_PreparedSource]] = {}
-        for source in sources:
-            if not isinstance(source, CitationSource):
-                raise TypeError("sources must be CitationSource instances")
-            self._by_url.setdefault(source.url, []).append(_PreparedSource(source))
+        if not isinstance(corpus, PreparedCitationCorpus):
+            raise TypeError("corpus must be a PreparedCitationCorpus")
+        self._corpus = corpus
         self._budget = budget if budget is not None else ItemCitationBudget()
         self._state = _STATE_PASS
         self._tag = ""
@@ -402,18 +499,16 @@ class CitationStreamFilter:
         )
 
     def _prove(self, url: str, span: str) -> tuple[str, int, int] | None:
-        candidates = self._by_url.get(url)
-        if not candidates:
-            return None
         quote = _normalize_quote(span)
         if not quote:
             return None
-        for source in candidates:
+        for source in self._corpus.candidates(url):
             index = source.normalized.find(quote)
             if index < 0:
                 continue
-            source_start = source.spans[index][0]
-            source_end = source.spans[index + len(quote) - 1][1]
+            matched_spans = source.spans[index : index + len(quote)]
+            source_start = min(source_span[0] for source_span in matched_spans)
+            source_end = max(source_span[1] for source_span in matched_spans)
             return source.call_id, source_start, source_end
         return None
 
@@ -437,5 +532,6 @@ __all__ = [
     "CitationSource",
     "CitationStreamFilter",
     "ItemCitationBudget",
+    "PreparedCitationCorpus",
     "ProvenCitation",
 ]
