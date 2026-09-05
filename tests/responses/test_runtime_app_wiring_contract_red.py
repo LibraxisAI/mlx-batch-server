@@ -134,6 +134,7 @@ def test_runtime_receipt_atomically_replaces_legacy_responses_router(
     assert "/v1/audio/transcriptions" not in canonical_paths
     assert "/v1/images/generations" not in canonical_paths
     assert "/v1/embeddings" not in canonical_paths
+    assert str(app.url_path_for("create_message")) == "/anthropic/v1/messages"
 
     with TestClient(app):
         assert runtime.manager.acquired == [RoleName.MAIN]

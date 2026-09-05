@@ -20,7 +20,6 @@ from pydantic import ValidationError
 from mlx_batch_server.auth.dependency import verify_auth
 from mlx_batch_server.utils.logger import logger
 
-from ..mlx.runtime_policy import endpoint_runtime_session
 from .anthropic_schema import (
     AnthropicStreamEvent,
     MessagesRequest,
@@ -115,12 +114,11 @@ async def create_message(
 
     if not request.stream:
         try:
-            async with endpoint_runtime_session(request.model):
-                engine = _create_anthropic_model(request.model)
-                completion = await _maybe_await(engine.generate(request))
+            engine = _create_anthropic_model(request.model)
+            completion = await _maybe_await(engine.generate(request))
         except AnthropicAPIError as error:
             return _error_response(error, request_id)
-        except Exception as error:  # noqa: BLE001 - projected to the client
+        except Exception as error:
             logger.error("Anthropic message failed: %s", error, exc_info=True)
             return _error_response(AnthropicAPIError(str(error)), request_id)
         return JSONResponse(
@@ -130,13 +128,12 @@ async def create_message(
 
     async def anthropic_event_generator() -> AsyncIterator[str]:
         try:
-            async with endpoint_runtime_session(request.model):
-                engine = _create_anthropic_model(request.model)
-                async for event in engine.generate_stream(request):
-                    yield _encode_event(event)
+            engine = _create_anthropic_model(request.model)
+            async for event in engine.generate_stream(request):
+                yield _encode_event(event)
         except AnthropicAPIError as error:
             yield _encode_error(error.error_type, error.message, request_id)
-        except Exception as error:  # noqa: BLE001 - projected to the client
+        except Exception as error:
             logger.error("Anthropic stream failed: %s", error, exc_info=True)
             yield _encode_error("api_error", str(error), request_id)
 

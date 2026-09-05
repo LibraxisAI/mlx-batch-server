@@ -14,9 +14,10 @@ from __future__ import annotations
 import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from mlx_batch_server.runtime.events import TurnEvent
+if TYPE_CHECKING:
+    from mlx_batch_server.runtime.events import TurnEvent
 
 from .errors import InferenceOwnerUnavailableError
 
@@ -67,12 +68,13 @@ def register_turn_source(source: AnthropicTurnSource) -> None:
         _turn_source = source
 
 
-def clear_turn_source() -> None:
-    """Unbind the inference owner. Used by tests and by shutdown paths."""
+def clear_turn_source(source: AnthropicTurnSource | None = None) -> None:
+    """Unbind the current owner, optionally only when identity still matches."""
 
     global _turn_source
     with _lock:
-        _turn_source = None
+        if source is None or _turn_source is source:
+            _turn_source = None
 
 
 def current_turn_source() -> AnthropicTurnSource | None:

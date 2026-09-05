@@ -9,6 +9,11 @@ from typing import Any
 
 import pytest
 
+from mlx_batch_server.chat.anthropic.runtime_source import RuntimeAnthropicTurnSource
+from mlx_batch_server.chat.anthropic.turn_source import (
+    clear_turn_source,
+    current_turn_source,
+)
 from mlx_batch_server.provenance import BuildReceipt
 from mlx_batch_server.responses import runtime_bootstrap
 from mlx_batch_server.responses.controller import ResponsesController
@@ -34,6 +39,13 @@ from mlx_batch_server.runtime.service import RuntimeStartService
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE_MANIFEST = packaged_role_manifest_path()
+
+
+@pytest.fixture(autouse=True)
+def _reset_anthropic_turn_source():
+    clear_turn_source()
+    yield
+    clear_turn_source()
 
 
 class _DormantBackendFactory:
@@ -133,6 +145,8 @@ def test_composition_wires_one_graph_from_the_explicit_signed_manifest() -> None
     assert isinstance(receipt.admission_controller, AdmissionController)
     assert isinstance(receipt.runtime_manager, RuntimeManager)
     assert isinstance(receipt.runtime_start_service, RuntimeStartService)
+    assert isinstance(receipt.anthropic_turn_source, RuntimeAnthropicTurnSource)
+    assert current_turn_source() is receipt.anthropic_turn_source
     assert isinstance(receipt.response_registry, ResponseRegistry)
     assert isinstance(receipt.runtime_resolver, ManifestRuntimeResolver)
     assert isinstance(receipt.responses_mapper, CanonicalResponsesMapper)
@@ -143,6 +157,7 @@ def test_composition_wires_one_graph_from_the_explicit_signed_manifest() -> None
     assert receipt.runtime_manager._readiness is receipt.readiness_service
     assert receipt.runtime_manager._admission is receipt.admission_controller
     assert receipt.runtime_start_service._manager is receipt.runtime_manager
+    assert receipt.anthropic_turn_source._starter is receipt.runtime_start_service
     assert receipt.runtime_resolver._roles is receipt.role_directory
     assert receipt.responses_mapper._resolve_runtime is receipt.runtime_resolver
     assert receipt.responses_mapper._projection_factory is create_runtime_projection

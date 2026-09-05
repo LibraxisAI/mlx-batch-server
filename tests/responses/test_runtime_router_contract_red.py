@@ -324,7 +324,10 @@ async def test_official_openai_sdk_parses_lifecycle_and_local_operations() -> No
     assert retrieved.id == "resp_runtime_router"
     assert cancelled.status == "completed"
     assert input_items.data[0].role == "user"
-    assert deleted.deleted is True
+    # openai-python 2.32 models Responses DELETE as ``None`` even though the
+    # wire endpoint returns the documented response.deleted JSON object. The
+    # raw transport assertion below protects that body independently.
+    assert deleted is None
     assert counted.object == "response.input_tokens"
     assert counted.input_tokens == 17
     assert compacted.object == "response.compaction"
@@ -523,9 +526,7 @@ def test_pending_steer_waits_for_client_tool_output_and_starts_once() -> None:
             )
         return ResponseEventSource(
             events("resp_after_tool", "stop"),
-            terminal_response=asyncio.create_task(
-                terminal("resp_after_tool", [])
-            ),
+            terminal_response=asyncio.create_task(terminal("resp_after_tool", [])),
             response_id="resp_after_tool",
         )
 
