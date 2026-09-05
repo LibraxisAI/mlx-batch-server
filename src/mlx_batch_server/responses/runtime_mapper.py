@@ -12,6 +12,13 @@ from ..runtime.contracts import GenerationRequest, RuntimeKey
 from .compaction import LocalCompactionCodec, expand_compaction_input
 from .controller import PreparedResponse, ResponseProjection
 from .normalizer import normalise_responses_payload
+from .request_contract import (
+    ResponsesMappingError,
+    local_settings,
+    validate_client_metadata,
+    validate_field_combinations,
+    validate_top_level_fields,
+)
 
 _ROLES = frozenset(("system", "developer", "user", "assistant", "tool"))
 _TEXT_TYPES = frozenset(("text", "input_text", "output_text"))
@@ -37,44 +44,6 @@ _FUNCTION_OUTPUT_CONTENT_FIELDS: Mapping[str, frozenset[str]] = {
         {"type", "detail", "file_data", "file_id", "file_url", "filename"}
     ),
 }
-_SUPPORTED_TOP_LEVEL_FIELDS = frozenset(
-    {
-        "adapter_path",
-        "backend",
-        "cancel_on_disconnect",
-        "draft_model",
-        "draft_model_id",
-        "frequency_penalty",
-        "id",
-        "input",
-        "instructions",
-        "max_output_tokens",
-        "max_tokens",
-        "metadata",
-        "model",
-        "model_revision",
-        "owner_id",
-        "parallel_tool_calls",
-        "presence_penalty",
-        "previous_response_id",
-        "reasoning",
-        "response_format",
-        "response_id",
-        "revision",
-        "runtime_role",
-        "seed",
-        "stop",
-        "store",
-        "stream",
-        "system_instruction",
-        "temperature",
-        "text",
-        "tool_choice",
-        "tools",
-        "top_k",
-        "top_p",
-    }
-)
 
 
 class _FrozenDict(dict[str, Any]):
@@ -93,15 +62,6 @@ class _FrozenDict(dict[str, Any]):
     popitem = _immutable
     setdefault = _immutable
     update = _immutable
-
-
-class ResponsesMappingError(ValueError):
-    """A request cannot be mapped without guessing or changing ownership."""
-
-    def __init__(self, message: str, *, code: str, param: str | None = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.param = param
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,13 +176,14 @@ class CanonicalResponsesMapper:
         messages = tuple(_text_message(item) for item in materialized)
         media = _media_parts(materialized)
         tools = _tools(raw.get("tools"))
-        sampling = _sampling(raw, has_tools=bool(tools))
+        sampling = _sampling(raw, declared_tools=tools)
         reasoning = _reasoning(raw.get("reasoning"))
         metadata = _metadata(
             raw,
             model=model,
             role=resolved_role,
             resolved_model=runtime.model_id,
+            local=local_settings(raw),
         )
         store = _boolean(raw.get("store", True), "store")
         cancel_on_disconnect = _boolean(
@@ -294,14 +255,10 @@ def _validate_ownership_claims(
 
 
 def _validate_supported_fields(payload: Mapping[str, Any]) -> None:
-    unsupported = sorted(set(payload) - _SUPPORTED_TOP_LEVEL_FIELDS)
-    if unsupported:
-        field = unsupported[0]
-        raise ResponsesMappingError(
-            f"unsupported Responses parameter: {field}",
-            code="unsupported_parameter",
-            param=field,
-        )
+    """Delegate field legality to the one auditable request capability contract."""
+
+    validate_field_combinations(payload)
+    validate_top_level_fields(payload)
 
 
 def _validate_raw_input(raw_input: Any) -> None:
@@ -1014,7 +971,11 @@ def _tools(value: Any) -> tuple[Mapping[str, Any], ...]:
     return tuple(tools)
 
 
-def _sampling(payload: Mapping[str, Any], *, has_tools: bool) -> Mapping[str, Any]:
+def _sampling(
+    payload: Mapping[str, Any],
+    *,
+    declared_tools: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
     sampling: dict[str, Any] = {}
     max_tokens = _coalesced_value(
         payload, "max_output_tokens", "max_tokens", param="max_output_tokens"
@@ -1073,8 +1034,9 @@ def _sampling(payload: Mapping[str, Any], *, has_tools: bool) -> Mapping[str, An
         sampling["parallel_tool_calls"] = parallel_tool_calls
     tool_choice = payload.get("tool_choice")
     if tool_choice is not None:
-        _validate_tool_choice(tool_choice, has_tools=has_tools)
+        _validate_tool_choice(tool_choice, declared_tools=declared_tools)
         sampling["tool_choice"] = _freeze(tool_choice)
+    _coalesced_value(payload, "text", "response_format", param="text")
     for field in ("response_format", "text"):
         if field in payload and payload[field] is not None:
             if not isinstance(payload[field], Mapping):
@@ -1083,7 +1045,9 @@ def _sampling(payload: Mapping[str, Any], *, has_tools: bool) -> Mapping[str, An
     return _FrozenDict(sampling)
 
 
-def _validate_tool_choice(tool_choice: Any, *, has_tools: bool) -> None:
+def _validate_tool_choice(
+    tool_choice: Any, *, declared_tools: Sequence[Mapping[str, Any]]
+) -> None:
     if not isinstance(tool_choice, str | Mapping):
         raise _invalid("tool_choice must be text or a mapping", "tool_choice")
     if isinstance(tool_choice, str) and tool_choice not in {
@@ -1115,7 +1079,14 @@ def _validate_tool_choice(tool_choice: Any, *, has_tools: bool) -> None:
                 "function tool_choice name must be non-blank",
                 "tool_choice.name",
             )
-    if not has_tools and tool_choice != "none":
+        declared = {tool.get("name") for tool in declared_tools}
+        if name not in declared:
+            raise ResponsesMappingError(
+                "tool_choice must reference a declared function tool",
+                code="invalid_field_combination",
+                param="tool_choice.name",
+            )
+    if not declared_tools and tool_choice != "none":
         raise _invalid("tool_choice requires tools", "tool_choice")
 
 
@@ -1125,14 +1096,17 @@ def _metadata(
     model: str,
     role: str | None,
     resolved_model: str,
+    local: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     raw = payload.get("metadata")
+    validate_client_metadata(raw, derived=local)
     if raw is None:
         metadata: dict[str, Any] = {}
     elif isinstance(raw, Mapping):
         metadata = dict(raw)
-    else:
+    else:  # pragma: no cover - rejected by the contract above
         raise _invalid("metadata must be a mapping", "metadata")
+    metadata.update(local)
     requested_model = metadata.get("requested_model")
     if requested_model is not None and requested_model != model:
         raise ResponsesMappingError(

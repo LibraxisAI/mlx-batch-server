@@ -754,18 +754,18 @@ def test_projection_is_created_only_by_the_injected_factory() -> None:
 @pytest.mark.parametrize(
     "field",
     [
-        "background",
+        "context_management",
         "conversation",
-        "include",
         "max_tool_calls",
         "modalities",
         "output_modalities",
         "prompt",
         "prompt_cache_key",
-        "service_tier",
-        "stream_options",
-        "truncation",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "top_logprobs",
         "unknown_extension",
+        "user",
     ],
 )
 def test_unsupported_top_level_fields_fail_closed(field: str) -> None:
@@ -783,6 +783,175 @@ def test_unsupported_top_level_fields_fail_closed(field: str) -> None:
 
     assert error.value.code == "unsupported_parameter"
     assert error.value.param == field
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("background", False, False),
+        ("include", [], ()),
+        ("service_tier", "auto", "auto"),
+        ("stream", True, True),
+        ("truncation", "disabled", "disabled"),
+    ],
+)
+def test_locally_interpreted_fields_reach_canonical_metadata(
+    field: str, value: Any, expected: Any
+) -> None:
+    mapper, _, _ = _mapper()
+
+    prepared = _prepare(
+        mapper,
+        {"model": "flash-next", "input": "hello", field: value},
+    )
+
+    assert prepared.request.metadata[field] == expected
+    assert field not in prepared.request.sampling
+
+
+def test_stream_options_are_only_honoured_for_a_streaming_request() -> None:
+    mapper, _, _ = _mapper()
+
+    prepared = _prepare(
+        mapper,
+        {
+            "model": "flash-next",
+            "input": "hello",
+            "stream": True,
+            "stream_options": {"include_obfuscation": False},
+        },
+    )
+    assert prepared.request.metadata["stream_options"] == {"include_obfuscation": False}
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "stream_options": {"include_obfuscation": False},
+            },
+        )
+    assert error.value.code == "invalid_field_combination"
+    assert error.value.param == "stream_options"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "param"),
+    [
+        ("background", True, "background"),
+        ("include", ["reasoning.encrypted_content"], "include[0]"),
+        ("service_tier", "priority", "service_tier"),
+        ("truncation", "auto", "truncation"),
+    ],
+)
+def test_locally_interpreted_fields_reject_unhonourable_values(
+    field: str, value: Any, param: str
+) -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(mapper, {"model": "flash-next", "input": "hello", field: value})
+
+    assert error.value.code == "unsupported_parameter"
+    assert error.value.param == param
+
+
+def test_conversation_and_previous_response_id_cannot_both_own_context() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "conversation": "conv_1",
+                "previous_response_id": "resp_parent",
+            },
+        )
+
+    assert error.value.code == "invalid_field_combination"
+    assert error.value.param == "conversation"
+
+
+def test_background_transport_constraint_names_the_store_field() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "background": True,
+                "store": False,
+            },
+        )
+
+    assert error.value.code == "invalid_field_combination"
+    assert error.value.param == "store"
+
+
+def test_named_tool_choice_must_reference_a_declared_tool() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "tools": [{"type": "function", "name": "record_lab_values"}],
+                "tool_choice": {"type": "function", "name": "record_vitals"},
+            },
+        )
+
+    assert error.value.code == "invalid_field_combination"
+    assert error.value.param == "tool_choice.name"
+
+
+def test_text_and_response_format_aliases_must_not_disagree() -> None:
+    mapper, _, _ = _mapper()
+
+    with pytest.raises(ResponsesMappingError) as error:
+        _prepare(
+            mapper,
+            {
+                "model": "flash-next",
+                "input": "hello",
+                "text": {"format": {"type": "json_object"}},
+                "response_format": {"type": "text"},
+            },
+        )
+
+    assert error.value.code == "ambiguous_request_alias"
+    assert error.value.param == "text"
+
+
+def test_metadata_obeys_official_limits_and_protects_server_keys() -> None:
+    mapper, _, _ = _mapper()
+    base = {"model": "flash-next", "input": "hello"}
+
+    with pytest.raises(ResponsesMappingError) as entries:
+        _prepare(
+            mapper,
+            {**base, "metadata": {f"k{index}": "v" for index in range(17)}},
+        )
+    assert entries.value.param == "metadata"
+
+    with pytest.raises(ResponsesMappingError) as key_length:
+        _prepare(mapper, {**base, "metadata": {"k" * 65: "v"}})
+    assert key_length.value.param == f"metadata.{'k' * 65}"
+
+    with pytest.raises(ResponsesMappingError) as value_length:
+        _prepare(mapper, {**base, "metadata": {"case": "v" * 513}})
+    assert value_length.value.param == "metadata.case"
+
+    with pytest.raises(ResponsesMappingError) as reserved:
+        _prepare(mapper, {**base, "metadata": {"truncation": "auto"}})
+    assert reserved.value.code == "reserved_metadata_key"
+    assert reserved.value.param == "metadata.truncation"
 
 
 def test_unsupported_reasoning_fields_fail_closed() -> None:
