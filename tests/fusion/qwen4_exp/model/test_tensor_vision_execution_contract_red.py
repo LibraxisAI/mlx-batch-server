@@ -69,7 +69,11 @@ def test_sealed_messages_render_all_roles_parts_and_images_in_order() -> None:
     assert '"content": "".join(content)' in render
     assert 'rendered_message["type"] = message.item_type' in render
     assert 'rendered_message["call_id"] = message.call_id' in render
-    assert 'rendered_message["output"] = message.output' in render
+    assert (
+        'render_function_call_output_text(message.output or "", message.is_error)'
+        in render
+    )
+    assert 'rendered_message["output"] = template_output' in render
     assert "ResolvedText" in render
     assert "ResolvedImage" in render
     assert "<|vision_start|><|image_pad|><|vision_end|>" in _source(TENSOR_PATH)

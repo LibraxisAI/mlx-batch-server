@@ -9,6 +9,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from .core.config import get_settings
+from .runtime_recycle import (
+    admit_heavy_runtime_work,
+    notify_idle_process_recycler,
+    request_idle_process_recycle,
+)
 from .utils.logger import logger
 
 AuxRuntimeKey = tuple[str, str]
@@ -59,7 +65,6 @@ class AuxiliaryRuntimeManager:
     def operation(self, lane: str, model_id: str) -> Iterator[None]:
         """Admit one queued/active operation before model loading can begin."""
         key = self._key(lane, model_id)
-        from .runtime_recycle import admit_heavy_runtime_work
 
         def admit() -> None:
             with self._condition:
@@ -81,7 +86,6 @@ class AuxiliaryRuntimeManager:
                 if entry is not None:
                     entry.deadline = self._clock() + self._idle_ttl_seconds
                 self._condition.notify_all()
-            from .runtime_recycle import notify_idle_process_recycler
 
             notify_idle_process_recycler()
 
@@ -170,8 +174,6 @@ class AuxiliaryRuntimeManager:
                 self._condition.notify_all()
 
         if retired:
-            from .runtime_recycle import request_idle_process_recycle
-
             request_idle_process_recycle("aux-runtime-idle-ttl")
         return retired
 
@@ -250,8 +252,6 @@ _aux_runtime_manager: AuxiliaryRuntimeManager | None = None
 def get_aux_runtime_manager() -> AuxiliaryRuntimeManager:
     global _aux_runtime_manager
     if _aux_runtime_manager is None:
-        from .core.config import get_settings
-
         _aux_runtime_manager = AuxiliaryRuntimeManager(
             get_settings().aux_model_idle_ttl_seconds
         )
@@ -291,8 +291,6 @@ def replace_aux_runtime(
 def get_aux_runtime_snapshot() -> dict[str, Any]:
     runtime = _aux_runtime_manager
     if runtime is None:
-        from .core.config import get_settings
-
         return {
             "resident_by_lane": {},
             "active_by_lane": {},

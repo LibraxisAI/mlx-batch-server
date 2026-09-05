@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .compaction import LocalCompactionCodec, compacted_user_messages
@@ -131,7 +132,9 @@ class LocalResponsesTokenCounter:
             if cached is not None:
                 return cached
             try:
-                from mlx_lm.tokenizer_utils import load as load_tokenizer
+                # Keep tokenizer/model machinery out of the non-generating API's
+                # import path until a count operation actually needs it.
+                load_tokenizer = import_module("mlx_lm.tokenizer_utils").load
 
                 tokenizer = load_tokenizer(model_directory)
             except Exception as error:

@@ -208,10 +208,12 @@ def test_primary_draft_and_correction_frontiers_are_explicit() -> None:
     assert "verify_tokens = (primary, *draft_tokens)" in method
     assert "keep_tokens = 1 + accepted_count" in method
     assert "verified_tokens=len(verify_tokens)" in method
-    assert (
-        "authoritative_logits, authoritative_hidden = self._target_forward((correction,), reservation)"
-        in method
+    correction_forward = (
+        "authoritative_logits, authoritative_hidden = "
+        "self._target_forward((correction,), reservation, "
+        "telemetry_phase='target_correction')"
     )
+    assert correction_forward in method
     assert "committed_tokens = (primary, *accepted_drafts)" in method
     assert "_restore_cache_bundle(reservation.mtp_cache, mtp_snapshot)" in method
     assert method.count("self.model.mtp_update_cache(") == 1
