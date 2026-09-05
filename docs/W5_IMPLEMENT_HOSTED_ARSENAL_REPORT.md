@@ -1,5 +1,23 @@
 # W5-IMPLEMENT Hosted Arsenal Source Report
 
+## W5c recovery correction
+
+The production composition source contract again reads the actual working-tree
+files for every owner, including the intentionally sequenced P6 wiring. It no
+longer substitutes committed Git objects or references an undefined local.
+
+After a hosted failure, the fixed runtime-authored disclosure remains the
+minimum final user answer. The runtime still performs exactly one no-tools,
+`tool_choice=none` model continuation. If inference itself completes but emits
+no prose, the outer turn now completes on that disclosure; real inference
+failure, cancellation and deadline expiry retain their failure semantics. The
+existing literal contradiction filter is documented as a bounded guard, not
+as proof of arbitrary semantic honesty.
+
+The new source RED contract covers one failed receipt, one fixed disclosure,
+one empty completed continuation and one `TurnCompleted` with no `TurnFailed`.
+It was authored but not executed under Compile Embargo.
+
 ## W5b independent-review correction
 
 This follow-up is source-only under Compile Embargo. It adds request-global
@@ -10,9 +28,9 @@ hop plus bounded content decoding. A typed `fetch_rate_limited` outcome makes
 Anthropic `too_many_requests` reachable without admitting response bodies or
 topology into error text.
 
-The production composition oracles read committed Git objects for the excluded
-P6 files. They therefore cannot become green because of uncommitted wiring in
-`main.py` or `responses/runtime_bootstrap.py`. P6 remains sequenced after W2c.
+The production composition oracles read the actual working tree, including the
+excluded P6 files, so local wiring changes cannot evade their structural
+assertions. P6 remains sequenced after W2c and excluded from W5c staging.
 
 Authored tests are RED contracts and were not executed. BUILD, LINT, TEST and
 RUNTIME remain NOT_ASSESSED.

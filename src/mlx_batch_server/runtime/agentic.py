@@ -426,13 +426,13 @@ class _HostedAgenticTurn:
                 raise HostedRuntimeIntegrityError(  # pragma: no cover - guard
                     "child round produced an unknown terminal event"
                 )
-            if terminal_continuation and not child.saw_text:
-                # I10: an empty success after a hosted failure is illegal.
-                raise HostedRuntimeIntegrityError(
-                    "failure continuation produced no explanatory text"
-                )
             calls = _unique_calls(child.tool_calls)
             if not self._hosted_names or not calls:
+                # The deterministic disclosure is already a complete,
+                # server-authored answer. A successfully completed no-tools
+                # continuation may add no prose; that is still a completed
+                # outer turn. Actual child failure/cancellation/deadline paths
+                # are handled above and remain failures.
                 self._complete_outer(child.terminal)
                 return
             if terminal_continuation:
@@ -1196,8 +1196,9 @@ class _ChildSink:
                 )
                 if any(claim in text for claim in forbidden):
                     # The runtime-authored disclosure is already a non-empty,
-                    # honest assistant answer. Contradictory model bytes stay
-                    # quarantined while the turn can still settle normally.
+                    # honest assistant answer. This bounded guard suppresses
+                    # only the listed literal contradictions; it is not a
+                    # general semantic-honesty classifier.
                     return
             for event in events:
                 self._owner._forward(event)

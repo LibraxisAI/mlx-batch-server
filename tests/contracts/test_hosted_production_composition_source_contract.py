@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +14,7 @@ MAIN_PATH = ROOT / "src/mlx_batch_server/main.py"
 
 
 def _tree(path: Path) -> ast.Module:
-    if path in {BOOTSTRAP_PATH, MAIN_PATH}:
-        relative = path.relative_to(ROOT)
-        source = subprocess.check_output(
-            ("git", "show", f"HEAD:{relative}"), cwd=ROOT, text=True
-        )
-    else:
-        source = path.read_text(encoding="utf-8")
+    source = path.read_text(encoding="utf-8")
     return ast.parse(source, filename=str(path))
 
 
@@ -96,6 +89,7 @@ def test_process_runtime_reads_settings_and_builds_one_catalog_once() -> None:
 
 
 def test_production_factory_has_exact_closed_catalog_and_public_fetch_policy() -> None:
+    source = BOOTSTRAP_PATH.read_text(encoding="utf-8")
     function = _function(_tree(BOOTSTRAP_PATH), "compose_production_hosted_catalog")
     function_source = ast.unparse(function)
 

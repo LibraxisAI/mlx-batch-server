@@ -473,6 +473,36 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
 
 
 @pytest.mark.asyncio
+async def test_empty_completed_failure_continuation_settles_on_runtime_disclosure() -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_fail", "web_search", '{"query":"q"}'),)),
+            _Round(),
+        )
+    )
+    tool = _CountingTool(
+        "web_search", _raising_behavior("provider_unavailable", "unavailable")
+    )
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1
+    assert receipts[0].status == "failed"
+    assert receipts[0].receipt["error"]["code"] == "provider_unavailable"
+    assert tool.invocations == 1
+
+    assert len(inner.requests) == 2
+    assert inner.requests[1].tools == ()
+    assert inner.requests[1].sampling["tool_choice"] == "none"
+
+    texts = _of(events, TextCompleted)
+    assert [event.text for event in texts] == [HOSTED_FAILURE_DISCLOSURE]
+    assert len(_of(events, TurnCompleted)) == 1
+    assert not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
 async def test_model_generated_invalid_arguments_are_f10_receipts() -> None:
     inner = _FakeInner(
         (
