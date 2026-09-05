@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import socket
 
 import httpx
 import pytest
@@ -28,6 +29,13 @@ _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "/x8AAusB9Wl2nWQAAAAASUVORK5CYII="
 )
+_PUBLIC_TEST_IP = "1.1.1.1"
+
+
+def _public_addrinfo(host: str, port: int, *args: object, **kwargs: object):
+    return [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_TEST_IP, port or 0)),
+    ]
 
 
 def _url_request(url: str, *, max_bytes: int = 1024) -> UrlFetchRequest:
@@ -50,6 +58,7 @@ async def test_url_fetcher_checks_every_redirect_origin() -> None:
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(frozenset({"https://media.example"})),
         transport=httpx.MockTransport(handler),
+        getaddrinfo=_public_addrinfo,
     )
 
     with pytest.raises(MediaResolverError, match="origin boundary") as error:
@@ -71,6 +80,7 @@ async def test_url_fetcher_enforces_decoded_stream_budget() -> None:
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(frozenset({"https://media.example"})),
         transport=httpx.MockTransport(handler),
+        getaddrinfo=_public_addrinfo,
     )
 
     with pytest.raises(MediaResolverError) as error:
@@ -100,6 +110,7 @@ async def test_url_fetcher_returns_an_immutable_final_url_receipt() -> None:
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(frozenset({"https://media.example"})),
         transport=httpx.MockTransport(handler),
+        getaddrinfo=_public_addrinfo,
     )
 
     blob = await fetcher.fetch(_url_request("https://media.example/start"))
@@ -107,6 +118,28 @@ async def test_url_fetcher_returns_an_immutable_final_url_receipt() -> None:
     assert blob.content == _PNG
     assert blob.media_type == "image/png"
     assert blob.final_url == "https://media.example/image.png"
+
+
+@pytest.mark.asyncio
+async def test_url_fetcher_allows_public_https_without_allowlist() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/png"},
+            content=_PNG,
+            request=request,
+        )
+
+    fetcher = HttpxUrlFetcher(
+        url_policy=AllowedUrlPolicy(),
+        transport=httpx.MockTransport(handler),
+        getaddrinfo=_public_addrinfo,
+    )
+
+    blob = await fetcher.fetch(_url_request("https://cdn.example/image.png"))
+
+    assert blob.content == _PNG
+    assert blob.final_url == "https://cdn.example/image.png"
 
 
 @pytest.mark.asyncio

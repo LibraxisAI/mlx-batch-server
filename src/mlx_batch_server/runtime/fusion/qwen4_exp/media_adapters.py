@@ -1,8 +1,10 @@
 """Concrete, bounded adapters for the Qwen4Exp media-resolution ports.
 
-Network acquisition remains restricted to explicitly trusted origins. Image
-and file interpretation runs outside the event loop, before runtime admission.
-The default composition includes a bounded PDF renderer but does not invent a
+Network acquisition is owned by SafePublicFetch: public HTTP(S) URLs work
+without an allowlist, while SSRF, redirect rebinding, and resource limits
+fail closed. Exact-origin lockdown remains optional. Image and file
+interpretation runs outside the event loop, before runtime admission. The
+default composition includes a bounded PDF renderer but does not invent a
 ``file_id`` store; foreign identifiers remain an explicit product-edge port.
 """
 
@@ -11,14 +13,20 @@ from __future__ import annotations
 import asyncio
 import io
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Final
-from urllib.parse import urljoin
+from typing import TYPE_CHECKING, Final
 
-import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+if TYPE_CHECKING:
+    import httpx
+
+from ....utils.safe_public_fetch import (
+    SafePublicFetch,
+    SafePublicFetchError,
+    SafePublicFetchLimits,
+)
 from .media_resolver import (
     AllowedUrlPolicy,
     FileIdResolverPort,
@@ -36,7 +44,6 @@ from .media_resolver import (
 )
 from .pdf_materializer import PyMuPDFFileMaterializer
 
-_REDIRECT_STATUSES: Final = frozenset({301, 302, 303, 307, 308})
 _IMAGE_FORMAT_MEDIA_TYPES: Final = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -74,7 +81,11 @@ class HttpFetchPolicy:
 
 
 class HttpxUrlFetcher:
-    """Fetch approved HTTP(S) media without ambient proxy or auth state."""
+    """Fetch public HTTP(S) media through SafePublicFetch.
+
+    Exact-origin lockdown is optional. The default empty policy does not
+    bypass SSRF, redirect, or resource checks owned by SafePublicFetch.
+    """
 
     def __init__(
         self,
@@ -82,140 +93,36 @@ class HttpxUrlFetcher:
         url_policy: AllowedUrlPolicy,
         fetch_policy: HttpFetchPolicy = HttpFetchPolicy(),
         transport: httpx.AsyncBaseTransport | None = None,
+        getaddrinfo: Callable[..., object] | None = None,
     ) -> None:
-        self._url_policy = url_policy
-        self._fetch_policy = fetch_policy
-        self._transport = transport
+        self._safe = SafePublicFetch(
+            limits=SafePublicFetchLimits(
+                timeout=fetch_policy.read_timeout_s,
+                connect_timeout=fetch_policy.connect_timeout_s,
+                write_timeout=fetch_policy.write_timeout_s,
+                pool_timeout=fetch_policy.pool_timeout_s,
+                max_redirects=fetch_policy.max_redirects,
+                chunk_bytes=fetch_policy.chunk_bytes,
+            ),
+            allowed_origins=url_policy.origins,
+            transport=transport,
+            getaddrinfo=getaddrinfo,
+        )
 
     async def fetch(self, request: UrlFetchRequest) -> SourceBlob:
-        if request.max_bytes < 1:
-            raise MediaResolverError(
-                "invalid_fetch_budget",
-                "URL fetch byte budget must be positive",
-            )
-        normalized_types = {
-            _normalize_media_type(value) for value in request.accepted_media_types
-        }
-        accepted = tuple(sorted(normalized_types))
-        if not accepted:
-            raise MediaResolverError(
-                "invalid_fetch_media_types",
-                "URL fetch requires accepted media types",
-            )
-        if not self._url_policy.permits(request.url):
-            raise MediaResolverError(
-                "url_not_allowed",
-                "URL origin is not explicitly allowed",
-            )
-
-        timeout = httpx.Timeout(
-            connect=self._fetch_policy.connect_timeout_s,
-            read=self._fetch_policy.read_timeout_s,
-            write=self._fetch_policy.write_timeout_s,
-            pool=self._fetch_policy.pool_timeout_s,
-        )
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=False,
-                timeout=timeout,
-                transport=self._transport,
-                trust_env=False,
-            ) as client:
-                return await self._fetch_with_client(
-                    client=client,
-                    request=request,
-                    accepted=accepted,
-                )
-        except MediaResolverError:
-            raise
-        except httpx.TimeoutException as exc:
-            raise MediaResolverError(
-                "url_fetch_timeout",
-                "URL fetch exceeded its transport deadline",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise MediaResolverError(
-                "url_fetch_failed",
-                "URL fetch failed",
-            ) from exc
-
-    async def _fetch_with_client(
-        self,
-        *,
-        client: httpx.AsyncClient,
-        request: UrlFetchRequest,
-        accepted: tuple[str, ...],
-    ) -> SourceBlob:
-        current_url = request.url
-        for redirects in range(self._fetch_policy.max_redirects + 1):
-            if not self._url_policy.permits(current_url):
-                raise MediaResolverError(
-                    "redirect_not_allowed",
-                    "URL redirect crossed the configured origin boundary",
-                )
-            async with client.stream(
-                "GET",
-                current_url,
-                headers={
-                    "Accept": ", ".join(accepted),
-                    "User-Agent": "mlx-batch-server-media/1",
-                },
-            ) as response:
-                if response.status_code in _REDIRECT_STATUSES:
-                    if redirects >= self._fetch_policy.max_redirects:
-                        raise MediaResolverError(
-                            "redirect_limit_exceeded",
-                            "URL fetch exceeded its redirect limit",
-                        )
-                    location = response.headers.get("location")
-                    if not location:
-                        raise MediaResolverError(
-                            "invalid_redirect",
-                            "URL redirect is missing a location",
-                        )
-                    current_url = urljoin(str(response.url), location)
-                    continue
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise MediaResolverError(
-                        "url_fetch_status",
-                        f"URL fetch returned HTTP {response.status_code}",
-                    )
-
-                media_type = _response_media_type(response)
-                if media_type not in accepted:
-                    raise MediaResolverError(
-                        "unsupported_media_type",
-                        f"URL returned unsupported media type {media_type!r}",
-                    )
-                _validate_content_length(response, request.max_bytes)
-                content = await self._read_bounded(response, request.max_bytes)
-                return SourceBlob(
-                    content=content,
-                    media_type=media_type,
-                    final_url=str(response.url),
-                )
-
-        raise AssertionError("redirect loop must terminate")
-
-    async def _read_bounded(
-        self,
-        response: httpx.Response,
-        max_bytes: int,
-    ) -> bytes:
-        content = bytearray()
-        async for chunk in response.aiter_bytes(self._fetch_policy.chunk_bytes):
-            content.extend(chunk)
-            if len(content) > max_bytes:
-                raise MediaResolverError(
-                    "source_bytes_exceeded",
-                    "URL response exceeds the remaining source byte budget",
-                )
-        if not content:
-            raise MediaResolverError(
-                "empty_source",
-                "URL response body must not be empty",
+            resource = await self._safe.fetch(
+                request.url,
+                accepted_media_types=request.accepted_media_types,
+                max_bytes=request.max_bytes,
             )
-        return bytes(content)
+        except SafePublicFetchError as exc:
+            raise MediaResolverError(exc.code, str(exc)) from exc
+        return SourceBlob(
+            content=resource.content,
+            media_type=resource.media_type,
+            final_url=resource.final_url,
+        )
 
 
 class PillowImageMaterializer:
@@ -366,8 +273,13 @@ def compose_source_media_resolver(
     file_id_resolver: FileIdResolverPort | None = None,
     pdf_materializer: FileMaterializerPort | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    getaddrinfo: Callable[..., object] | None = None,
 ) -> SourceMediaResolver:
-    """Compose bounded image, text, and PDF ports without file-id ownership."""
+    """Compose bounded image, text, and PDF ports without file-id ownership.
+
+    Public HTTP(S) URLs are fetched through SafePublicFetch by default.
+    ``allowed_url_origins`` is an optional exact-origin lockdown.
+    """
 
     url_policy = AllowedUrlPolicy(frozenset(allowed_url_origins))
     image_materializer = PillowImageMaterializer()
@@ -375,14 +287,11 @@ def compose_source_media_resolver(
         image_materializer=image_materializer,
         pdf_materializer=pdf_materializer or PyMuPDFFileMaterializer(),
     )
-    url_fetcher = (
-        HttpxUrlFetcher(
-            url_policy=url_policy,
-            fetch_policy=fetch_policy,
-            transport=transport,
-        )
-        if url_policy.origins
-        else None
+    url_fetcher = HttpxUrlFetcher(
+        url_policy=url_policy,
+        fetch_policy=fetch_policy,
+        transport=transport,
+        getaddrinfo=getaddrinfo,
     )
     return SourceMediaResolver(
         limits=limits,
@@ -392,49 +301,6 @@ def compose_source_media_resolver(
         image_materializer=image_materializer,
         file_materializer=file_materializer,
     )
-
-
-def _response_media_type(response: httpx.Response) -> str:
-    value = response.headers.get("content-type")
-    if value is None:
-        raise MediaResolverError(
-            "missing_media_type",
-            "URL response requires an explicit Content-Type",
-        )
-    return _normalize_media_type(value)
-
-
-def _normalize_media_type(value: str) -> str:
-    normalized = value.split(";", 1)[0].strip().lower()
-    if not normalized or "/" not in normalized:
-        raise MediaResolverError(
-            "invalid_media_type",
-            "media type must be explicit",
-        )
-    return normalized
-
-
-def _validate_content_length(response: httpx.Response, max_bytes: int) -> None:
-    value = response.headers.get("content-length")
-    if value is None:
-        return
-    try:
-        content_length = int(value)
-    except ValueError as exc:
-        raise MediaResolverError(
-            "invalid_content_length",
-            "URL response Content-Length must be an integer",
-        ) from exc
-    if content_length < 0:
-        raise MediaResolverError(
-            "invalid_content_length",
-            "URL response Content-Length must not be negative",
-        )
-    if content_length > max_bytes:
-        raise MediaResolverError(
-            "source_bytes_exceeded",
-            "URL response exceeds the remaining source byte budget",
-        )
 
 
 __all__ = [
