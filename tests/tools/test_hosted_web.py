@@ -14,6 +14,7 @@ from mlx_batch_server.tools.hosted import (
     HostedToolError,
     HostedToolExecutor,
     HostedToolSuccess,
+    validate_result_payload,
 )
 from mlx_batch_server.tools.hosted_web import (
     HostedWebFetchTool,
@@ -205,6 +206,37 @@ async def test_search_success_sanitizes_results_to_known_fields() -> None:
     assert result["query"] == "loctree"
     assert result["results"] == success.payload["results"]
     assert result["digest"] == success.receipt_fields["result_digest"]
+
+
+@pytest.mark.asyncio
+async def test_search_producer_admits_only_exact_closed_entries_in_order() -> None:
+    """Rows missing any canonical field are dropped, never widened or faked."""
+
+    async def provider(query: str):
+        return [
+            {"title": "A", "url": "https://a.example", "snippet": "sa"},
+            {"title": "no url", "snippet": "s"},
+            {"url": "https://only-url.example"},
+            {"title": "B", "url": "https://b.example", "snippet": "sb", "rank": 2},
+            {"title": "  ", "url": "https://blank-title.example", "snippet": "s"},
+            {"title": "C", "url": "https://c.example", "snippet": 3},
+            "not-a-mapping",
+            {"title": "D", "url": "https://d.example", "snippet": "sd"},
+        ]
+
+    tool = HostedWebSearchTool(provider=provider)
+    success = await tool.invoke({"query": "q"})
+    result = success.result
+    assert result is not None
+    assert result["results"] == [
+        {"title": "A", "url": "https://a.example", "snippet": "sa"},
+        {"title": "B", "url": "https://b.example", "snippet": "sb"},
+        {"title": "D", "url": "https://d.example", "snippet": "sd"},
+    ]
+    for entry in result["results"]:
+        assert set(entry) == {"title", "url", "snippet"}
+    # The produced canonical payload passes the closed validator unchanged.
+    assert validate_result_payload("web_search", result) == dict(result)
 
 
 @pytest.mark.asyncio

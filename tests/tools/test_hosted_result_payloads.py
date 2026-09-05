@@ -115,6 +115,22 @@ def _search_result(**overrides: object) -> dict[str, object]:
     return result
 
 
+def _entry_with(**overrides: object) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "title": "Loctree",
+        "url": "https://loctree.dev",
+        "snippet": "structural sight",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _entry_without(key: str) -> dict[str, object]:
+    entry = _entry_with()
+    del entry[key]
+    return entry
+
+
 def test_result_budget_code_is_registered() -> None:
     assert "result_budget_exceeded" in HOSTED_ERROR_CODES
 
@@ -229,6 +245,48 @@ async def test_search_result_digest_is_golden_and_receipt_agrees() -> None:
         (
             "web_search",
             _search_result(results=[{"url": "https://loctree.dev", "snippet": 3}]),
+        ),
+        # The admitted entry shape is exactly {title, url, snippet}: each
+        # missing key, extra key, empty string, and wrong type fails closed.
+        (
+            "web_search",
+            _search_result(results=[_entry_without("title")]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_without("url")]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_without("snippet")]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(rank=1)]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(title="")]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(url="   ")]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(snippet="")]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(title=7)]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(url=True)]),
+        ),
+        (
+            "web_search",
+            _search_result(results=[_entry_with(snippet=["s"])]),
         ),
         ("reasoner", _document()),
         ("web_fetch", "not-a-mapping"),
@@ -380,6 +438,61 @@ async def test_exhausted_deadline_is_typed_and_carries_no_result() -> None:
     assert handler.calls == 0
 
 
+@pytest.mark.asyncio
+async def test_redirect_keeps_requested_action_and_final_provenance() -> None:
+    """HRPD2 §2.1-2.2 falsifier: one fetch across a redirect keeps two truths.
+
+    Goes red if the sealed action URL is compared with (or rewritten to) the
+    final result URL, if result/receipt final URLs diverge, or if the
+    transport runs a second time (the hop list is asserted exactly).
+    """
+
+    class _RedirectHandler:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            self.paths.append(request.url.path)
+            if request.url.path == "/start":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://example.com/final"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                content=_FETCH_BODY,
+                request=request,
+            )
+
+    handler = _RedirectHandler()
+    catalog = HostedToolCatalog((HostedWebFetchTool(fetch=_fetch(handler)),))
+    executor = HostedToolExecutor(catalog)
+
+    result = await executor.execute(
+        _call("web_fetch", '{"url":"https://example.com/start"}')
+    )
+
+    assert result.ok
+    # Exactly one transport pass: the redirect hop plus the final document.
+    assert handler.paths == ["/start", "/final"]
+    assert result.metadata is not None
+    payload = result.metadata["result"]
+    receipt = result.metadata["receipt"]
+    # Result and receipt both carry the redirect-resolved final URL...
+    assert payload["url"] == "https://example.com/final"
+    assert receipt["final_url"] == "https://example.com/final"
+    assert receipt["result_digest"] == payload["digest"] == _FETCH_DIGEST
+    # ...while the sealed action retains the model-requested URL unchanged.
+    assert validate_sealed_action(
+        "web_fetch",
+        {"kind": "fetch", "url": "https://example.com/start"},
+        result=payload,
+    ) == {"kind": "fetch", "url": "https://example.com/start"}
+    assert handler.paths == ["/start", "/final"]
+
+
 def test_sealed_action_validator_is_closed_and_total() -> None:
     document = _document()
     search = _search_result()
@@ -387,6 +500,14 @@ def test_sealed_action_validator_is_closed_and_total() -> None:
     assert validate_sealed_action(
         "web_fetch", {"kind": "fetch", "url": document["url"]}, result=document
     ) == {"kind": "fetch", "url": "https://cdn.example/page"}
+    # HRPD2 §2.1: the sealed fetch action carries the model-REQUESTED URL and
+    # is returned unchanged even when redirects made the result's final URL
+    # differ; final-URL agreement is solely _verify_result_receipt_agreement.
+    assert validate_sealed_action(
+        "web_fetch",
+        {"kind": "fetch", "url": "https://example.com/start"},
+        result=document,
+    ) == {"kind": "fetch", "url": "https://example.com/start"}
     assert validate_sealed_action(
         "web_search",
         {"kind": "search", "query": "loctree", "sources": ["https://loctree.dev"]},
@@ -397,7 +518,10 @@ def test_sealed_action_validator_is_closed_and_total() -> None:
         ("web_fetch", {"kind": "search", "query": "q", "sources": []}, None),
         ("web_fetch", {"kind": "fetch", "url": "https://a", "extra": 1}, None),
         ("web_fetch", {"kind": "fetch", "url": ""}, None),
-        ("web_fetch", {"kind": "fetch", "url": "https://other"}, document),
+        # A supplied fetch result is still fully validated closed even though
+        # its URL is never compared against the requested action URL.
+        ("web_fetch", {"kind": "fetch", "url": "https://a"}, _document(extra=1)),
+        ("web_fetch", {"kind": "fetch", "url": "https://a"}, _search_result()),
         ("web_search", {"kind": "fetch", "url": "https://a"}, None),
         ("web_search", {"kind": "search", "query": ""}, None),
         (
