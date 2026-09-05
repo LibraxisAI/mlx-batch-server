@@ -9,7 +9,7 @@ The projector consumes ``mlx_batch_server.runtime.events`` — the shared,
 protocol-neutral event family — and never reaches into another protocol's
 internals. Provider semantics are mapped, not flattened.
 
-Two truths are *given* to the projector rather than inferred by it:
+Three truths are *given* to the projector rather than inferred by it:
 
 ``thinking``
     Whether this turn may put reasoning on the Anthropic wire at all, and who
@@ -20,6 +20,10 @@ Two truths are *given* to the projector rather than inferred by it:
 ``service_tier``
     The capacity lane that actually served the turn, reported as delivered
     rather than echoed back from what the request preferred.
+``citations_enabled``
+    Whether the validated web-fetch request armed citations. A later runtime
+    citation event is evidence to validate, never permission to widen the
+    request or annotate the fetched document on its own.
 """
 
 from __future__ import annotations
@@ -61,6 +65,7 @@ from mlx_batch_server.tools.hosted import HOSTED_ERROR_CODES
 from .anthropic_schema import (
     AnthropicStreamEvent,
     CitationCharLocation,
+    CitationsConfig,
     CitationsDeltaBody,
     ContentBlock,
     ContentBlockDeltaEvent,
@@ -252,6 +257,7 @@ class AnthropicMessageProjector:
         initial_usage: Usage | None = None,
         thinking: ThinkingProjection | None = None,
         service_tier: ResponseServiceTier = ResponseServiceTier.STANDARD,
+        citations_enabled: bool = False,
     ) -> None:
         if not message_id.strip():
             raise ValueError("message_id must not be empty")
@@ -264,6 +270,10 @@ class AnthropicMessageProjector:
         # The lane that actually served this turn. This process runs exactly
         # one, and reports it rather than echoing the requested preference.
         self._service_tier = service_tier
+        # A runtime citation event cannot widen the request. Only the exact
+        # bool decision supplied before execution arms citation projection;
+        # omitted and substitution callers therefore fail closed.
+        self._citations_enabled = citations_enabled is True
         # The public alias the caller asked for. The runtime's resolved
         # physical model identity is deliberately never substituted here: the
         # ``model`` a client sees at message_start is the same one it sees in
@@ -857,6 +867,11 @@ class AnthropicMessageProjector:
                 content=DocumentBlock(
                     source=PlainTextSource(data=content),
                     title=url,
+                    citations=(
+                        CitationsConfig(enabled=True)
+                        if self._citations_enabled
+                        else None
+                    ),
                 ),
             ),
         )
@@ -889,6 +904,11 @@ class AnthropicMessageProjector:
     def _on_hosted_citation(
         self, event: HostedCitation
     ) -> tuple[AnthropicStreamEvent, ...]:
+        if not self._citations_enabled:
+            raise AnthropicAPIError(
+                "hosted citation received when citations were not enabled",
+                error_type="api_error",
+            )
         call = self._hosted_calls.get(event.source_call_id)
         if (
             call is None
@@ -911,6 +931,13 @@ class AnthropicMessageProjector:
         if event.source_end > len(source_text):
             raise AnthropicAPIError(
                 "hosted citation source range exceeds its web_fetch document",
+                error_type="api_error",
+            )
+        if (
+            source_text[event.source_start : event.source_end] != event.cited_text
+        ):
+            raise AnthropicAPIError(
+                "hosted citation source range is not verbatim web_fetch document text",
                 error_type="api_error",
             )
         key = self._content_key(event.output_index, event.content_index)
