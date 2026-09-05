@@ -187,7 +187,20 @@ def test_brave_provider_source_is_fixed_single_attempt_and_secret_closed() -> No
         if key is not None
     }
     assert isinstance(params_by_name["q"], ast.Name)
-    assert _constant(params_by_name["count"]) == 5
+    count = params_by_name["count"]
+    assert isinstance(count, ast.Name)
+    assert count.id == "_RESULT_COUNT"
+    result_count_assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_RESULT_COUNT"
+            for target in node.targets
+        )
+    ]
+    assert len(result_count_assignments) == 1
+    assert _constant(result_count_assignments[0].value) == 5
 
 
 def test_lazy_and_cli_start_paths_delegate_to_the_same_process_owner() -> None:
