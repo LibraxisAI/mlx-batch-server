@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -67,6 +69,43 @@ class _Starter(RuntimeStartService):
         return _Turn(request.response_id)
 
 
+class _BlockingTurn(_Turn):
+    def __init__(self, response_id: str) -> None:
+        super().__init__(response_id)
+        self.closed = asyncio.Event()
+
+    def cancel(self, reason: str) -> bool:
+        accepted = super().cancel(reason)
+        self.closed.set()
+        return accepted
+
+    async def wait_closed(self) -> None:
+        await self.closed.wait()
+
+
+class _BlockingStarter(RuntimeStartService):
+    def __init__(self) -> None:
+        self.turn: _BlockingTurn | None = None
+
+    async def start(
+        self,
+        request: GenerationRequest,
+        sink: TurnSink,
+        *,
+        cancel: FirstWriterCancelToken | None = None,
+    ) -> _BlockingTurn:
+        assert cancel is not None
+        sink.emit(
+            TurnStarted(
+                response_id=request.response_id,
+                model=request.runtime.model_id,
+                created_at=1,
+            )
+        )
+        self.turn = _BlockingTurn(request.response_id)
+        return self.turn
+
+
 async def _collect(
     source: RuntimeAnthropicTurnSource, turn: AnthropicTurn
 ) -> list[Any]:
@@ -83,9 +122,9 @@ async def test_runtime_source_maps_one_turn_to_the_canonical_owner() -> None:
     turn = AnthropicTurn(
         model_alias="buddy",
         messages=({"role": "user", "content": "hello"},),
-        tools=({"type": "function", "function": {"name": "lookup"}},),
-        tool_choice={"type": "auto"},
-        sampling={"max_tokens": 32},
+        tools=({"type": "function", "name": "lookup"},),
+        tool_choice="auto",
+        sampling={"max_output_tokens": 32},
         reasoning={"enabled": True, "budget_tokens": 8},
         metadata={"user_id": "vet-1"},
     )
@@ -98,7 +137,7 @@ async def test_runtime_source_maps_one_turn_to_the_canonical_owner() -> None:
     assert request.runtime is RUNTIME
     assert request.messages == turn.messages
     assert request.tools == turn.tools
-    assert request.sampling == {"max_tokens": 32, "tool_choice": {"type": "auto"}}
+    assert request.sampling == {"max_output_tokens": 32, "tool_choice": "auto"}
     assert request.reasoning == turn.reasoning
     assert request.metadata == {
         "user_id": "vet-1",
@@ -146,6 +185,47 @@ async def test_runtime_source_maps_alias_failure_to_anthropic_error() -> None:
                 messages=({"role": "user", "content": "hello"},),
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_is_delivered_to_the_started_backend() -> None:
+    starter = _BlockingStarter()
+    source = RuntimeAnthropicTurnSource(
+        starter=starter,
+        resolve_model=lambda alias: (RUNTIME, "main"),
+    )
+    events = source.stream(
+        AnthropicTurn(
+            model_alias="buddy",
+            messages=({"role": "user", "content": "hello"},),
+        )
+    )
+
+    assert isinstance(await anext(events), TurnStarted)
+    await events.aclose()
+
+    assert starter.turn is not None
+    assert starter.turn.cancelled == ["anthropic_client_disconnected"]
+
+
+def test_canonical_app_binds_the_engine_to_its_own_receipt() -> None:
+    source = RuntimeAnthropicTurnSource(
+        starter=_Starter(),
+        resolve_model=lambda alias: (RUNTIME, "main"),
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                responses_runtime=SimpleNamespace(
+                    responses=SimpleNamespace(anthropic_turn_source=source)
+                )
+            )
+        )
+    )
+
+    engine = anthropic_router._create_request_engine(request, "buddy")
+
+    assert engine._turn_source is source
 
 
 def test_anthropic_router_has_no_legacy_runtime_lifecycle_owner() -> None:

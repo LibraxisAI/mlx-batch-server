@@ -33,7 +33,7 @@ class AnthropicTurn:
     model_alias: str
     messages: Sequence[Mapping[str, Any]]
     tools: Sequence[Mapping[str, Any]] = ()
-    tool_choice: Mapping[str, Any] | None = None
+    tool_choice: str | Mapping[str, Any] | None = None
     sampling: Mapping[str, Any] = field(default_factory=dict)
     reasoning: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)

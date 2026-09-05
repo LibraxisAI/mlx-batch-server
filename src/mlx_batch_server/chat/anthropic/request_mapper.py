@@ -23,6 +23,9 @@ from .anthropic_schema import (
     RequestToolUseBlock,
     SystemPrompt,
     ThinkingConfigEnabled,
+    ToolChoiceAny,
+    ToolChoiceAuto,
+    ToolChoiceNone,
     ToolChoiceTool,
 )
 from .errors import AnthropicAPIError, UnsupportedCapabilityError
@@ -75,6 +78,16 @@ def _reject_unsupported(request: MessagesRequest) -> None:
                     "protocol; the request is refused rather than answered "
                     "from text alone.",
                 )
+            if (
+                isinstance(block, RequestToolResultBlock)
+                and not isinstance(block.content, str)
+                and any(isinstance(item, RequestImageBlock) for item in block.content)
+            ):
+                raise UnsupportedCapabilityError(
+                    "Image content inside an Anthropic tool_result",
+                    "This runtime cannot preserve tool-result media; the request "
+                    "is refused rather than silently dropping the image.",
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +102,7 @@ def _build_messages(
     mapped: list[Mapping[str, Any]] = []
     system_text = _system_text(system)
     if system_text:
-        mapped.append({"role": "system", "content": system_text})
+        mapped.append({"role": "system", "content": _text_content(system_text)})
     for message in messages:
         mapped.extend(_map_message(message))
     return tuple(mapped)
@@ -105,7 +118,9 @@ def _system_text(system: SystemPrompt | None) -> str:
 
 def _map_message(message: InputMessage) -> tuple[Mapping[str, Any], ...]:
     if isinstance(message.content, str):
-        return ({"role": message.role.value, "content": message.content},)
+        return (
+            {"role": message.role.value, "content": _text_content(message.content)},
+        )
 
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -138,18 +153,18 @@ def _map_message(message: InputMessage) -> tuple[Mapping[str, Any], ...]:
 
     primary: dict[str, Any] = {"role": message.role.value}
     if text_parts:
-        primary["content"] = "\n".join(text_parts)
+        primary["content"] = _text_content("\n".join(text_parts))
     if reasoning_parts:
         primary["reasoning"] = "\n".join(reasoning_parts)
     if tool_calls:
         primary["tool_calls"] = tool_calls
     if len(primary) > 1:
-        primary.setdefault("content", "")
+        primary.setdefault("content", _text_content(""))
         mapped.append(primary)
     elif not mapped:
         # A content list that produced nothing at all still has to occupy the
         # turn, otherwise the conversation silently loses a role boundary.
-        mapped.append({"role": message.role.value, "content": ""})
+        mapped.append({"role": message.role.value, "content": _text_content("")})
     return tuple(mapped)
 
 
@@ -161,9 +176,11 @@ def _map_tool_result(block: RequestToolResultBlock) -> Mapping[str, Any]:
             item.text for item in block.content if isinstance(item, RequestTextBlock)
         )
     result: dict[str, Any] = {
+        "type": "function_call_output",
         "role": "tool",
-        "tool_call_id": block.tool_use_id,
-        "content": content,
+        "call_id": block.tool_use_id,
+        "output": content,
+        "content": _text_content(content),
     }
     if block.is_error:
         # Preserved rather than collapsed into the text: an errored tool
@@ -181,15 +198,13 @@ def _map_tool(tool: AnthropicTool) -> Mapping[str, Any]:
     schema = tool.input_schema.model_dump(mode="json", exclude_none=True)
     return {
         "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description or "",
-            "parameters": schema,
-        },
+        "name": tool.name,
+        "description": tool.description or "",
+        "parameters": schema,
     }
 
 
-def _map_tool_choice(request: MessagesRequest) -> Mapping[str, Any] | None:
+def _map_tool_choice(request: MessagesRequest) -> str | Mapping[str, Any] | None:
     choice = request.tool_choice
     if choice is None:
         return None
@@ -200,14 +215,20 @@ def _map_tool_choice(request: MessagesRequest) -> Mapping[str, Any] | None:
                 f"tool_choice names {choice.name!r}, which is not in tools",
                 error_type="invalid_request_error",
             )
-    return choice.model_dump(mode="json")
+        return {"type": "function", "name": choice.name}
+    if isinstance(choice, ToolChoiceAuto):
+        return "auto"
+    if isinstance(choice, ToolChoiceAny):
+        return "required"
+    if isinstance(choice, ToolChoiceNone):
+        return "none"
+    raise TypeError(f"unsupported Anthropic tool choice: {type(choice).__name__}")
 
 
 def _map_sampling(request: MessagesRequest) -> Mapping[str, Any]:
-    # max_tokens is carried through exactly as the client asked. No ceiling is
-    # imposed here; budget policy belongs to the runtime owner, not to a
-    # protocol adapter.
-    sampling: dict[str, Any] = {"max_tokens": request.max_tokens}
+    # Anthropic calls this max_tokens; the shared runtime ABI calls the same
+    # output budget max_output_tokens.
+    sampling: dict[str, Any] = {"max_output_tokens": request.max_tokens}
     if request.temperature is not None:
         sampling["temperature"] = request.temperature
     if request.top_p is not None:
@@ -215,8 +236,16 @@ def _map_sampling(request: MessagesRequest) -> Mapping[str, Any]:
     if request.top_k is not None:
         sampling["top_k"] = request.top_k
     if request.stop_sequences:
-        sampling["stop_sequences"] = list(request.stop_sequences)
+        sampling["stop"] = tuple(request.stop_sequences)
+    if request.tool_choice is not None:
+        sampling["parallel_tool_calls"] = not getattr(
+            request.tool_choice, "disable_parallel_tool_use", False
+        )
     return sampling
+
+
+def _text_content(text: str) -> tuple[Mapping[str, str], ...]:
+    return ({"type": "input_text", "text": text},)
 
 
 def _map_reasoning(request: MessagesRequest) -> Mapping[str, Any]:
