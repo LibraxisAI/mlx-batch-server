@@ -5832,169 +5832,52 @@ class _Qwen4ExpTensorRuntime:
         if any(reservation.position_table is not None for reservation in reservations):
             raise ValueError("multi-row MTP cannot flatten request-local M-RoPE")
 
-        primaries: list[int] = []
-        primary_is_new: list[bool] = []
-        emitted_rows: list[list[int]] = []
-        terminal_rows: list[bool] = []
-        active_ordinals: list[int] = []
-        for ordinal, reservation in enumerate(reservations):
-            primary, is_new = self._take_primary(reservation)
-            emitted = [primary] if is_new else []
-            if not is_new and self._pending_primary_is_terminal(reservation, primary):
-                raise RuntimeError("terminal pending primary was scheduled for decode")
-            terminal = self._would_finish(reservation, tuple(emitted))
-            primaries.append(primary)
-            primary_is_new.append(is_new)
-            emitted_rows.append(emitted)
-            terminal_rows.append(terminal)
-            if not terminal:
-                active_ordinals.append(ordinal)
-
-        outcomes: list[_TensorDecodeOutcome | None] = [None] * len(reservations)
-        for ordinal, terminal in enumerate(terminal_rows):
-            if not terminal:
-                continue
-            reservation = reservations[ordinal]
-            emitted_tokens = tuple(emitted_rows[ordinal])
-            self._commit_output(reservation, emitted_tokens)
-            outcomes[ordinal] = _TensorDecodeOutcome(
-                tokens=emitted_tokens,
-                finished=True,
-                finish_reason=self._finish_reason(reservation, primaries[ordinal]),
-                ar_decode_tokens=int(primary_is_new[ordinal]),
-            )
-
-        if not active_ordinals:
-            return tuple(outcome for outcome in outcomes if outcome is not None)
-
-        active_rows = tuple(reservations[index] for index in active_ordinals)
-        max_drafts = min(
-            draft_depth,
-            *(
-                reservation.max_output_tokens
-                - (reservation.output_tokens + len(emitted_rows[ordinal]))
-                for ordinal, reservation in zip(
-                    active_ordinals,
-                    active_rows,
-                    strict=True,
-                )
-            ),
-        )
-        if max_drafts < 1:
-            raise RuntimeError("non-terminal multi-row MTP requires draft capacity")
-
-        hidden_before_primary = tuple(reservation.hidden for reservation in active_rows)
-        mtp_snapshots = tuple(
-            self.model.snapshot(reservation.mtp_cache) for reservation in active_rows
-        )
-        draft_hidden = hidden_before_primary
-        next_tokens = tuple(primaries[index] for index in active_ordinals)
-        draft_tokens: list[list[int]] = [[] for _ in active_rows]
-        draft_distributions: list[list[Distribution | None]] = [[] for _ in active_rows]
-        for _ in range(max_drafts):
-            draft_forwards = self._mtp_forward_batch(
-                draft_hidden,
-                next_tokens,
-                active_rows,
-            )
-            next_hidden: list[Any] = []
-            sampled_tokens: list[int] = []
-            for row_index, (reservation, row_forward) in enumerate(
-                zip(active_rows, draft_forwards, strict=True)
-            ):
-                draft_logits, draft_hidden_next = row_forward
-                draft, draft_q = _sample_draft_from_logits(
-                    draft_logits[0, -1],
-                    reservation.draft_sampler,
-                    reservation.rng,
-                    need_distribution=reservation.sampler.temperature > 0,
-                )
-                draft_tokens[row_index].append(draft)
-                draft_distributions[row_index].append(draft_q)
-                next_hidden.append(draft_hidden_next[:, -1:, :])
-                sampled_tokens.append(draft)
-            draft_hidden = tuple(next_hidden)
-            next_tokens = tuple(sampled_tokens)
-
-        verify_token_rows = tuple(
-            (primaries[ordinal], *draft_tokens[row_index])
-            for row_index, ordinal in enumerate(active_ordinals)
-        )
         target_snapshots = tuple(
-            self.model.snapshot(reservation.cache) for reservation in active_rows
+            self.model.snapshot(reservation.cache) for reservation in reservations
         )
-        capture = self.model.begin_capture(active_rows[0].cache)
-        try:
-            verify_forwards = self._target_forward_batch(
-                verify_token_rows,
-                active_rows,
-                phase="verify",
-                telemetry_phase=None,
+        mtp_snapshots = tuple(
+            self.model.snapshot(reservation.mtp_cache) for reservation in reservations
+        )
+        entry_pending = tuple(
+            reservation.pending_primary for reservation in reservations
+        )
+        entry_positions = tuple(reservation.position for reservation in reservations)
+        entry_output_counts = tuple(
+            reservation.output_tokens for reservation in reservations
+        )
+        entry_logits = tuple(
+            _snapshot_value(reservation.logits) for reservation in reservations
+        )
+        entry_hidden = tuple(
+            _snapshot_value(reservation.hidden) for reservation in reservations
+        )
+        entry_rng_states = tuple(
+            (
+                None
+                if reservation.rng is None
+                else _snapshot_value(reservation.rng.bit_generator.state)
             )
-        finally:
-            self.model.end_capture(active_rows[0].cache, capture)
+            for reservation in reservations
+        )
 
-        accepted_counts: list[int] = []
-        rejected_rows: list[bool] = []
-        corrections: list[int | None] = []
-        for row_index, reservation in enumerate(active_rows):
-            verify_logits = verify_forwards[row_index][0]
-            accepted_count = 0
-            rejected = False
-            correction: int | None = None
-            for index, (draft, draft_q) in enumerate(
-                zip(
-                    draft_tokens[row_index],
-                    draft_distributions[row_index],
-                    strict=True,
-                )
-            ):
-                if reservation.sampler.temperature <= 0:
-                    accepted = draft == int(mx.argmax(verify_logits[0, index]).item())
-                else:
-                    target_p = _distribution_from_mlx_logits(
-                        verify_logits[0, index],
-                        reservation.sampler,
-                    )
-                    if draft_q is None:
-                        raise RuntimeError(
-                            "stochastic MTP requires a draft distribution"
-                        )
-                    rng = _require_sampling_rng(reservation.rng)
-                    accept_p = acceptance_probability(target_p, draft_q, draft)
-                    accepted = float(rng.random()) <= accept_p
-                    if not accepted:
-                        correction = sample_from_distribution(
-                            residual_distribution(target_p, draft_q),
-                            rng,
-                        )
-                if not accepted:
-                    rejected = True
-                    break
-                accepted_count += 1
-                if draft in self._stop_token_ids:
-                    break
-            accepted_counts.append(accepted_count)
-            rejected_rows.append(rejected)
-            corrections.append(correction)
+        staged_rngs: list[np.random.Generator | None] = []
+        for rng_state in entry_rng_states:
+            if rng_state is None:
+                staged_rngs.append(None)
+                continue
+            staged_rng = np.random.default_rng()
+            staged_rng.bit_generator.state = _snapshot_value(rng_state)
+            staged_rngs.append(staged_rng)
 
-        try:
-            for row_index, reservation in enumerate(active_rows):
-                committed = self.model.commit_verified_window(
-                    reservation.cache,
-                    target_snapshots[row_index],
-                    keep_tokens=1 + accepted_counts[row_index],
-                    verified_tokens=len(verify_token_rows[row_index]),
-                )
-                if not committed:
-                    raise RuntimeError(
-                        "multi-row MTP verified-window commit was refused"
-                    )
-        except Exception:
+        def clear_captures() -> None:
+            for reservation in reservations:
+                self.model.clear_verify_capture(reservation.cache)
+
+        def restore_entry_state() -> None:
             restored_target = tuple(
                 _restore_cache_bundle(reservation.cache, snapshot)
                 for reservation, snapshot in zip(
-                    active_rows,
+                    reservations,
                     target_snapshots,
                     strict=True,
                 )
@@ -6002,150 +5885,449 @@ class _Qwen4ExpTensorRuntime:
             restored_mtp = tuple(
                 _restore_cache_bundle(reservation.mtp_cache, snapshot)
                 for reservation, snapshot in zip(
-                    active_rows,
+                    reservations,
                     mtp_snapshots,
                     strict=True,
                 )
             )
-            _eval_tensor_values(restored_target, restored_mtp)
-            raise
-        finally:
-            for reservation in active_rows:
-                self.model.clear_verify_capture(reservation.cache)
-
-        self._record_tensor_forward(
-            "target_verify",
-            batch_rows=len(active_rows),
-            sequence_length=len(verify_token_rows[0]),
-        )
-
-        authoritative_logits: list[Any] = []
-        authoritative_hidden: list[Any] = []
-        for row_index, (verify_logits, verify_hidden) in enumerate(verify_forwards):
-            keep_tokens = 1 + accepted_counts[row_index]
-            authoritative_logits.append(
-                verify_logits[:, keep_tokens - 1 : keep_tokens, :]
+            for ordinal, reservation in enumerate(reservations):
+                reservation.pending_primary = entry_pending[ordinal]
+                reservation.position = entry_positions[ordinal]
+                reservation.output_tokens = entry_output_counts[ordinal]
+                reservation.logits = _snapshot_value(entry_logits[ordinal])
+                reservation.hidden = _snapshot_value(entry_hidden[ordinal])
+                rng_state = entry_rng_states[ordinal]
+                if reservation.rng is not None and rng_state is not None:
+                    reservation.rng.bit_generator.state = _snapshot_value(rng_state)
+            _eval_tensor_values(
+                restored_target,
+                restored_mtp,
+                entry_logits,
+                entry_hidden,
             )
-            authoritative_hidden.append(verify_hidden[:, :keep_tokens, :])
 
-        correction_indices = tuple(
-            index
-            for index, (reservation, rejected) in enumerate(
-                zip(active_rows, rejected_rows, strict=True)
-            )
-            if rejected and reservation.sampler.temperature > 0
-        )
-        if correction_indices:
-            correction_tokens: list[tuple[int, ...]] = []
-            for index in correction_indices:
-                correction = corrections[index]
-                if correction is None:
-                    raise RuntimeError("stochastic MTP rejection requires correction")
-                correction_tokens.append((correction,))
-            correction_forwards = self._target_forward_batch(
-                tuple(correction_tokens),
-                tuple(active_rows[index] for index in correction_indices),
-                telemetry_phase="target_correction",
-            )
-            if len(correction_forwards) != len(correction_indices):
-                raise RuntimeError("stochastic correction batch lost a row")
-            for row_index, row_forward in zip(
-                correction_indices,
-                correction_forwards,
-                strict=True,
-            ):
-                authoritative_logits[row_index] = row_forward[0]
-                authoritative_hidden[row_index] = row_forward[1]
+        def finish_reason(
+            reservation: _TensorReservation,
+            emitted_tokens: tuple[int, ...],
+            output_count: int,
+        ) -> str | None:
+            if not emitted_tokens:
+                return None
+            if emitted_tokens[-1] in self._stop_token_ids:
+                return "stop"
+            if output_count >= reservation.max_output_tokens:
+                return "length"
+            return None
 
-        restored_mtp = tuple(
-            _restore_cache_bundle(reservation.mtp_cache, snapshot)
-            for reservation, snapshot in zip(
-                active_rows,
-                mtp_snapshots,
-                strict=True,
-            )
-        )
-        _eval_tensor_values(restored_mtp)
+        try:
+            primaries: list[int] = []
+            primary_is_new: list[bool] = []
+            emitted_rows: list[list[int]] = []
+            terminal_rows: list[bool] = []
+            active_ordinals: list[int] = []
+            for ordinal, reservation in enumerate(reservations):
+                pending = entry_pending[ordinal]
+                if pending is not None:
+                    primary = pending
+                    is_new = False
+                elif reservation.sampler.temperature <= 0:
+                    primary = self._next_greedy_token(reservation)
+                    is_new = True
+                else:
+                    self._require_decode_ready(reservation)
+                    primary, _ = _sample_from_logits(
+                        reservation.logits[0, -1],
+                        reservation.sampler,
+                        staged_rngs[ordinal],
+                    )
+                    is_new = True
+                emitted = [primary] if is_new else []
+                if not is_new and self._pending_primary_is_terminal(
+                    reservation,
+                    primary,
+                ):
+                    raise RuntimeError(
+                        "terminal pending primary was scheduled for decode"
+                    )
+                terminal = self._would_finish(reservation, tuple(emitted))
+                primaries.append(primary)
+                primary_is_new.append(is_new)
+                emitted_rows.append(emitted)
+                terminal_rows.append(terminal)
+                if not terminal:
+                    active_ordinals.append(ordinal)
 
-        history_rows: list[list[tuple[Any, int]]] = []
-        for row_index, ordinal in enumerate(active_ordinals):
-            verify_hidden = verify_forwards[row_index][1]
-            accepted = accepted_counts[row_index]
-            history: list[tuple[Any, int]] = [
-                (hidden_before_primary[row_index], primaries[ordinal])
-            ]
-            history.extend(
-                (verify_hidden[:, index : index + 1, :], draft)
-                for index, draft in enumerate(draft_tokens[row_index][:accepted])
-            )
-            correction = corrections[row_index]
-            if correction is not None:
-                history.append(
-                    (
-                        verify_hidden[:, accepted : accepted + 1, :],
-                        correction,
+            staged_logits = list(entry_logits)
+            staged_hidden = list(entry_hidden)
+            staged_pending: list[int | None] = [None] * len(reservations)
+            outcomes: list[_TensorDecodeOutcome | None] = [None] * len(reservations)
+            for ordinal, terminal in enumerate(terminal_rows):
+                if not terminal:
+                    continue
+                emitted_tokens = tuple(emitted_rows[ordinal])
+                output_count = entry_output_counts[ordinal] + len(emitted_tokens)
+                outcomes[ordinal] = _TensorDecodeOutcome(
+                    tokens=emitted_tokens,
+                    finished=True,
+                    finish_reason=finish_reason(
+                        reservations[ordinal],
+                        emitted_tokens,
+                        output_count,
+                    ),
+                    ar_decode_tokens=int(primary_is_new[ordinal]),
+                )
+
+            if active_ordinals:
+                active_rows = tuple(reservations[index] for index in active_ordinals)
+                active_rngs = tuple(staged_rngs[index] for index in active_ordinals)
+                max_drafts = min(
+                    draft_depth,
+                    *(
+                        reservation.max_output_tokens
+                        - (entry_output_counts[ordinal] + len(emitted_rows[ordinal]))
+                        for ordinal, reservation in zip(
+                            active_ordinals,
+                            active_rows,
+                            strict=True,
+                        )
+                    ),
+                )
+                if max_drafts < 1:
+                    raise RuntimeError(
+                        "non-terminal multi-row MTP requires draft capacity"
+                    )
+
+                hidden_before_primary = tuple(
+                    reservation.hidden for reservation in active_rows
+                )
+                draft_hidden = hidden_before_primary
+                next_tokens = tuple(primaries[index] for index in active_ordinals)
+                draft_tokens: list[list[int]] = [[] for _ in active_rows]
+                draft_distributions: list[list[Distribution | None]] = [
+                    [] for _ in active_rows
+                ]
+                for _ in range(max_drafts):
+                    draft_forwards = self._mtp_forward_batch(
+                        draft_hidden,
+                        next_tokens,
+                        active_rows,
+                    )
+                    next_hidden: list[Any] = []
+                    sampled_tokens: list[int] = []
+                    for row_index, (reservation, row_forward) in enumerate(
+                        zip(active_rows, draft_forwards, strict=True)
+                    ):
+                        draft_logits, draft_hidden_next = row_forward
+                        draft, draft_q = _sample_draft_from_logits(
+                            draft_logits[0, -1],
+                            reservation.draft_sampler,
+                            active_rngs[row_index],
+                            need_distribution=reservation.sampler.temperature > 0,
+                        )
+                        draft_tokens[row_index].append(draft)
+                        draft_distributions[row_index].append(draft_q)
+                        next_hidden.append(draft_hidden_next[:, -1:, :])
+                        sampled_tokens.append(draft)
+                    draft_hidden = tuple(next_hidden)
+                    next_tokens = tuple(sampled_tokens)
+
+                verify_token_rows = tuple(
+                    (primaries[ordinal], *draft_tokens[row_index])
+                    for row_index, ordinal in enumerate(active_ordinals)
+                )
+                capture = self.model.begin_capture(active_rows[0].cache)
+                try:
+                    verify_forwards = self._target_forward_batch(
+                        verify_token_rows,
+                        active_rows,
+                        phase="verify",
+                        telemetry_phase=None,
+                    )
+                finally:
+                    self.model.end_capture(active_rows[0].cache, capture)
+
+                accepted_counts: list[int] = []
+                rejected_rows: list[bool] = []
+                corrections: list[int | None] = []
+                committed_token_rows: list[tuple[int, ...]] = []
+                for row_index, reservation in enumerate(active_rows):
+                    verify_logits = verify_forwards[row_index][0]
+                    accepted_count = 0
+                    rejected = False
+                    correction: int | None = None
+                    for index, (draft, draft_q) in enumerate(
+                        zip(
+                            draft_tokens[row_index],
+                            draft_distributions[row_index],
+                            strict=True,
+                        )
+                    ):
+                        if reservation.sampler.temperature <= 0:
+                            accepted = draft == int(
+                                mx.argmax(verify_logits[0, index]).item()
+                            )
+                        else:
+                            target_p = _distribution_from_mlx_logits(
+                                verify_logits[0, index],
+                                reservation.sampler,
+                            )
+                            if draft_q is None:
+                                raise RuntimeError(
+                                    "stochastic MTP requires a draft distribution"
+                                )
+                            rng = _require_sampling_rng(active_rngs[row_index])
+                            accept_p = acceptance_probability(
+                                target_p,
+                                draft_q,
+                                draft,
+                            )
+                            accepted = float(rng.random()) <= accept_p
+                            if not accepted:
+                                correction = sample_from_distribution(
+                                    residual_distribution(target_p, draft_q),
+                                    rng,
+                                )
+                        if not accepted:
+                            rejected = True
+                            break
+                        accepted_count += 1
+                        if draft in self._stop_token_ids:
+                            break
+                    accepted_counts.append(accepted_count)
+                    rejected_rows.append(rejected)
+                    corrections.append(correction)
+                    committed_tokens = (
+                        primaries[active_ordinals[row_index]],
+                        *draft_tokens[row_index][:accepted_count],
+                    )
+                    if rejected and reservation.sampler.temperature > 0:
+                        if correction is None:
+                            raise RuntimeError(
+                                "stochastic MTP rejection requires correction"
+                            )
+                        committed_tokens = (*committed_tokens, correction)
+                    committed_token_rows.append(committed_tokens)
+
+                committed_from_capture = True
+                for row_index, reservation in enumerate(active_rows):
+                    committed = self.model.commit_verified_window(
+                        reservation.cache,
+                        target_snapshots[active_ordinals[row_index]],
+                        keep_tokens=1 + accepted_counts[row_index],
+                        verified_tokens=len(verify_token_rows[row_index]),
+                    )
+                    if not committed:
+                        committed_from_capture = False
+                        break
+                clear_captures()
+
+                authoritative_logits: list[Any] = [None] * len(active_rows)
+                authoritative_hidden: list[Any] = [None] * len(active_rows)
+                history_hidden_rows: list[Any] = [None] * len(active_rows)
+                if committed_from_capture:
+                    self._record_tensor_forward(
+                        "target_verify",
+                        batch_rows=len(active_rows),
+                        sequence_length=len(verify_token_rows[0]),
+                    )
+                    for row_index, (verify_logits, verify_hidden) in enumerate(
+                        verify_forwards
+                    ):
+                        keep_tokens = 1 + accepted_counts[row_index]
+                        authoritative_logits[row_index] = verify_logits[
+                            :, keep_tokens - 1 : keep_tokens, :
+                        ]
+                        authoritative_hidden[row_index] = verify_hidden[
+                            :, :keep_tokens, :
+                        ]
+                        history_hidden_rows[row_index] = verify_hidden[
+                            :, :keep_tokens, :
+                        ]
+
+                    correction_indices = tuple(
+                        index
+                        for index, (reservation, rejected) in enumerate(
+                            zip(active_rows, rejected_rows, strict=True)
+                        )
+                        if rejected and reservation.sampler.temperature > 0
+                    )
+                    if correction_indices:
+                        correction_forwards = self._target_forward_batch(
+                            tuple(
+                                (committed_token_rows[index][-1],)
+                                for index in correction_indices
+                            ),
+                            tuple(active_rows[index] for index in correction_indices),
+                            telemetry_phase="target_correction",
+                        )
+                        if len(correction_forwards) != len(correction_indices):
+                            raise RuntimeError("stochastic correction batch lost a row")
+                        for row_index, row_forward in zip(
+                            correction_indices,
+                            correction_forwards,
+                            strict=True,
+                        ):
+                            authoritative_logits[row_index] = row_forward[0]
+                            authoritative_hidden[row_index] = row_forward[1]
+                else:
+                    restored_target = tuple(
+                        _restore_cache_bundle(reservation.cache, snapshot)
+                        for reservation, snapshot in zip(
+                            reservations,
+                            target_snapshots,
+                            strict=True,
+                        )
+                    )
+                    _eval_tensor_values(restored_target)
+                    width_groups: dict[int, list[int]] = {}
+                    for row_index, committed_tokens in enumerate(committed_token_rows):
+                        width_groups.setdefault(len(committed_tokens), []).append(
+                            row_index
+                        )
+                    for group_indices in width_groups.values():
+                        if len(group_indices) >= 2:
+                            group_forwards = self._target_forward_batch(
+                                tuple(
+                                    committed_token_rows[index]
+                                    for index in group_indices
+                                ),
+                                tuple(active_rows[index] for index in group_indices),
+                            )
+                        else:
+                            row_index = group_indices[0]
+                            group_forwards = (
+                                self._target_forward(
+                                    committed_token_rows[row_index],
+                                    active_rows[row_index],
+                                ),
+                            )
+                        for row_index, row_forward in zip(
+                            group_indices,
+                            group_forwards,
+                            strict=True,
+                        ):
+                            authoritative_logits[row_index] = row_forward[0]
+                            authoritative_hidden[row_index] = row_forward[1]
+                            history_hidden_rows[row_index] = row_forward[1]
+
+                restored_mtp = tuple(
+                    _restore_cache_bundle(reservation.mtp_cache, snapshot)
+                    for reservation, snapshot in zip(
+                        reservations,
+                        mtp_snapshots,
+                        strict=True,
                     )
                 )
-            history_rows.append(history)
+                _eval_tensor_values(restored_mtp)
 
-        for history_depth in range(max(map(len, history_rows))):
-            history_indices = tuple(
-                index
-                for index, history in enumerate(history_rows)
-                if history_depth < len(history)
-            )
-            self._mtp_update_batch(
-                tuple(
-                    history_rows[index][history_depth][0] for index in history_indices
-                ),
-                tuple(
-                    history_rows[index][history_depth][1] for index in history_indices
-                ),
-                tuple(active_rows[index] for index in history_indices),
-            )
+                history_rows: list[list[tuple[Any, int]]] = []
+                for row_index, ordinal in enumerate(active_ordinals):
+                    history_hidden = history_hidden_rows[row_index]
+                    accepted = accepted_counts[row_index]
+                    history: list[tuple[Any, int]] = [
+                        (hidden_before_primary[row_index], primaries[ordinal])
+                    ]
+                    history.extend(
+                        (history_hidden[:, index : index + 1, :], draft)
+                        for index, draft in enumerate(
+                            draft_tokens[row_index][:accepted]
+                        )
+                    )
+                    correction = corrections[row_index]
+                    if correction is not None:
+                        history.append(
+                            (
+                                history_hidden[:, accepted : accepted + 1, :],
+                                correction,
+                            )
+                        )
+                    history_rows.append(history)
 
-        for row_index, ordinal in enumerate(active_ordinals):
-            reservation = active_rows[row_index]
-            reservation.logits = authoritative_logits[row_index][:, -1:, :]
-            reservation.hidden = authoritative_hidden[row_index][:, -1:, :]
-            accepted = accepted_counts[row_index]
-            emitted = emitted_rows[ordinal]
-            emitted.extend(draft_tokens[row_index][:accepted])
-            correction = corrections[row_index]
-            if correction is not None:
-                emitted.append(correction)
-            elif accepted == len(draft_tokens[row_index]) and not self._would_finish(
-                reservation,
-                tuple(emitted),
-            ):
-                bonus, _ = _sample_from_logits(
-                    reservation.logits[0, -1],
-                    reservation.sampler,
-                    reservation.rng,
+                for history_depth in range(max(map(len, history_rows))):
+                    history_indices = tuple(
+                        index
+                        for index, history in enumerate(history_rows)
+                        if history_depth < len(history)
+                    )
+                    self._mtp_update_batch(
+                        tuple(
+                            history_rows[index][history_depth][0]
+                            for index in history_indices
+                        ),
+                        tuple(
+                            history_rows[index][history_depth][1]
+                            for index in history_indices
+                        ),
+                        tuple(active_rows[index] for index in history_indices),
+                    )
+
+                for row_index, ordinal in enumerate(active_ordinals):
+                    reservation = active_rows[row_index]
+                    staged_logits[ordinal] = authoritative_logits[row_index][:, -1:, :]
+                    staged_hidden[ordinal] = authoritative_hidden[row_index][:, -1:, :]
+                    accepted = accepted_counts[row_index]
+                    emitted = emitted_rows[ordinal]
+                    emitted.extend(draft_tokens[row_index][:accepted])
+                    correction = corrections[row_index]
+                    if correction is not None:
+                        emitted.append(correction)
+                    elif accepted == len(
+                        draft_tokens[row_index]
+                    ) and not self._would_finish(reservation, tuple(emitted)):
+                        bonus, _ = _sample_from_logits(
+                            staged_logits[ordinal][0, -1],
+                            reservation.sampler,
+                            active_rngs[row_index],
+                        )
+                        emitted.append(bonus)
+                        staged_pending[ordinal] = bonus
+
+                    emitted_tokens = tuple(emitted)
+                    finished = self._would_finish(reservation, emitted_tokens)
+                    output_count = entry_output_counts[ordinal] + len(emitted_tokens)
+                    outcomes[ordinal] = _TensorDecodeOutcome(
+                        tokens=emitted_tokens,
+                        finished=finished,
+                        finish_reason=(
+                            finish_reason(
+                                reservation,
+                                emitted_tokens,
+                                output_count,
+                            )
+                            if finished
+                            else None
+                        ),
+                        mtp_rounds=1,
+                        mtp_drafted_tokens=len(draft_tokens[row_index]),
+                        mtp_accepted_tokens=accepted,
+                        mtp_rejected_tokens=int(rejected_rows[row_index]),
+                    )
+
+            if any(outcome is None for outcome in outcomes):
+                raise RuntimeError("multi-row MTP lost a scheduler row")
+
+            for ordinal, reservation in enumerate(reservations):
+                reservation.pending_primary = staged_pending[ordinal]
+                reservation.position = entry_positions[ordinal] + len(
+                    emitted_rows[ordinal]
                 )
-                emitted.append(bonus)
-                reservation.pending_primary = bonus
-
-            emitted_tokens = tuple(emitted)
-            finished = self._would_finish(reservation, emitted_tokens)
-            self._commit_output(reservation, emitted_tokens)
-            outcomes[ordinal] = _TensorDecodeOutcome(
-                tokens=emitted_tokens,
-                finished=finished,
-                finish_reason=(
-                    self._finish_reason(reservation, emitted_tokens[-1])
-                    if emitted_tokens
-                    else None
-                ),
-                mtp_rounds=1,
-                mtp_drafted_tokens=len(draft_tokens[row_index]),
-                mtp_accepted_tokens=accepted,
-                mtp_rejected_tokens=int(rejected_rows[row_index]),
-            )
-
-        if any(outcome is None for outcome in outcomes):
-            raise RuntimeError("multi-row MTP lost a scheduler row")
-        return tuple(outcome for outcome in outcomes if outcome is not None)
+                reservation.output_tokens = entry_output_counts[ordinal] + len(
+                    emitted_rows[ordinal]
+                )
+                reservation.logits = staged_logits[ordinal]
+                reservation.hidden = staged_hidden[ordinal]
+                staged_rng = staged_rngs[ordinal]
+                if reservation.rng is not None and staged_rng is not None:
+                    reservation.rng.bit_generator.state = _snapshot_value(
+                        staged_rng.bit_generator.state
+                    )
+            _eval_tensor_values(staged_logits, staged_hidden)
+            return tuple(outcome for outcome in outcomes if outcome is not None)
+        except Exception:
+            restore_entry_state()
+            raise
+        finally:
+            clear_captures()
 
     @staticmethod
     def _mtp_fallback(
