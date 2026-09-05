@@ -11,6 +11,7 @@ never enter a message: auth failures are reported with one fixed sentence.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
@@ -19,6 +20,7 @@ from .hosted import (
     FETCH_CODE_PREFIX,
     HostedToolError,
     HostedToolSuccess,
+    canonical_json,
     current_execution_scope,
 )
 
@@ -76,9 +78,24 @@ class HostedWebSearchTool:
         except HostedToolError:
             raise
         sanitized = _sanitized_results(results)
+        # One digest over the existing canonical compact/sorted JSON bytes of
+        # {query, results}; the canonical result and the audit receipt carry
+        # the identical value so provenance agrees mechanically downstream.
+        digest = (
+            "sha256:"
+            + hashlib.sha256(
+                canonical_json({"query": query, "results": sanitized}).encode("utf-8")
+            ).hexdigest()
+        )
         return HostedToolSuccess(
             payload={"query": query, "results": sanitized},
-            receipt_fields={"result_count": len(sanitized)},
+            receipt_fields={"result_count": len(sanitized), "result_digest": digest},
+            result={
+                "kind": "search_results",
+                "query": query,
+                "results": [dict(entry) for entry in sanitized],
+                "digest": digest,
+            },
         )
 
 
@@ -142,7 +159,10 @@ class HostedWebFetchTool:
                 f"{FETCH_CODE_PREFIX}token_budget",
                 "fetched content exceeds the hosted token budget",
             )
-        digest = hashlib.sha256(resource.content).hexdigest()
+        # The digest is over the raw fetched bytes (pre-decode); the canonical
+        # result and the receipt share the one value, and no consumer may
+        # re-fetch or reinterpret this payload downstream.
+        digest = f"sha256:{hashlib.sha256(resource.content).hexdigest()}"
         return HostedToolSuccess(
             payload={
                 "url": resource.final_url,
@@ -152,7 +172,15 @@ class HostedWebFetchTool:
             receipt_fields={
                 "final_url": resource.final_url,
                 "mime": resource.media_type,
-                "result_digest": f"sha256:{digest}",
+                "result_digest": digest,
+            },
+            result={
+                "kind": "document",
+                "url": resource.final_url,
+                "media_type": resource.media_type,
+                "content": text,
+                "digest": digest,
+                "retrieved_at": int(time.time()),
             },
         )
 
@@ -167,9 +195,11 @@ def _sanitized_results(
         entry: dict[str, str] = {}
         for key in ("title", "url", "snippet"):
             value = item.get(key)
-            if isinstance(value, str) and value:
+            if isinstance(value, str) and value.strip():
                 entry[key] = value
-        if entry:
+        # A result without a URL proves no identity and can never be cited
+        # or sealed as a source; it is dropped rather than half-admitted.
+        if "url" in entry:
             sanitized.append(entry)
     return sanitized
 
