@@ -191,3 +191,59 @@ async def test_legacy_registry_fails_closed_for_code_interpreter_execution() -> 
             "message": "Unknown tool: code_interpreter",
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_real_unconfigured_search_is_a_failed_execution_receipt(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    call = ParsedToolCall(
+        index=0, call_id="call_search", name="web_search", arguments='{"query":"mlx"}'
+    )
+    result = await RegistryToolExecutor().execute(call)
+
+    assert result.ok is False
+    assert result.call_id == "call_search"
+    assert result.metadata["error_code"] == "tool_execution_failed"
+    assert "missing BRAVE_API_KEY" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        "provider failed",
+        {"message": "provider failed"},
+        {"code": "provider_failed"},
+        "",
+        {},
+    ],
+)
+async def test_in_band_error_is_not_a_successful_empty_result(error) -> None:
+    async def execute(_name, _arguments):
+        return {"success": True, "data": {"error": error, "results": []}}
+
+    result = await RegistryToolExecutor(
+        execute=execute, is_hosted=lambda _name: True
+    ).execute(_call())
+
+    assert result.ok is False
+    assert result.call_id == "call_lbrx_42"
+    assert result.metadata["error_code"] == "tool_execution_failed"
+    assert json.loads(result.output)["error"]["message"] == result.error
+
+
+@pytest.mark.asyncio
+async def test_null_in_band_error_preserves_success_payload() -> None:
+    data = {"error": None, "results": []}
+
+    async def execute(_name, _arguments):
+        return {"success": True, "data": data}
+
+    result = await RegistryToolExecutor(
+        execute=execute, is_hosted=lambda _name: True
+    ).execute(_call())
+
+    assert result.ok is True
+    assert json.loads(result.output) == data

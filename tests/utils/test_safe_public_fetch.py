@@ -6,8 +6,10 @@ connect-time IP pinning and fail-closed classification can be proven.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import socket
+import threading
 
 import httpx
 import pytest
@@ -417,7 +419,7 @@ async def test_cancel_check_stops_body_consumption_mid_stream() -> None:
         await fetch.fetch(
             "https://cdn.example/pixel.png",
             accepted_media_types=("image/png",),
-            cancel=_Cancelled(after=1),
+            cancel=_Cancelled(after=2),
         )
 
 
@@ -461,3 +463,60 @@ async def test_deadline_bounds_a_stalled_transport() -> None:
             deadline_s=0.05,
         )
     assert error.value.code == "url_fetch_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("injected", [False, True])
+async def test_deadline_expires_while_dns_is_still_running(
+    monkeypatch, injected
+) -> None:
+    """A pending OS lookup must not hold the loop or delay the fetch deadline."""
+    release = threading.Event()
+    finished = threading.Event()
+    resolver_threads: list[int] = []
+    loop_thread = threading.get_ident()
+
+    def resolver(host, port, **kwargs):
+        resolver_threads.append(threading.get_ident())
+        try:
+            # The finite guard also makes the unfixed synchronous path terminate.
+            release.wait(timeout=1.0)
+            return _addrinfo(_PUBLIC_IP)(host, port, **kwargs)
+        finally:
+            finished.set()
+
+    fetch, transport = _fetcher(_png_handler, getaddrinfo=resolver, record=True)
+    if not injected:
+        monkeypatch.setattr(socket, "getaddrinfo", resolver)
+        fetch = SafePublicFetch(transport=transport)
+    assert isinstance(transport, _RecordingTransport)
+    try:
+        with pytest.raises(SafePublicFetchError) as caught:
+            await fetch.fetch(
+                "https://cdn.example/pixel.png",
+                accepted_media_types=("image/png",),
+                deadline_s=0.05,
+            )
+        assert caught.value.code == "url_fetch_timeout"
+        assert resolver_threads and resolver_threads[0] != loop_thread
+        assert not finished.is_set()
+        assert transport.requests == []
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 2.0)
+    # A late DNS result cannot resume a timed-out HTTP request.
+    await asyncio.sleep(0)
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_dns_prevents_opening_http_connection() -> None:
+    fetch, transport = _fetcher(_png_handler, record=True)
+    assert isinstance(transport, _RecordingTransport)
+    with pytest.raises(asyncio.CancelledError):
+        await fetch.fetch(
+            "https://cdn.example/pixel.png",
+            accepted_media_types=("image/png",),
+            cancel=_Cancelled(after=1),
+        )
+    assert transport.requests == []

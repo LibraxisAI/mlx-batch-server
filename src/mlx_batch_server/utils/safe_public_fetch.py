@@ -322,7 +322,8 @@ class SafePublicFetch:
         for redirects in range(self._limits.max_redirects + 1):
             _raise_if_cancelled(cancel)
             hop = self._prepare_hop(current, redirect_hop=redirects > 0)
-            dns_answers = self._resolve_public_addresses(hop)
+            dns_answers = await self._resolve_public_addresses(hop)
+            _raise_if_cancelled(cancel)
             pinned_ip = dns_answers[0]
             async with client.stream(
                 "GET",
@@ -432,7 +433,7 @@ class SafePublicFetch:
             )
         return hop
 
-    def _resolve_public_addresses(
+    async def _resolve_public_addresses(
         self,
         hop: _Hop,
     ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
@@ -444,16 +445,20 @@ class SafePublicFetch:
                     "url_target_blocked",
                     "URL target is not a public address",
                 ) from None
-            results = self._lookup(hop.hostname, hop.port)
+            results = await self._lookup(hop.hostname, hop.port)
             addresses = _addresses_from_addrinfo(results)
         else:
             addresses = (literal,)
         _require_public_addresses(addresses)
         return addresses
 
-    def _lookup(self, host: str, port: int) -> object:
+    async def _lookup(self, host: str, port: int) -> object:
         try:
-            return self._getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            # OS DNS (including an injected synchronous resolver) must not hold
+            # the event loop that owns fetch deadlines and other response streams.
+            return await asyncio.to_thread(
+                self._getaddrinfo, host, port, type=socket.SOCK_STREAM
+            )
         except OSError as exc:
             raise SafePublicFetchError(
                 "dns_resolution_failed",

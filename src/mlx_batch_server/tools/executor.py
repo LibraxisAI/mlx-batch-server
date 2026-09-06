@@ -100,8 +100,12 @@ class RegistryToolExecutor:
                 "invalid_tool_result",
                 "tool registry result lacks an explicit success receipt",
             )
+        data = result.get("data")
+        in_band_error = _in_band_error(data)
+        if in_band_error is not None:
+            return self._failure(call, "tool_execution_failed", in_band_error)
         try:
-            output = _encode_json(result.get("data"))
+            output = _encode_json(data)
         except (TypeError, ValueError):
             return self._failure(
                 call,
@@ -126,6 +130,18 @@ class RegistryToolExecutor:
             metadata={"tool_name": call.name, "error_code": code},
             error=message,
         )
+
+
+def _in_band_error(data: Any) -> str | None:
+    """Preserve failures that legacy providers wrap in a success envelope."""
+    if not isinstance(data, Mapping):
+        return None
+    error = data.get("error")
+    if error is None:
+        return None
+    if isinstance(error, Mapping):
+        return str(error.get("message") or error.get("code") or "tool execution failed")
+    return str(error) or "tool execution failed"
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
