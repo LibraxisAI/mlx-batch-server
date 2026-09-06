@@ -64,7 +64,7 @@ from mlx_batch_server.runtime.service import (
     RuntimeStartService,
 )
 from mlx_batch_server.runtime.turn import GenerationTurn, TurnState
-from mlx_batch_server.tools.agent_loop import ToolExecutionResult
+from mlx_batch_server.tools.agent_loop import ToolArgumentSeal, ToolExecutionResult
 from mlx_batch_server.tools.hosted import (
     HostedExecutionPolicy,
     HostedToolCatalog,
@@ -363,6 +363,8 @@ def _starter(
     executor_kwargs = {}
     if "per_call_timeout_s" in kwargs:
         executor_kwargs["per_call_timeout_s"] = kwargs.pop("per_call_timeout_s")
+    if "max_arguments_bytes" in kwargs:
+        executor_kwargs["max_arguments_bytes"] = kwargs.pop("max_arguments_bytes")
     executor = HostedToolExecutor(catalog, **executor_kwargs)
     return (
         HostedAgenticRuntimeStarter(
@@ -527,7 +529,15 @@ async def test_empty_completed_failure_continuation_settles_on_runtime_disclosur
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "arguments",
-    ("{not json", '{"query":"one","query":"two"}'),
+    (
+        "{not json",
+        '{"query":"one","query":"two"}',
+        "[]",
+        '{"query":"loctree","count":NaN}',
+        '{"query":"loctree","count":Infinity}',
+        '{"query":"loctree","count":-Infinity}',
+        '{"query":"loctree","nested":{"count":1e999}}',
+    ),
 )
 async def test_model_generated_invalid_arguments_are_f10_receipts(
     arguments: str,
@@ -551,6 +561,39 @@ async def test_model_generated_invalid_arguments_are_f10_receipts(
     rendered = _chat_template_messages(inner.requests[1].messages)
     rendered_call = next(message for message in rendered if message.get("tool_calls"))
     assert rendered_call["tool_calls"][0]["function"]["arguments"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        '{"query":"OVERSIZED_SENTINEL_' + "x" * 80 + '"}',
+        '{"query":"OVERSIZED_SENTINEL_' + "x" * 80,
+    ),
+)
+async def test_oversized_arguments_are_never_reparsed_or_replayed(
+    arguments: str,
+) -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", arguments),)),
+            _Round(text="I could not run the search because its input was too large."),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,), max_arguments_bytes=32)
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1
+    assert receipts[0].receipt["error"]["code"] == "tool_arguments_too_large"
+    assert tool.invocations == 0
+    assert len(inner.requests) == 2
+    rendered = _chat_template_messages(inner.requests[1].messages)
+    rendered_call = next(message for message in rendered if message.get("tool_calls"))
+    assert rendered_call["tool_calls"][0]["function"]["arguments"] == {}
+    assert "OVERSIZED_SENTINEL" not in repr(inner.requests[1].messages)
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
 
 
 @pytest.mark.asyncio
@@ -1338,6 +1381,46 @@ async def test_executor_call_id_mismatch_is_a_server_fault_500() -> None:
     assert len(failed) == 1
     assert failed[0].status_code == 500
     assert len(inner.requests) == 1  # no continuation after a server fault
+    assert not _of(events, TurnCompleted)
+
+
+@pytest.mark.asyncio
+async def test_executor_argument_mapping_mismatch_is_a_server_fault_500() -> None:
+    """A receipt cannot claim a different mapping than the one executed."""
+
+    class _ArgumentMutatingExecutor(HostedToolExecutor):
+        async def execute(self, call: Any) -> ToolExecutionResult:
+            result = await super().execute(call)
+            assert result.argument_seal is not None
+            seal = result.argument_seal
+            return ToolExecutionResult(
+                call_id=result.call_id,
+                output=result.output,
+                metadata=result.metadata,
+                error=result.error,
+                argument_seal=ToolArgumentSeal(
+                    source_digest=seal.source_digest,
+                    canonical_json=seal.canonical_json,
+                    value={"query": "forged"},
+                ),
+            )
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),),
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_ArgumentMutatingExecutor(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert tool.invocations == 1
+    assert len(inner.requests) == 1
     assert not _of(events, TurnCompleted)
 
 

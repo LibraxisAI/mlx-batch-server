@@ -40,6 +40,7 @@ from ..tools.hosted import (
     HostedToolExecutor,
     HostedToolPlan,
     canonical_json,
+    continuation_tool_arguments,
     failure_result,
     reset_execution_scope,
     result_identities,
@@ -576,6 +577,7 @@ class _HostedAgenticTurn:
                             "hosted tool result exceeds the aggregate result "
                             "budget of this turn"
                         ),
+                        argument_seal=result.argument_seal,
                     )
                 else:
                     self._result_chars_remaining -= cost
@@ -1647,39 +1649,13 @@ def _model_tool_arguments(
     call: ParsedToolCall,
     result: ToolExecutionResult,
 ) -> dict[str, Any]:
-    """Project audited JSON text onto the mapping required by Qwen's template.
-
-    The original byte-exact argument text remains on ``ParsedToolCall`` and in
-    request-level claim evidence. Invalid JSON has already failed closed in the
-    hosted executor, so its terminal continuation replays an empty mapping
-    rather than handing malformed attacker/model text to the checkpoint Jinja.
-    """
-
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError(f"duplicate JSON object key: {key}")
-            value[key] = item
-        return value
-
+    """Project only the executor-owned, integrity-checked argument mapping."""
     try:
-        decoded = json.loads(call.arguments, object_pairs_hook=unique_object)
+        return continuation_tool_arguments(call, result)
     except (TypeError, ValueError) as error:
-        metadata = result.metadata or {}
-        if not result.ok and metadata.get("error_code") == "invalid_tool_arguments":
-            return {}
         raise HostedRuntimeIntegrityError(
             "hosted continuation argument identity changed after execution"
         ) from error
-    if not isinstance(decoded, dict):
-        metadata = result.metadata or {}
-        if not result.ok and metadata.get("error_code") == "invalid_tool_arguments":
-            return {}
-        raise HostedRuntimeIntegrityError(
-            "hosted continuation arguments are not a JSON object"
-        )
-    return decoded
 
 
 def _insert_trusted_instruction(

@@ -18,6 +18,7 @@ import base64
 import contextvars
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -26,7 +27,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from .agent_loop import ToolExecutionResult
+from .agent_loop import ToolArgumentSeal, ToolExecutionResult
 
 if TYPE_CHECKING:
     from .parser import ParsedToolCall
@@ -911,16 +912,16 @@ class HostedToolExecutor:
                 "tool is not an admitted hosted tool",
                 started,
             )
-        arguments = self._decode_arguments(call, started)
-        if isinstance(arguments, ToolExecutionResult):
-            return arguments
-        return await self._invoke(tool, call, arguments, started)
+        seal = self._decode_arguments(call, started)
+        if isinstance(seal, ToolExecutionResult):
+            return seal
+        return await self._invoke(tool, call, seal, started)
 
     def _decode_arguments(
         self,
         call: ParsedToolCall,
         started: float,
-    ) -> dict[str, Any] | ToolExecutionResult:
+    ) -> ToolArgumentSeal | ToolExecutionResult:
         if len(call.arguments.encode("utf-8")) > self._max_arguments_bytes:
             return self._failure(
                 call,
@@ -929,7 +930,11 @@ class HostedToolExecutor:
                 started,
             )
         try:
-            arguments = json.loads(call.arguments, object_pairs_hook=_unique_object)
+            arguments = json.loads(
+                call.arguments,
+                object_pairs_hook=_unique_object,
+                parse_constant=_reject_json_constant,
+            )
         except (TypeError, ValueError) as error:
             return self._failure(call, "invalid_tool_arguments", str(error), started)
         if not isinstance(arguments, dict):
@@ -939,13 +944,22 @@ class HostedToolExecutor:
                 "tool arguments must decode to a JSON object",
                 started,
             )
-        return arguments
+        try:
+            _require_finite_json(arguments)
+        except ValueError as error:
+            return self._failure(call, "invalid_tool_arguments", str(error), started)
+        canonical = _encode_json(arguments)
+        return ToolArgumentSeal(
+            source_digest=hashlib.sha256(call.arguments.encode("utf-8")).hexdigest(),
+            canonical_json=canonical,
+            value=_freeze_json_mapping(arguments),
+        )
 
     async def _invoke(
         self,
         tool: HostedTool,
         call: ParsedToolCall,
-        arguments: dict[str, Any],
+        seal: ToolArgumentSeal,
         started: float,
     ) -> ToolExecutionResult:
         scope = current_execution_scope()
@@ -957,18 +971,20 @@ class HostedToolExecutor:
                 "tool_not_allowed",
                 "hosted execution policy is missing",
                 started,
+                seal=seal,
             )
         try:
             async with asyncio.timeout(self._per_call_timeout_s):
-                success = await tool.invoke(arguments, policy=scope.policy)
+                success = await tool.invoke(seal.value, policy=scope.policy)
         except HostedToolError as error:
-            return self._failure(call, error.code, error.message, started)
+            return self._failure(call, error.code, error.message, started, seal=seal)
         except TimeoutError:
             return self._failure(
                 call,
                 "tool_timeout",
                 "hosted tool call exceeded its per-call time budget",
                 started,
+                seal=seal,
             )
         except asyncio.CancelledError:
             raise
@@ -980,14 +996,16 @@ class HostedToolExecutor:
                 "tool_execution_failed",
                 UNEXPECTED_EXECUTION_FAILURE_MESSAGE,
                 started,
+                seal=seal,
             )
-        return self._success(call, success, started)
+        return self._success(call, success, started, seal)
 
     def _success(
         self,
         call: ParsedToolCall,
         success: HostedToolSuccess,
         started: float,
+        seal: ToolArgumentSeal,
     ) -> ToolExecutionResult:
         if not isinstance(success, HostedToolSuccess):
             return self._failure(
@@ -995,6 +1013,7 @@ class HostedToolExecutor:
                 "invalid_tool_result",
                 "hosted tool returned no explicit success receipt",
                 started,
+                seal=seal,
             )
         try:
             output = _encode_json(success.payload)
@@ -1004,6 +1023,7 @@ class HostedToolExecutor:
                 "invalid_tool_result",
                 "hosted tool payload is not JSON-compatible",
                 started,
+                seal=seal,
             )
         validated_result: dict[str, Any] | None = None
         if success.result is not None:
@@ -1018,6 +1038,7 @@ class HostedToolExecutor:
                     "result_budget_exceeded",
                     "hosted tool result exceeds its per-call budget",
                     started,
+                    seal=seal,
                 )
             except (TypeError, ValueError):
                 # Foreign fields, broken identities, or receipt disagreement
@@ -1027,6 +1048,7 @@ class HostedToolExecutor:
                     "invalid_tool_result",
                     "hosted tool produced an invalid result payload",
                     started,
+                    seal=seal,
                 )
         try:
             receipt = build_receipt(
@@ -1044,6 +1066,7 @@ class HostedToolExecutor:
                 "invalid_tool_result",
                 "hosted tool produced an invalid success receipt",
                 started,
+                seal=seal,
             )
         metadata: dict[str, Any] = {"tool_name": call.name, "receipt": receipt}
         if validated_result is not None:
@@ -1052,6 +1075,7 @@ class HostedToolExecutor:
             call_id=call.call_id,
             output=output,
             metadata=metadata,
+            argument_seal=seal,
         )
 
     def _failure(
@@ -1060,6 +1084,8 @@ class HostedToolExecutor:
         code: str,
         message: str,
         started: float,
+        *,
+        seal: ToolArgumentSeal | None = None,
     ) -> ToolExecutionResult:
         return failure_result(
             call_id=call.call_id,
@@ -1067,6 +1093,7 @@ class HostedToolExecutor:
             code=code,
             message=message,
             duration_ms=_duration_ms(started),
+            argument_seal=seal,
         )
 
 
@@ -1114,6 +1141,7 @@ def failure_result(
     code: str,
     message: str,
     duration_ms: int = 0,
+    argument_seal: ToolArgumentSeal | None = None,
 ) -> ToolExecutionResult:
     """Mint one typed error receipt result for a hosted call."""
 
@@ -1137,6 +1165,7 @@ def failure_result(
         ),
         metadata={"tool_name": tool_name, "error_code": code, "receipt": receipt},
         error=message,
+        argument_seal=argument_seal,
     )
 
 
@@ -1151,6 +1180,55 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"duplicate JSON object key: {key}")
         result[key] = value
     return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
+
+def _require_finite_json(value: Any) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("non-finite JSON number is forbidden")
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _require_finite_json(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _require_finite_json(item)
+
+
+def continuation_tool_arguments(
+    call: ParsedToolCall, result: ToolExecutionResult
+) -> dict[str, Any]:
+    """Return only the mapping sealed by argument admission and execution."""
+
+    seal = result.argument_seal
+    if seal is None:
+        error_code = (result.metadata or {}).get("error_code")
+        if error_code in {
+            "invalid_tool_arguments",
+            "tool_arguments_too_large",
+            "tool_not_allowed",
+            "tool_round_limit",
+        }:
+            return {}
+        raise ValueError("hosted execution result has no argument seal")
+    source_digest = hashlib.sha256(call.arguments.encode("utf-8")).hexdigest()
+    if source_digest != seal.source_digest:
+        raise ValueError("hosted argument source identity changed")
+    try:
+        decoded = json.loads(
+            seal.canonical_json,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("hosted argument seal is not strict canonical JSON") from error
+    if not isinstance(decoded, dict) or _encode_json(decoded) != seal.canonical_json:
+        raise ValueError("hosted argument seal is not canonical")
+    if _freeze_json_mapping(decoded) != seal.value:
+        raise ValueError("hosted argument mapping does not match its seal")
+    return decoded
 
 
 def _encode_json(value: Any) -> str:
@@ -1179,6 +1257,7 @@ __all__ = [
     "ResultBudgetExceeded",
     "build_receipt",
     "canonical_json",
+    "continuation_tool_arguments",
     "current_execution_scope",
     "failure_result",
     "reset_execution_scope",

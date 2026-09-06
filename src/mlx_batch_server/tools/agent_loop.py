@@ -35,11 +35,21 @@ def hosted_agent_loop_policy(*, max_rounds: int = 8) -> AgentLoopPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolArgumentSeal:
+    """Immutable proof of the exact validated mapping admitted for execution."""
+
+    source_digest: str
+    canonical_json: str
+    value: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class ToolExecutionResult:
     call_id: str
     output: str
     metadata: Mapping[str, Any] | None = None
     error: str | None = None
+    argument_seal: ToolArgumentSeal | None = None
 
     @property
     def ok(self) -> bool:
