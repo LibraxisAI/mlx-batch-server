@@ -966,7 +966,8 @@ async def test_pre_call_success_claim_is_quarantined_on_hosted_failure() -> None
     emitted = "".join(event.delta for event in _of(events, TextDelta))
     assert lie not in emitted
     assert "I already know" not in emitted
-    assert HOSTED_FAILURE_DISCLOSURE in emitted
+    assert emitted == "The lookup failed, so I cannot verify current information."
+    assert HOSTED_FAILURE_DISCLOSURE not in emitted
     assert inner.requests[-1].tools == ()
     assert inner.requests[-1].sampling["tool_choice"] == "none"
     assert len(_of(events, TurnCompleted)) == 1

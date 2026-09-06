@@ -439,12 +439,10 @@ class _HostedAgenticTurn:
                 )
             calls = _unique_calls(child.tool_calls)
             if not self._hosted_names or not calls:
-                # The deterministic disclosure is already a complete,
-                # server-authored answer. A successfully completed no-tools
-                # continuation may add no prose; that is still a completed
-                # outer turn. Actual child failure/cancellation/deadline paths
-                # are handled above and remain failures.
-                self._complete_outer(child.terminal)
+                self._complete_no_call_round(
+                    child,
+                    terminal_continuation=terminal_continuation,
+                )
                 return
             if terminal_continuation:
                 raise HostedRuntimeIntegrityError(
@@ -486,7 +484,6 @@ class _HostedAgenticTurn:
                 # continuation; the trusted preparation quotes nothing from
                 # the untrusted error payload.
                 terminal_continuation = True
-                self._emit_failure_disclosure()
                 _insert_trusted_instruction(
                     messages,
                     FAILURE_CONTINUATION_PREPARATION,
@@ -764,6 +761,24 @@ class _HostedAgenticTurn:
                     f"tool call_id {call.call_id} was reused in a later round"
                 )
             self._claimed_hosted_calls[call.call_id] = identity
+
+    def _complete_no_call_round(
+        self,
+        child: _ChildRound,
+        *,
+        terminal_continuation: bool,
+    ) -> None:
+        terminal = child.terminal
+        if not isinstance(terminal, TurnCompleted):  # narrowed by caller
+            raise HostedRuntimeIntegrityError(
+                "no-call completion requires a completed child round"
+            )
+        # The model owns the answer after a tool failure. The fixed disclosure
+        # is only the last-resort voice when the terminal continuation produced
+        # no publishable prose.
+        if terminal_continuation and not child.saw_text:
+            self._emit_failure_disclosure()
+        self._complete_outer(terminal)
 
     def _emit_failure_disclosure(self) -> None:
         index = self._alloc_index()
@@ -1321,6 +1336,8 @@ class _ChildSink:
                     for event in events:
                         if isinstance(event, UsageUpdate):
                             self._owner._forward(event)
+                    self.saw_text = False
+                    self._reclaim_quarantined_identities()
                     return
             for event in events:
                 self._owner._forward(event)
@@ -1328,6 +1345,10 @@ class _ChildSink:
         for event in events:
             if isinstance(event, UsageUpdate):
                 self._owner._forward(event)
+        self.saw_text = False
+        self._reclaim_quarantined_identities()
+
+    def _reclaim_quarantined_identities(self) -> None:
         # Nothing in the quarantine reached the outer stream. Reclaim its
         # provisional identities before hosted items are allocated, keeping
         # outward indices contiguous and preventing snapshot ghosts.
