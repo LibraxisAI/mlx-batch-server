@@ -69,15 +69,20 @@ class _CountingHandler:
         return httpx.Response(
             200,
             headers={"content-type": "text/plain"},
-            content=_FETCH_BODY,
+            stream=httpx.ByteStream(_FETCH_BODY),
             request=request,
         )
 
 
 def _fetch(handler) -> SafePublicFetch:
+    def attested_handler(request: httpx.Request) -> httpx.Response:
+        response = handler(request)
+        response.extensions["mlx_batch_server.connected_peer"] = request.url.host
+        return response
+
     return SafePublicFetch(
         limits=SafePublicFetchLimits(max_bytes=4096, timeout=2.0),
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(attested_handler),
         getaddrinfo=_addrinfo(),
     )
 
@@ -506,7 +511,7 @@ async def test_redirect_keeps_requested_action_and_final_provenance() -> None:
             return httpx.Response(
                 200,
                 headers={"content-type": "text/plain"},
-                content=_FETCH_BODY,
+                stream=httpx.ByteStream(_FETCH_BODY),
                 request=request,
             )
 

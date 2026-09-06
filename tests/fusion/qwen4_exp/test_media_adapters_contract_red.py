@@ -46,6 +46,15 @@ def _url_request(url: str, *, max_bytes: int = 1024) -> UrlFetchRequest:
     )
 
 
+def _attested_transport(handler) -> httpx.MockTransport:
+    def attested_handler(request: httpx.Request) -> httpx.Response:
+        response = handler(request)
+        response.extensions["mlx_batch_server.connected_peer"] = request.url.host
+        return response
+
+    return httpx.MockTransport(attested_handler)
+
+
 @pytest.mark.asyncio
 async def test_url_fetcher_checks_every_redirect_origin() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -57,7 +66,7 @@ async def test_url_fetcher_checks_every_redirect_origin() -> None:
 
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(frozenset({"https://media.example"})),
-        transport=httpx.MockTransport(handler),
+        transport=_attested_transport(handler),
         getaddrinfo=_public_addrinfo,
     )
 
@@ -73,13 +82,13 @@ async def test_url_fetcher_enforces_decoded_stream_budget() -> None:
         return httpx.Response(
             200,
             headers={"content-type": "image/png"},
-            content=_PNG,
+            stream=httpx.ByteStream(_PNG),
             request=request,
         )
 
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(frozenset({"https://media.example"})),
-        transport=httpx.MockTransport(handler),
+        transport=_attested_transport(handler),
         getaddrinfo=_public_addrinfo,
     )
 
@@ -103,13 +112,13 @@ async def test_url_fetcher_returns_an_immutable_final_url_receipt() -> None:
         return httpx.Response(
             200,
             headers={"content-type": "image/png"},
-            content=_PNG,
+            stream=httpx.ByteStream(_PNG),
             request=request,
         )
 
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(frozenset({"https://media.example"})),
-        transport=httpx.MockTransport(handler),
+        transport=_attested_transport(handler),
         getaddrinfo=_public_addrinfo,
     )
 
@@ -126,13 +135,13 @@ async def test_url_fetcher_allows_public_https_without_allowlist() -> None:
         return httpx.Response(
             200,
             headers={"content-type": "image/png"},
-            content=_PNG,
+            stream=httpx.ByteStream(_PNG),
             request=request,
         )
 
     fetcher = HttpxUrlFetcher(
         url_policy=AllowedUrlPolicy(),
-        transport=httpx.MockTransport(handler),
+        transport=_attested_transport(handler),
         getaddrinfo=_public_addrinfo,
     )
 

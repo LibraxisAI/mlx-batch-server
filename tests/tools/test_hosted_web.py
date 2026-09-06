@@ -66,7 +66,7 @@ def _text_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(
         200,
         headers={"content-type": "text/plain"},
-        content=b"hosted fetch body",
+        stream=httpx.ByteStream(b"hosted fetch body"),
         request=request,
     )
 

@@ -50,7 +50,7 @@ def _png_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(
         200,
         headers={"content-type": "image/png"},
-        content=_PNG,
+        stream=httpx.ByteStream(_PNG),
         request=request,
     )
 
@@ -96,6 +96,31 @@ async def test_public_https_url_succeeds_without_allowlist() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mock_transport_success_body_is_consumed_through_raw_stream() -> None:
+    responses: list[httpx.Response] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(
+            200,
+            headers={"content-type": "image/png"},
+            stream=httpx.ByteStream(_PNG),
+            request=request,
+        )
+        assert response.is_stream_consumed is False
+        responses.append(response)
+        return response
+
+    fetch, _ = _fetcher(handler)
+    resource = await fetch.fetch(
+        "https://cdn.example/raw.png",
+        accepted_media_types=("image/png",),
+    )
+
+    assert resource.content == _PNG
+    assert responses[0].is_stream_consumed is True
+
+
+@pytest.mark.asyncio
 async def test_connect_pins_validated_ip_and_keeps_logical_host() -> None:
     fetch, transport = _fetcher(_png_handler, record=True)
     assert isinstance(transport, _RecordingTransport)
@@ -121,7 +146,7 @@ async def test_connected_peer_drift_fails_before_body_acceptance() -> None:
         return httpx.Response(
             200,
             headers={"content-type": "image/png"},
-            content=_PNG,
+            stream=httpx.ByteStream(_PNG),
             request=request,
             extensions={"mlx_batch_server.connected_peer": "8.8.8.8"},
         )
@@ -143,7 +168,7 @@ async def test_compressed_bomb_is_rejected_by_decoded_budget() -> None:
         return httpx.Response(
             200,
             headers={"content-type": "text/plain", "content-encoding": "gzip"},
-            content=bomb,
+            stream=httpx.ByteStream(bomb),
             request=request,
         )
 
@@ -158,7 +183,11 @@ async def test_compressed_bomb_is_rejected_by_decoded_budget() -> None:
 @pytest.mark.asyncio
 async def test_http_429_survives_as_typed_rate_limit_without_body() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, content=b"provider secret", request=request)
+        return httpx.Response(
+            429,
+            stream=httpx.ByteStream(b"provider secret"),
+            request=request,
+        )
 
     fetch, _ = _fetcher(handler)
     with pytest.raises(SafePublicFetchError) as caught:
@@ -264,7 +293,7 @@ async def test_redirect_receipt_preserves_ordered_dns_and_peer_attestation() -> 
         return httpx.Response(
             200,
             headers={"content-type": "text/plain"},
-            content=b"final",
+            stream=httpx.ByteStream(b"final"),
             request=request,
         )
 
