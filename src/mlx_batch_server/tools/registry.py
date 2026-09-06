@@ -18,7 +18,6 @@ import logging
 from collections.abc import Callable
 from typing import Any, ClassVar
 
-from .builtin.code_interpreter import execute_code
 from .builtin.web_search import execute_web_search
 
 logger = logging.getLogger(__name__)
@@ -88,15 +87,13 @@ class ToolRegistry:
         return name in cls._tools
 
 
-# Built-in tool definitions (OpenAI Responses API format)
+# Legacy built-in tool definitions (OpenAI Responses API format).
+# Python execution is deliberately absent: an in-process interpreter cannot be
+# made safe with a reduced ``__builtins__`` mapping.
 BUILTIN_TOOLS: dict[str, dict[str, Any]] = {
     "web_search": {
         "type": "web_search",
         "description": "Search the web for current information",
-    },
-    "code_interpreter": {
-        "type": "code_interpreter",
-        "description": "Execute Python code in a sandboxed environment",
     },
 }
 
@@ -107,8 +104,7 @@ def get_tool_definitions(
     """
     Get tool definitions for a request.
 
-    Expands hosted tool types (web_search, code_interpreter) into
-    their full function definitions.
+    Expands admitted hosted tool types into their full function definitions.
 
     Args:
         requested_tools: Tools from request body
@@ -149,26 +145,6 @@ def get_tool_definitions(
                 }
             )
 
-        elif tool_type == "code_interpreter":
-            definitions.append(
-                {
-                    "type": "function",
-                    "name": "code_interpreter",
-                    "description": "Execute Python code to perform calculations, "
-                    "data analysis, or other programmatic tasks.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "Python code to execute",
-                            },
-                        },
-                        "required": ["code"],
-                    },
-                }
-            )
-
     # Add any registered custom tools
     definitions.extend(ToolRegistry.list_tools())
 
@@ -180,7 +156,7 @@ def is_hosted_tool(tool_name: str) -> bool:
     Check if a tool is a hosted tool (executed server-side).
 
     Hosted tools include:
-    - Built-in tools (web_search, code_interpreter)
+    - Admitted built-in tools
     - Registered custom tools
     """
     if tool_name in BUILTIN_TOOLS:
@@ -203,10 +179,6 @@ async def execute_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, A
         # Check built-in tools first
         if tool_name == "web_search":
             result = await execute_web_search(**arguments)
-            return {"success": True, "data": result}
-
-        if tool_name == "code_interpreter":
-            result = await execute_code(**arguments)
             return {"success": True, "data": result}
 
         # Check registered tools
@@ -275,8 +247,6 @@ def format_tool_result(
             # Format based on tool type
             if tool_name == "web_search":
                 output = _format_search_results(data)
-            elif tool_name == "code_interpreter":
-                output = _format_code_result(data)
             else:
                 output = json.dumps(data, indent=2)
         else:
@@ -302,19 +272,5 @@ def _format_search_results(data: dict[str, Any]) -> str:
         lines.append(f"    URL: {url}")
         if snippet:
             lines.append(f"    {snippet[:300]}")
-
-    return "\n".join(lines)
-
-
-def _format_code_result(data: dict[str, Any]) -> str:
-    """Format code execution results for LLM context."""
-    lines = ["Code Execution Result:"]
-
-    if "output" in data:
-        lines.append(f"\nOutput:\n{data['output']}")
-    if "result" in data:
-        lines.append(f"\nReturn value: {data['result']}")
-    if "error" in data:
-        lines.append(f"\nError: {data['error']}")
 
     return "\n".join(lines)

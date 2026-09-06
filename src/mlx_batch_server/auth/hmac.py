@@ -32,6 +32,15 @@ _secrets_lock = threading.Lock()
 _redis_client: Any = None
 
 
+def _log_store_error(operation: str, error: Exception) -> None:
+    """Report credential-store failures without disclosing paths or payloads."""
+    logger.error(
+        "Authentication state persistence %s failed (%s)",
+        operation,
+        type(error).__name__,
+    )
+
+
 def _resolve_secrets_file() -> Path:
     """Resolve the on-disk HMAC secrets file path (XDG-compliant)."""
     settings = get_settings()
@@ -75,7 +84,7 @@ def _load_file_secrets() -> dict[str, str]:
             with secrets_file.open() as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError) as e:
-            logger.error("Failed to load HMAC secrets file %s: %s", secrets_file, e)
+            _log_store_error("load", e)
             return {}
 
 
@@ -89,7 +98,7 @@ def _save_file_secrets(payload: dict[str, str]) -> None:
                 json.dump(payload, f, indent=2)
             tmp.replace(secrets_file)
         except OSError as e:
-            logger.error("Failed to save HMAC secrets file %s: %s", secrets_file, e)
+            _log_store_error("save", e)
             raise
 
 

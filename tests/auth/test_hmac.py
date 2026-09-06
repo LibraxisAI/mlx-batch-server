@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac as _hmac
+import logging
 import time
 
 import pytest
@@ -113,3 +114,36 @@ def test_verify_request_rejects_bad_signature(tmp_path, monkeypatch):
                 )
             )
         )
+
+
+def test_file_store_errors_do_not_disclose_credential_path(
+    tmp_path, monkeypatch, caplog
+):
+    credential_path = tmp_path / "do-not-log-credential-path.json"
+    credential_path.write_text("not-json", encoding="utf-8")
+    monkeypatch.setenv("MLX_BATCH_HMAC_SECRETS_FILE", str(credential_path))
+
+    with caplog.at_level(logging.ERROR, logger=hmac_mod.__name__):
+        assert hmac_mod._load_file_secrets() == {}
+
+    assert str(credential_path) not in caplog.text
+    assert "JSONDecodeError" in caplog.text
+
+
+def test_file_store_save_errors_do_not_disclose_credential_path(
+    tmp_path, monkeypatch, caplog
+):
+    blocked_parent = tmp_path / "do-not-log-save-path"
+    blocked_parent.write_text("not-a-directory", encoding="utf-8")
+    credential_path = blocked_parent / "credentials.json"
+    monkeypatch.setenv("MLX_BATCH_HMAC_SECRETS_FILE", str(credential_path))
+
+    with (
+        caplog.at_level(logging.ERROR, logger=hmac_mod.__name__),
+        pytest.raises(OSError),
+    ):
+        hmac_mod._save_file_secrets({"device": "do-not-log-secret"})
+
+    assert str(credential_path) not in caplog.text
+    assert "do-not-log-secret" not in caplog.text
+    assert "FileExistsError" in caplog.text

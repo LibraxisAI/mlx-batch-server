@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -88,6 +89,21 @@ def test_resolve_max_tokens_uses_fallback_for_unknown_context():
         )
         == 2048
     )
+
+
+def test_unknown_context_log_does_not_echo_caller_controlled_label(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert (
+            resolve_max_tokens(
+                requested=None,
+                context_length=None,
+                fallback=2048,
+                context_label="Bearer do-not-log-this-value",
+            )
+            == 2048
+        )
+
+    assert "do-not-log-this-value" not in caplog.text
 
 
 def test_resolve_max_tokens_raises_when_no_limits_are_available():

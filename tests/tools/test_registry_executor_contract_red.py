@@ -9,6 +9,12 @@ import pytest
 
 from mlx_batch_server.tools.executor import RegistryToolExecutor
 from mlx_batch_server.tools.parser import ParsedToolCall
+from mlx_batch_server.tools.registry import (
+    BUILTIN_TOOLS,
+    execute_tool,
+    get_tool_definitions,
+    is_hosted_tool,
+)
 
 
 def _call(arguments: str = '{"ticket":"LBRX-42"}') -> ParsedToolCall:
@@ -165,3 +171,23 @@ def test_registry_executor_failure_codes_stay_inside_the_hosted_registry() -> No
         "tool_not_allowed",
     ):
         assert code in HOSTED_ERROR_CODES, code
+
+
+def test_legacy_registry_does_not_advertise_in_process_python_execution() -> None:
+    requested = [{"type": "code_interpreter"}]
+
+    assert "code_interpreter" not in BUILTIN_TOOLS
+    assert is_hosted_tool("code_interpreter") is False
+    assert get_tool_definitions(requested) == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_registry_fails_closed_for_code_interpreter_execution() -> None:
+    result = await execute_tool("code_interpreter", {"code": "while True: pass"})
+
+    assert result == {
+        "error": {
+            "code": "unknown_tool",
+            "message": "Unknown tool: code_interpreter",
+        }
+    }

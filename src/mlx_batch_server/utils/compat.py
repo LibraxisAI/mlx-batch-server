@@ -9,7 +9,9 @@ Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 
 from __future__ import annotations
 
-import importlib.resources
+# ``pyproject.toml`` requires Python >=3.11, so the compatibility rule for
+# pre-3.7 runtimes is intentionally inapplicable here.
+import importlib.resources  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 import importlib.util
 import logging
 import os

@@ -4,7 +4,7 @@ Responses API adapter - bridges to chat completions.
 Handles conversion between Responses API format and chat completions,
 with support for both local MLX models and external providers.
 
-Includes hosted tool execution (web_search, code_interpreter).
+Includes legacy hosted web-search execution.
 
 Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team
 """
@@ -137,7 +137,7 @@ class ResponsesAdapter:
     - Local MLX models via ChatGenerator
     - External providers via multi-provider routing
     - Vision models via mlx-vlm
-    - Hosted tool execution (web_search, code_interpreter)
+    - Legacy hosted web-search execution
     """
 
     def __init__(self, model_id: str | None = None):
@@ -872,7 +872,7 @@ class ResponsesAdapter:
         - Media content → vision model
         - Text-only → primary LLM
 
-        Supports hosted tools (web_search, code_interpreter).
+        Supports admitted legacy hosted tools.
 
         Args:
             request: ResponseRequest body

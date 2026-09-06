@@ -119,8 +119,6 @@ def resolve_max_tokens(
         raise ValueError("No max_tokens specified and context length is unknown")
 
     logger.warning(
-        "Context length unknown for %s; falling back to max_tokens=%s",
-        context_label,
-        fallback,
+        "Model context length unavailable; applying configured output-token fallback"
     )
     return fallback
