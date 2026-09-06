@@ -787,7 +787,13 @@ class RuntimeManager:
         handle: BackendHandle,
         runtime: RuntimeKey,
     ) -> TensorMaterializationReceipt | None:
-        receipt = handle.materialization_receipt
+        try:
+            receipt = handle.materialization_receipt
+        except Exception as error:
+            raise RuntimeManagerError(
+                f"{runtime.backend.value} backend materialization receipt "
+                "could not be read"
+            ) from error
         if runtime.backend is not BackendKind.FUSED_MTP_MLX:
             if receipt is not None:
                 raise RuntimeManagerError(

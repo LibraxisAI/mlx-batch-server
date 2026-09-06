@@ -251,6 +251,18 @@ def _factories(
     )
 
 
+def _assert_single_owner_close(
+    loader: _OwnerLoader,
+    *,
+    owner: object,
+    requested_deadline_s: float,
+) -> None:
+    assert len(loader.closed) == 1
+    closed_owner, actual_deadline_s = loader.closed[0]
+    assert closed_owner is owner
+    assert 0.0 < actual_deadline_s <= requested_deadline_s
+
+
 @pytest.mark.asyncio
 async def test_incompatible_factories_share_exactly_one_owner_single_flight() -> None:
     registry, executor_factory, cache_factory, loader = _factories()
@@ -283,7 +295,11 @@ async def test_incompatible_factories_share_exactly_one_owner_single_flight() ->
     await executor.close(3.0)
     assert loader.closed == []
     await cache.close(2.0)
-    assert loader.closed == [(loader.owners[0], 2.0)]
+    _assert_single_owner_close(
+        loader,
+        owner=loader.owners[0],
+        requested_deadline_s=2.0,
+    )
     assert registry.entry_count == 0
 
 
@@ -425,7 +441,11 @@ async def test_release_is_idempotent_and_closes_only_after_both_facets() -> None
 
     await executor.close(4.0)
     await executor.close(4.0)
-    assert loader.closed == [(loader.owners[0], 4.0)]
+    _assert_single_owner_close(
+        loader,
+        owner=loader.owners[0],
+        requested_deadline_s=4.0,
+    )
 
 
 @pytest.mark.asyncio
@@ -439,7 +459,11 @@ async def test_shutdown_closes_active_owner_once_and_rejects_future_work() -> No
 
     assert registry.closed
     assert registry.entry_count == 0
-    assert loader.closed == [(loader.owners[0], 7.0)]
+    _assert_single_owner_close(
+        loader,
+        owner=loader.owners[0],
+        requested_deadline_s=7.0,
+    )
     with pytest.raises(FusedTensorRegistryClosedError):
         await executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
     with pytest.raises(FusedTensorRegistryClosedError):

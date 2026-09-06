@@ -89,6 +89,8 @@ class _Handle:
         self.receipt_reads += 1
         if self._receipt is _MISSING:
             raise AttributeError("materialization_receipt")
+        if isinstance(self._receipt, BaseException):
+            raise self._receipt
         return self._receipt
 
     def stats(self) -> dict[str, object]:
@@ -202,17 +204,25 @@ def test_directory_modelspec_and_ready_enum_are_not_materialization() -> None:
 
 @pytest.mark.asyncio
 async def test_manager_rejects_and_closes_fused_handle_without_receipt() -> None:
-    handle = _Handle(receipt=_MISSING)
-    factory = _Factory(handle)
-    factory.release.set()
-    manager, readiness = _services(factory)
+    for receipt, cause_type in (
+        (_MISSING, AttributeError),
+        (RuntimeError("receipt accessor failed"), RuntimeError),
+    ):
+        handle = _Handle(receipt=receipt)
+        factory = _Factory(handle)
+        factory.release.set()
+        manager, readiness = _services(factory)
 
-    with pytest.raises(RuntimeManagerError, match="materialization receipt"):
-        await manager.acquire_role(RoleName.MAIN)
+        with pytest.raises(
+            RuntimeManagerError,
+            match="materialization receipt",
+        ) as failure:
+            await manager.acquire_role(RoleName.MAIN)
 
-    assert handle.close_calls == 1
-    assert readiness.snapshot(RoleName.MAIN).model_state is ModelState.DEGRADED
-    assert readiness.snapshot(RoleName.MAIN).materialization is None
+        assert isinstance(failure.value.__cause__, cause_type)
+        assert handle.close_calls == 1
+        assert readiness.snapshot(RoleName.MAIN).model_state is ModelState.DEGRADED
+        assert readiness.snapshot(RoleName.MAIN).materialization is None
 
 
 @pytest.mark.asyncio

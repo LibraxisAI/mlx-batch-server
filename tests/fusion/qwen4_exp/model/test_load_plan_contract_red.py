@@ -277,7 +277,7 @@ def test_open_shard_lease_detects_in_place_mutation_after_eval(tmp_path: Path) -
     os.link(tmp_path / name, alias)
 
     with open_qwen4_exp_shard(plan, name) as lease:
-        alias.write_bytes(b"mutated-after-open")
+        alias.write_bytes(b"mutated")
         with pytest.raises(Qwen4ExpLoadPlanError, match="changed after tensor eval"):
             lease.verify_after_eval()
 

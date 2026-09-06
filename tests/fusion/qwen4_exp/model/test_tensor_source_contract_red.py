@@ -74,6 +74,26 @@ def _call_leaf(call: ast.Call) -> str | None:
     return None
 
 
+def _call_path(call: ast.Call) -> str | None:
+    parts: list[str] = []
+    function = call.func
+    while isinstance(function, ast.Attribute):
+        parts.append(function.attr)
+        function = function.value
+    if not isinstance(function, ast.Name):
+        return None
+    parts.append(function.id)
+    return ".".join(reversed(parts))
+
+
+def _calls_named(node: ast.AST, path: str) -> list[ast.Call]:
+    return [
+        child
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and _call_path(child) == path
+    ]
+
+
 def test_tensor_source_retains_frozen_provenance_without_donor_imports() -> None:
     source = _source(_TENSOR_PATH)
     tree = _tree(_TENSOR_PATH)
@@ -120,6 +140,7 @@ def test_text_args_is_only_a_view_over_canonical_checkpoint_config() -> None:
 
 def test_embedded_ple_and_mtp_are_part_of_the_strict_tensor_tree() -> None:
     source = _source(_TENSOR_PATH)
+    load = _function(_tree(_TENSOR_PATH), "load_qwen4_exp_tensor")
 
     assert "class NGramTable(nn.Module):" in source
     assert "args.split_ngram_parts" in source
@@ -128,7 +149,16 @@ def test_embedded_ple_and_mtp_are_part_of_the_strict_tensor_tree() -> None:
     assert "out.reshape(*ids.shape, self.dim) * self.weight_scale" in source
     assert "self.mtp = Qwen4ExpMTP(args)" in source
     assert 'if key.startswith("mtp."):' in source
-    assert "model.sanitize(_read_indexed_weights(plan))" in source
+    sanitize_calls = _calls_named(load, "model.sanitize")
+    assert len(sanitize_calls) == 1
+    assert len(sanitize_calls[0].args) == 1
+    read_weights = sanitize_calls[0].args[0]
+    assert isinstance(read_weights, ast.Call)
+    assert _call_path(read_weights) == "_read_indexed_weights"
+    assert [ast.unparse(argument) for argument in read_weights.args] == [
+        "plan",
+        "shard_set",
+    ]
     assert "strict=True" in source
 
 
@@ -234,8 +264,7 @@ def test_every_production_mx_load_consumes_one_held_verified_shard_stream() -> N
         assert len(call.args) == 1
         stream = call.args[0]
         assert isinstance(stream, ast.Call)
-        assert isinstance(stream.func, ast.Attribute)
-        assert stream.func.attr == "stream_for_load"
+        assert _call_path(stream) == "shard_set.stream_for_load"
         assert any(
             keyword.arg == "format"
             and isinstance(keyword.value, ast.Constant)
@@ -243,31 +272,26 @@ def test_every_production_mx_load_consumes_one_held_verified_shard_stream() -> N
             for keyword in call.keywords
         )
 
-    text_source = ast.unparse(_function(_tree(_TENSOR_PATH), "_read_indexed_weights"))
-    vision_source = ast.unparse(
-        _method(
-            _class(_tree(_VISION_TOWER_PATH), "Qwen4ExpVisionTensorTower"),
-            "from_load_plan",
-        )
+    prepared_load = _method(
+        _class(_tree(_TENSOR_PATH), "_PreparedQwen4ExpExecutionFactory"),
+        "load",
     )
-    for source in (text_source, vision_source):
-        assert source.index("stream_for_load") < source.index("mx.load")
-
-    prepared_source = ast.unparse(
-        _method(
-            _class(_tree(_TENSOR_PATH), "_PreparedQwen4ExpExecutionFactory"),
-            "load",
-        )
+    open_shards = _calls_named(prepared_load, "open_qwen4_exp_shards")
+    load_text = _calls_named(prepared_load, "load_qwen4_exp_tensor")
+    load_vision = _calls_named(
+        prepared_load,
+        "Qwen4ExpVisionTensorTower.from_load_plan",
     )
-    assert prepared_source.index("open_qwen4_exp_shards") < prepared_source.index(
-        "load_qwen4_exp_tensor"
+    materialize = _calls_named(prepared_load, "_materialize_qwen4_exp_parameters")
+    assert all(
+        len(calls) == 1 for calls in (open_shards, load_text, load_vision, materialize)
     )
-    assert prepared_source.index("load_qwen4_exp_tensor") < prepared_source.index(
-        "Qwen4ExpVisionTensorTower.from_load_plan"
+    assert (
+        open_shards[0].lineno
+        < load_text[0].lineno
+        < load_vision[0].lineno
+        < materialize[0].lineno
     )
-    assert prepared_source.index(
-        "Qwen4ExpVisionTensorTower.from_load_plan"
-    ) < prepared_source.index("_materialize_qwen4_exp_parameters")
 
     load_plan_source = _source(_LOAD_PLAN_PATH)
     assert 'getattr(os, "O_NOFOLLOW", 0)' in load_plan_source
@@ -277,15 +301,29 @@ def test_every_production_mx_load_consumes_one_held_verified_shard_stream() -> N
 def test_prepared_factory_propagates_one_receipt_after_text_mtp_and_vision() -> None:
     tree = _tree(_TENSOR_PATH)
     prepared = _class(tree, "_PreparedQwen4ExpExecutionFactory")
-    load_source = ast.unparse(_method(prepared, "load"))
+    load = _method(prepared, "load")
+    load_vision = _calls_named(load, "Qwen4ExpVisionTensorTower.from_load_plan")
+    materialize = _calls_named(load, "_materialize_qwen4_exp_parameters")
+    runtime = _calls_named(load, "_Qwen4ExpTensorRuntime")
+    binding = _calls_named(load, "Qwen4ExpExecutionBinding")
 
-    assert load_source.index("Qwen4ExpVisionTensorTower.from_load_plan") < (
-        load_source.index("_materialize_qwen4_exp_parameters")
+    assert all(
+        len(calls) == 1 for calls in (load_vision, materialize, runtime, binding)
     )
-    assert load_source.index("_materialize_qwen4_exp_parameters") < (
-        load_source.index("Qwen4ExpExecutionBinding")
+    assert (
+        load_vision[0].lineno
+        < materialize[0].lineno
+        < runtime[0].lineno
+        < binding[0].lineno
     )
-    assert load_source.count("materialization_receipt=materialization_receipt") == 2
+    for constructor in (runtime[0], binding[0]):
+        receipt_keywords = [
+            keyword
+            for keyword in constructor.keywords
+            if keyword.arg == "materialization_receipt"
+        ]
+        assert len(receipt_keywords) == 1
+        assert ast.unparse(receipt_keywords[0].value) == "materialization_receipt"
 
 
 def test_no_other_production_surface_can_mint_materialization_receipts() -> None:

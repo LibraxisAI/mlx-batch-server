@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,37 @@ class Qwen4ExpLoadPlanError(ValueError):
     """Checkpoint metadata cannot produce an immutable tensor load plan."""
 
 
+@dataclass(frozen=True, slots=True)
+class _DescriptorIdentity:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    link_count: int
+
+    def admits_held_descriptor(self, observed: _DescriptorIdentity) -> bool:
+        stable_identity = (self.device, self.inode, self.size, self.mtime_ns)
+        observed_stable_identity = (
+            observed.device,
+            observed.inode,
+            observed.size,
+            observed.mtime_ns,
+        )
+        if observed_stable_identity != stable_identity:
+            return False
+        if (
+            observed.ctime_ns == self.ctime_ns
+            and observed.link_count == self.link_count
+        ):
+            return True
+        return (
+            sys.platform == "darwin"
+            and self.link_count > 0
+            and observed.link_count == self.link_count - 1
+        )
+
+
 @dataclass(slots=True)
 class Qwen4ExpShardLease:
     """Open-file identity whose admitted bytes are consumed by tensor loading."""
@@ -40,7 +72,7 @@ class Qwen4ExpShardLease:
     name: str
     stream: BinaryIO
     expected_sha256: str
-    _identity: tuple[int, int, int, int, int]
+    _identity: _DescriptorIdentity
     _closed: bool = False
 
     def prepare_for_load(self) -> BinaryIO:
@@ -64,7 +96,9 @@ class Qwen4ExpShardLease:
         before = _descriptor_identity(self.stream, self.name)
         observed = _stream_sha256(self.stream, self.name)
         after = _descriptor_identity(self.stream, self.name)
-        if before != self._identity or after != self._identity:
+        if not self._identity.admits_held_descriptor(
+            before
+        ) or not self._identity.admits_held_descriptor(after):
             raise Qwen4ExpLoadPlanError(
                 f"checkpoint shard identity changed {stage}: {self.name}"
             )
@@ -366,7 +400,7 @@ def open_qwen4_exp_shards(plan: Qwen4ExpModelLoadPlan) -> Qwen4ExpShardSet:
 def _descriptor_identity(
     stream: BinaryIO,
     name: str,
-) -> tuple[int, int, int, int, int]:
+) -> _DescriptorIdentity:
     try:
         observed = os.fstat(stream.fileno())
     except (OSError, ValueError) as error:
@@ -377,12 +411,13 @@ def _descriptor_identity(
         raise Qwen4ExpLoadPlanError(
             f"checkpoint shard must be a non-empty regular file: {name}"
         )
-    return (
-        observed.st_dev,
-        observed.st_ino,
-        observed.st_size,
-        observed.st_mtime_ns,
-        observed.st_ctime_ns,
+    return _DescriptorIdentity(
+        device=observed.st_dev,
+        inode=observed.st_ino,
+        size=observed.st_size,
+        mtime_ns=observed.st_mtime_ns,
+        ctime_ns=observed.st_ctime_ns,
+        link_count=observed.st_nlink,
     )
 
 
