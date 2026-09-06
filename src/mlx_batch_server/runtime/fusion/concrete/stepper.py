@@ -708,7 +708,17 @@ def _is_grammar_constrained(request: GenerationRequest) -> bool:
 
 
 def _is_stop_sequence_constrained(request: GenerationRequest) -> bool:
-    return bool(request.sampling.get("stop"))
+    stop_sequences = request.sampling.get("stop")
+    if stop_sequences is None:
+        return False
+    if isinstance(stop_sequences, str):
+        return stop_sequences != ""
+    if isinstance(stop_sequences, tuple | list):
+        return len(stop_sequences) > 0
+    # Runtime mappers normalize supported stop sequences to text or tuples.
+    # Any other internal value is malformed, so keep MTP disabled rather than
+    # invoking its truthiness or attempting a numeric conversion.
+    return True
 
 
 __all__ = [

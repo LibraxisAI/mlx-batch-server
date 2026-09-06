@@ -300,6 +300,65 @@ def test_stop_constrained_cohort_stays_in_one_shared_ar_step() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("stop_value", "expected_kind", "expected_reason"),
+    [
+        (None, LowLevelBatchKind.MTP_DECODE, None),
+        ("", LowLevelBatchKind.MTP_DECODE, None),
+        ((), LowLevelBatchKind.MTP_DECODE, None),
+        ([], LowLevelBatchKind.MTP_DECODE, None),
+        (
+            "END",
+            LowLevelBatchKind.AR_DECODE,
+            MtpDisableReason.STOP_SEQUENCE_CONSTRAINED,
+        ),
+        (
+            ("END",),
+            LowLevelBatchKind.AR_DECODE,
+            MtpDisableReason.STOP_SEQUENCE_CONSTRAINED,
+        ),
+        (0, LowLevelBatchKind.AR_DECODE, MtpDisableReason.STOP_SEQUENCE_CONSTRAINED),
+        (
+            float("nan"),
+            LowLevelBatchKind.AR_DECODE,
+            MtpDisableReason.STOP_SEQUENCE_CONSTRAINED,
+        ),
+    ],
+    ids=(
+        "none",
+        "empty-string",
+        "empty-tuple",
+        "empty-list",
+        "text",
+        "text-tuple",
+        "zero",
+        "nan",
+    ),
+)
+def test_stop_sampling_classification_is_typed_and_fail_closed(
+    stop_value: object,
+    expected_kind: LowLevelBatchKind,
+    expected_reason: MtpDisableReason | None,
+) -> None:
+    stepper, _ = _stepper(facts=PROVEN_MTP)
+    request = GenerationRequest(
+        response_id="only",
+        runtime=RUNTIME,
+        messages=({"role": "user", "content": "diagnose"},),
+        sampling={"stop": stop_value},
+    )
+    plan = SchedulerPlan(
+        step_id=12,
+        decode_rows=(ScheduledRequest("only", WorkKind.TEXT, 64),),
+    )
+
+    step = stepper.translate_plan(plan, {"only": request}, MtpPolicy())[0]
+
+    assert step.kind is expected_kind
+    assert step.mtp_decision is not None
+    assert step.mtp_decision.disable_reason is expected_reason
+
+
 def test_aligned_multirow_cohort_stays_ar_without_explicit_multirow_proof() -> None:
     stepper, _ = _stepper(facts=PROVEN_MTP)
     requests = {name: _request(name) for name in ("first", "second")}
