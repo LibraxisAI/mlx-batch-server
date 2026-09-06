@@ -242,6 +242,51 @@ def test_load_plan_and_materialization_reject_checkpoint_content_drift(
     assert first.plan_sha256 != second.plan_sha256
 
 
+def test_hugging_face_snapshot_shard_symlink_is_bounded_and_loadable(
+    tmp_path: Path,
+) -> None:
+    model_cache_root = tmp_path / "models--grant-ai--flash"
+    snapshot = model_cache_root / "snapshots" / "revision-a"
+    blobs = model_cache_root / "blobs"
+    snapshot.mkdir(parents=True)
+    blobs.mkdir()
+    _write_snapshot(snapshot)
+    shard_name = "model-00001-of-00001.safetensors"
+    blob = blobs / "fixture-shard"
+    (snapshot / shard_name).replace(blob)
+    (snapshot / shard_name).symlink_to(Path("../../blobs") / blob.name)
+
+    plan = load_qwen4_exp_plan(
+        model_dir=snapshot,
+        model_id="grant-ai/flash",
+        revision="revision-a",
+    )
+
+    with open_qwen4_exp_shard(plan, shard_name) as lease:
+        assert lease.stream.read() == b"fixture"
+
+
+def test_hugging_face_snapshot_shard_symlink_cannot_escape_model_cache(
+    tmp_path: Path,
+) -> None:
+    model_cache_root = tmp_path / "models--grant-ai--flash"
+    snapshot = model_cache_root / "snapshots" / "revision-a"
+    snapshot.mkdir(parents=True)
+    _write_snapshot(snapshot)
+    shard_name = "model-00001-of-00001.safetensors"
+    outside = tmp_path / "outside.safetensors"
+    outside.write_bytes(b"fixture")
+    (snapshot / shard_name).unlink()
+    (snapshot / shard_name).symlink_to(outside)
+
+    with pytest.raises(Qwen4ExpLoadPlanError, match="escapes its model cache root"):
+        load_qwen4_exp_plan(
+            model_dir=snapshot,
+            model_id="grant-ai/flash",
+            revision="revision-a",
+        )
+
+
 def test_open_shard_lease_keeps_consumed_identity_across_path_replacement(
     tmp_path: Path,
 ) -> None:

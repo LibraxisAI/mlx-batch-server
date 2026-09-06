@@ -355,7 +355,7 @@ def open_qwen4_exp_shard(
         raise Qwen4ExpLoadPlanError(
             "load-plan shard names must be checkpoint basenames"
         )
-    path = Path(plan.model_dir) / shard_name
+    path = _resolved_checkpoint_file(Path(plan.model_dir) / shard_name)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -435,9 +435,10 @@ def _stream_sha256(stream: BinaryIO, name: str) -> str:
 
 
 def _stable_file_sha256(path: Path) -> str:
-    if path.is_symlink() or not path.is_file():
+    path = _resolved_checkpoint_file(path)
+    if not path.is_file():
         raise Qwen4ExpLoadPlanError(
-            f"checkpoint shard must be a regular non-symlink file: {path.name}"
+            f"checkpoint shard must resolve to a regular file: {path.name}"
         )
     try:
         before = path.stat()
@@ -469,6 +470,32 @@ def _stable_file_sha256(path: Path) -> str:
             f"checkpoint shard changed while hashing: {path.name}"
         )
     return digest.hexdigest()
+
+
+def _resolved_checkpoint_file(path: Path) -> Path:
+    """Resolve the bounded Hugging Face snapshot indirection for one shard."""
+
+    if not path.is_symlink():
+        return path
+    snapshot_dir = path.parent
+    snapshots_dir = snapshot_dir.parent
+    if snapshots_dir.name != "snapshots":
+        raise Qwen4ExpLoadPlanError(
+            f"checkpoint shard symlink is not in a Hugging Face snapshot: {path.name}"
+        )
+    try:
+        model_cache_root = snapshots_dir.parent.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(model_cache_root)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise Qwen4ExpLoadPlanError(
+            f"checkpoint shard symlink escapes its model cache root: {path.name}"
+        ) from error
+    if resolved.is_symlink() or not resolved.is_file():
+        raise Qwen4ExpLoadPlanError(
+            f"checkpoint shard symlink must resolve to a regular file: {path.name}"
+        )
+    return resolved
 
 
 def _read_bounded(path: Path, limit: int) -> bytes:
