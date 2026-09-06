@@ -219,9 +219,7 @@ async def test_load_and_unload_drive_the_same_role_readiness_owner() -> None:
         "multimodal",
     ]
     assert resident["runtime_contract"]["model_state"] == "ready"
-    assert service.role_status()["receipt"] == {
-        "role_manifest_sha256": "manifest-sha"
-    }
+    assert service.role_status()["receipt"] == {"role_manifest_sha256": "manifest-sha"}
     assert service.role_status()["materialization"]["schema"] == (
         "mlx-tensor-materialization.v1"
     )
@@ -230,8 +228,9 @@ async def test_load_and_unload_drive_the_same_role_readiness_owner() -> None:
         "revision": "snapshot-sha",
         "backend": "fused_mtp_mlx",
     }
-    assert resident["runtime_contract"]["materialization"] == (
-        service.role_status()["materialization"]
+    assert (
+        resident["runtime_contract"]["materialization"]
+        == (service.role_status()["materialization"])
     )
 
     unloaded = await service.unload_model(ModelUnloadRequest(model=FLASH))

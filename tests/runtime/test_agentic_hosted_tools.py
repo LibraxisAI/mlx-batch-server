@@ -473,7 +473,9 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
 
 
 @pytest.mark.asyncio
-async def test_empty_completed_failure_continuation_settles_on_runtime_disclosure() -> None:
+async def test_empty_completed_failure_continuation_settles_on_runtime_disclosure() -> (
+    None
+):
     inner = _FakeInner(
         (
             _Round(tool_calls=(("call_fail", "web_search", '{"query":"q"}'),)),

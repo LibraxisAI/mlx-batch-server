@@ -25,9 +25,7 @@ W2_PHASE = "W2_INTEGRATION"
 RELEASE_PHASE = "W2_STRUCTURALLY_CLOSED"
 OPEN_PHASES = frozenset({W1_PHASE, W2_PHASE})
 DEFERRED_GATES = ("mypy", "ruff", "ruff-format")
-STATE_KEYS = frozenset(
-    {"schema", "plan_id", "phase", "deferred_gates", "recovery_ref"}
-)
+STATE_KEYS = frozenset({"schema", "plan_id", "phase", "deferred_gates", "recovery_ref"})
 
 GATE_COMMAND_PREFIXES = {
     "ruff": ("ruff", "check"),
@@ -133,9 +131,13 @@ def load_index_state() -> CompileEmbargoState:
     try:
         stat_result = STATE_PATH.lstat()
     except FileNotFoundError as error:
-        raise PhaseGateError(f"tracked embargo state is missing: {STATE_PATH}") from error
+        raise PhaseGateError(
+            f"tracked embargo state is missing: {STATE_PATH}"
+        ) from error
     if STATE_PATH.is_symlink() or not STATE_PATH.is_file():
-        raise PhaseGateError("tracked embargo state must be one regular non-symlink file")
+        raise PhaseGateError(
+            "tracked embargo state must be one regular non-symlink file"
+        )
     if stat_result.st_size > 4096:
         raise PhaseGateError("tracked embargo state exceeds 4096 bytes")
 
@@ -153,9 +155,7 @@ def load_head_state() -> CompileEmbargoState:
     return _parse_utf8(raw, source="HEAD")
 
 
-def require_closed_at_ref_boundary(
-    state: CompileEmbargoState, *, surface: str
-) -> None:
+def require_closed_at_ref_boundary(state: CompileEmbargoState, *, surface: str) -> None:
     if state.phase != RELEASE_PHASE:
         raise PhaseGateError(
             f"open embargo phase {state.phase!r} is forbidden at {surface}"
@@ -171,7 +171,9 @@ def _git_blob(spec: str, *, source: str) -> bytes:
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise PhaseGateError(f"cannot read tracked embargo state from {source}: {detail}")
+        raise PhaseGateError(
+            f"cannot read tracked embargo state from {source}: {detail}"
+        )
     return result.stdout
 
 
@@ -225,17 +227,23 @@ def _run_gate(args: argparse.Namespace, state: CompileEmbargoState) -> int:
     return 0
 
 
-def _self_probe() -> int:
+def _self_probe() -> int:  # noqa: PLR0912 - exhaustive phase-contract probe
     state = load_index_state()
     if state.phase != W1_PHASE:
         raise PhaseGateError(f"W0 self-probe requires phase {W1_PHASE!r}")
     deferred = tuple(
-        gate for gate in DEFERRED_GATES if decide_gate(gate, state) is GateDecision.DEFER
+        gate
+        for gate in DEFERRED_GATES
+        if decide_gate(gate, state) is GateDecision.DEFER
     )
     if deferred != DEFERRED_GATES:
         raise PhaseGateError("W0 self-probe did not defer the exact allowlist")
-    if any(decide_gate(gate, state) is not GateDecision.RUN for gate in NON_DEFERRED_PROBES):
-        raise PhaseGateError("W0 self-probe deferred a security/provenance/hygiene gate")
+    if any(
+        decide_gate(gate, state) is not GateDecision.RUN for gate in NON_DEFERRED_PROBES
+    ):
+        raise PhaseGateError(
+            "W0 self-probe deferred a security/provenance/hygiene gate"
+        )
 
     closed = parse_state_text(
         f'schema = "{STATE_SCHEMA}"\n'
@@ -244,7 +252,9 @@ def _self_probe() -> int:
         "deferred_gates = []\n"
         f'recovery_ref = "{RECOVERY_REF}"\n'
     )
-    if any(decide_gate(gate, closed) is not GateDecision.RUN for gate in DEFERRED_GATES):
+    if any(
+        decide_gate(gate, closed) is not GateDecision.RUN for gate in DEFERRED_GATES
+    ):
         raise PhaseGateError("closed W2 state still defers a gate")
     require_closed_at_ref_boundary(closed, surface="self-probe")
     try:
@@ -279,7 +289,10 @@ def _self_probe() -> int:
     for gate in NON_DEFERRED_PROBES:
         if f"--gate {gate} --" in config:
             raise PhaseGateError(f"non-deferred gate {gate!r} is wrapped")
-    if "--validate-state" not in config or "--forbid-open --surface pre-push" not in config:
+    if (
+        "--validate-state" not in config
+        or "--forbid-open --surface pre-push" not in config
+    ):
         raise PhaseGateError("pre-commit/ref-boundary wiring is incomplete")
 
     print(
@@ -317,7 +330,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except PhaseGateError as error:
         print(f"PHASE_GATE=blocked reason={error}", file=sys.stderr)
     except OSError as error:
-        print(f"PHASE_GATE=blocked reason=cannot execute gate: {error}", file=sys.stderr)
+        print(
+            f"PHASE_GATE=blocked reason=cannot execute gate: {error}", file=sys.stderr
+        )
     return 2
 
 

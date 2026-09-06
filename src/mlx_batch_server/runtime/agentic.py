@@ -24,7 +24,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..tools.agent_loop import (
     AgentLoop,
@@ -86,6 +86,7 @@ from .hosted_evidence import (
     HostedCallEvidence,
     HostedEvidenceRegistry,
     HostedRoundEvidence,
+    RequestState,
 )
 from .service import FirstWriterCancelToken, RuntimeStartError, RuntimeStartService
 
@@ -124,7 +125,6 @@ class HostedRuntimeIntegrityError(RuntimeError):
 
 class HostedEvidenceError(HostedRuntimeIntegrityError):
     """Admission evidence could not be prepared before public delivery."""
-
 
 
 class HostedTerminalDeliveryError(RuntimeError):
@@ -180,7 +180,9 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
         self._evidence_registry = evidence_registry
         self._acceptance_profile = acceptance_profile
         if (evidence_registry is None) != (acceptance_profile is None):
-            raise ValueError("evidence registry and acceptance profile are one capability")
+            raise ValueError(
+                "evidence registry and acceptance profile are one capability"
+            )
 
     @property
     def hosted_catalog(self) -> HostedToolCatalog:
@@ -220,6 +222,7 @@ class HostedAgenticRuntimeStarter(RuntimeStartService):
         turn.launch()
         return turn
 
+
 @dataclass(frozen=True, slots=True)
 class _ChildRound:
     terminal: TerminalEvent
@@ -253,9 +256,7 @@ class _HostedAgenticTurn:
         self._sink = sink
         self._token = token
         self._plan = plan
-        self._hosted_names = (
-            frozenset() if plan is None else plan.executable_names
-        )
+        self._hosted_names = frozenset() if plan is None else plan.executable_names
         self._prior_urls = set(_message_urls(request.messages))
         self._hosted_uses = 0
         # Request-global authority. AgentLoop round ids are scheduling detail,
@@ -500,7 +501,9 @@ class _HostedAgenticTurn:
         if self._plan is None:
             raise HostedRuntimeIntegrityError("hosted execution has no request plan")
         if any(call.name not in self._plan.executable_names for call in calls):
-            raise HostedRuntimeIntegrityError("model selected a tool outside its round plan")
+            raise HostedRuntimeIntegrityError(
+                "model selected a tool outside its round plan"
+            )
         if self._hosted_uses + len(calls) > self._plan.policy.max_uses:
             results = tuple(
                 failure_result(
@@ -633,10 +636,12 @@ class _HostedAgenticTurn:
         if child_usage is not None:
             self._usage_base = _add_usage(self._usage_base, child_usage)
         if self._evidence is not None and self._plan is not None:
-            terminal_kind = (
+            terminal_kind: Literal["completed", "failed", "cancelled"] = (
                 "completed"
                 if isinstance(terminal, TurnCompleted)
-                else "cancelled" if isinstance(terminal, TurnCancelled) else "failed"
+                else "cancelled"
+                if isinstance(terminal, TurnCancelled)
+                else "failed"
             )
             try:
                 self._evidence.record_round(
@@ -647,9 +652,7 @@ class _HostedAgenticTurn:
                         ended_monotonic_ns=time.monotonic_ns(),
                         terminal_kind=terminal_kind,
                         usage=(
-                            None
-                            if child_usage is None
-                            else _usage_mapping(child_usage)
+                            None if child_usage is None else _usage_mapping(child_usage)
                         ),
                         call_ids=tuple(call.call_id for call in collector.tool_calls()),
                     ),
@@ -902,7 +905,9 @@ class _HostedAgenticTurn:
                     ),
                 )
             except Exception as evidence_error:
-                raise HostedEvidenceError("admission evidence failed") from evidence_error
+                raise HostedEvidenceError(
+                    "admission evidence failed"
+                ) from evidence_error
         try:
             if result_event is not None:
                 self._forward(result_event)
@@ -913,7 +918,9 @@ class _HostedAgenticTurn:
             self._forward(item_event)
         except BaseException:
             if evidence_token is not None and self._evidence is not None:
-                self._evidence.mark_call_delivery_failed(self.response_id, evidence_token)
+                self._evidence.mark_call_delivery_failed(
+                    self.response_id, evidence_token
+                )
             raise
         if evidence_token is not None and self._evidence is not None:
             self._evidence.mark_call_delivered(self.response_id, evidence_token)
@@ -1083,10 +1090,12 @@ class _HostedAgenticTurn:
         with self._lock:
             if self._terminal_emitted:
                 return
-        state = (
+        state: RequestState = (
             "completed"
             if isinstance(event, TurnCompleted)
-            else "cancelled" if isinstance(event, TurnCancelled) else "failed"
+            else "cancelled"
+            if isinstance(event, TurnCancelled)
+            else "failed"
         )
         usage = event.usage if isinstance(event, TurnCompleted) else None
         evidence_token: str | None = None
@@ -1103,7 +1112,9 @@ class _HostedAgenticTurn:
                     ),
                 )
             except Exception as evidence_error:
-                raise HostedEvidenceError("admission evidence failed") from evidence_error
+                raise HostedEvidenceError(
+                    "admission evidence failed"
+                ) from evidence_error
         with self._lock:
             if self._terminal_emitted:
                 return
@@ -1183,9 +1194,7 @@ class _ChildSink:
         if not has_hosted_call:
             if self._failure_continuation:
                 text = " ".join(
-                    event.text
-                    for event in events
-                    if isinstance(event, TextCompleted)
+                    event.text for event in events if isinstance(event, TextCompleted)
                 ).casefold()
                 forbidden = (
                     "tool succeeded",
@@ -1326,9 +1335,7 @@ class _ChildSink:
         ):
             self.saw_text = True
         outer_index, outer_item_id = self._mapped(event.output_index)
-        self._publish(
-            replace(event, output_index=outer_index, item_id=outer_item_id)
-        )
+        self._publish(replace(event, output_index=outer_index, item_id=outer_item_id))
 
     def _emit_filtered_content(
         self,
@@ -1567,7 +1574,9 @@ def _opening_action(
     fallback = call.arguments.strip() or "{}"
     if call.name == "web_search":
         query = model_action.get("query")
-        return {"query": query if isinstance(query, str) and query.strip() else fallback}
+        return {
+            "query": query if isinstance(query, str) and query.strip() else fallback
+        }
     if call.name in {"web_fetch", "open_page"}:
         url = model_action.get("url")
         return {"url": url if isinstance(url, str) and url.strip() else fallback}
@@ -1576,9 +1585,7 @@ def _opening_action(
         pattern = model_action.get("pattern")
         return {
             "url": url if isinstance(url, str) and url.strip() else fallback,
-            "pattern": (
-                pattern if isinstance(pattern, str) and pattern else fallback
-            ),
+            "pattern": (pattern if isinstance(pattern, str) and pattern else fallback),
         }
     raise HostedRuntimeIntegrityError("hosted opening action has an unknown tool")
 

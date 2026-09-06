@@ -850,7 +850,11 @@ class AnthropicMessageProjector:
         representation = result.get("representation", "text")
         if representation == "base64" and media_type == "application/pdf":
             source: PlainTextSource | Base64PDFSource = Base64PDFSource(data=content)
-        elif representation == "text" and isinstance(media_type, str) and _is_text_media_type(media_type):
+        elif (
+            representation == "text"
+            and isinstance(media_type, str)
+            and _is_text_media_type(media_type)
+        ):
             source = PlainTextSource(data=content)
         else:
             raise AnthropicAPIError(

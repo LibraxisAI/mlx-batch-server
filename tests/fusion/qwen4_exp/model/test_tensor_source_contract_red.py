@@ -326,13 +326,15 @@ def test_production_composition_owns_the_private_issuer_and_no_injection_seam() 
     assert "__seal" in execution_source
     assert "def _issue(" in execution_source
     assert "def _authenticates(" in execution_source
-    assert "_TensorMaterializationIssuerAuthority" not in execution_source.split(
-        "__all__ =", 1
-    )[1]
+    assert (
+        "_TensorMaterializationIssuerAuthority"
+        not in execution_source.split("__all__ =", 1)[1]
+    )
     assert "TensorMaterializationReceipt" not in runtime_init_source
-    assert owner_source.count(
-        "materialization_receipt = owner.materialization_receipt"
-    ) == 1
+    assert (
+        owner_source.count("materialization_receipt = owner.materialization_receipt")
+        == 1
+    )
     assert "materialization_receipt=materialization_receipt" in owner_source
 
 

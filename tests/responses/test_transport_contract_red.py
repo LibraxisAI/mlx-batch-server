@@ -1904,7 +1904,12 @@ def test_hosted_started_item_fails_closed_for_unknown_or_invalid_actions() -> No
     with pytest.raises(ValueError, match="Responses hosted web tools"):
         render_started_item(
             OutputItemStarted(
-                "hosted_call", 0, "fetch_1", "call_fetch", "web_fetch", {"url": "https://example.com"}
+                "hosted_call",
+                0,
+                "fetch_1",
+                "call_fetch",
+                "web_fetch",
+                {"url": "https://example.com"},
             )
         )
     with pytest.raises(ValueError, match="requires only query"):

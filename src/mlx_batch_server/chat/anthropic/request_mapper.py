@@ -45,7 +45,9 @@ _WEB_FETCH_TYPE = "web_fetch_20250910"
 _WEB_FETCH_NAME = "web_fetch"
 
 
-def build_turn(request: MessagesRequest, *, trace_id: str | None = None) -> AnthropicTurn:
+def build_turn(
+    request: MessagesRequest, *, trace_id: str | None = None
+) -> AnthropicTurn:
     """Translate one Anthropic request into a runtime-neutral turn."""
 
     _reject_unsupported(request)

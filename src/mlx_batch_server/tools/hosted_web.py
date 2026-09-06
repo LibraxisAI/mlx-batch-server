@@ -229,9 +229,7 @@ class HostedWebFetchTool:
             "content_encoding": "utf8",
             "content_tokenizer": ANTHROPIC_APPROX_TOKENIZER,
             "content_tokens": token_count,
-            "content_truncation": (
-                "max_content_tokens" if truncated else "none"
-            ),
+            "content_truncation": ("max_content_tokens" if truncated else "none"),
         }
         if policy.max_content_tokens is not None:
             receipt["content_token_limit"] = policy.max_content_tokens
@@ -444,7 +442,9 @@ def _pdf_success(
     max_content_tokens: int | None,
 ) -> HostedToolSuccess:
     if len(raw) > _PDF_MAX_BYTES or not raw.startswith(b"%PDF-"):
-        raise HostedToolError("fetch_invalid_pdf", "fetched PDF is invalid or too large")
+        raise HostedToolError(
+            "fetch_invalid_pdf", "fetched PDF is invalid or too large"
+        )
     try:
         pymupdf = importlib.import_module("pymupdf")
         document = pymupdf.open(stream=raw, filetype="pdf")
@@ -453,7 +453,9 @@ def _pdf_success(
         finally:
             document.close()
     except Exception as error:
-        raise HostedToolError("fetch_invalid_pdf", "fetched PDF could not be parsed") from error
+        raise HostedToolError(
+            "fetch_invalid_pdf", "fetched PDF could not be parsed"
+        ) from error
     extracted = extracted[:262_144]
     tokenizer = AnthropicApproxTextTokenizer()
     extracted, token_count, truncated = tokenizer.truncate(
@@ -482,9 +484,7 @@ def _pdf_success(
             "content_encoding": "base64",
             "content_tokenizer": ANTHROPIC_APPROX_TOKENIZER,
             "content_tokens": token_count,
-            "content_truncation": (
-                "max_content_tokens" if truncated else "none"
-            ),
+            "content_truncation": ("max_content_tokens" if truncated else "none"),
             **(
                 {}
                 if max_content_tokens is None

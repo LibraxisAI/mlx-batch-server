@@ -465,8 +465,9 @@ async def test_shutdown_bounds_new_ready_handle_close_and_retains_ownership() ->
 
 
 @pytest.mark.asyncio
-async def test_shutdown_during_load_suppresses_ready_and_closes_eventual_handle(
-) -> None:
+async def test_shutdown_during_load_suppresses_ready_and_closes_eventual_handle() -> (
+    None
+):
     handle = _Handle()
     factory = _Factory(handle)
     manager, readiness = _services(factory)
@@ -489,8 +490,9 @@ async def test_shutdown_during_load_suppresses_ready_and_closes_eventual_handle(
 
 
 @pytest.mark.asyncio
-async def test_timed_out_shutdown_tracks_late_cleanup_without_deadline_extension(
-) -> None:
+async def test_timed_out_shutdown_tracks_late_cleanup_without_deadline_extension() -> (
+    None
+):
     handle = _BlockingCloseHandle()
     factory = _Factory(handle)
     manager, readiness = _services(factory)

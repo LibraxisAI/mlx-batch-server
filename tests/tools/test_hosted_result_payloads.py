@@ -169,8 +169,7 @@ async def test_fetch_result_is_canonical_golden_and_fetched_exactly_once() -> No
     executor = HostedToolExecutor(catalog)
 
     result = await _execute(
-        executor,
-        _call("web_fetch", '{"url":"https://cdn.example/page"}')
+        executor, _call("web_fetch", '{"url":"https://cdn.example/page"}')
     )
 
     assert result.ok

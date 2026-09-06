@@ -340,9 +340,7 @@ def render_started_item(event: OutputItemStarted) -> dict[str, Any]:
         }
     if event.kind == HOSTED_CALL_ITEM_KIND:
         if event.name not in {"web_search", "open_page", "find_in_page"}:
-            raise ValueError(
-                "only Responses hosted web tools have an item rendering"
-            )
+            raise ValueError("only Responses hosted web tools have an item rendering")
         action = event.action
         if action is None:  # pragma: no cover - enforced by the event
             raise ValueError("hosted_call start is missing its opening action")

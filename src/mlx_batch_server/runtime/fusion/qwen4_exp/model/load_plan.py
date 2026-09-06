@@ -322,11 +322,7 @@ def open_qwen4_exp_shard(
             "load-plan shard names must be checkpoint basenames"
         )
     path = Path(plan.model_dir) / shard_name
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
         stream = os.fdopen(descriptor, "rb", closefd=True)
