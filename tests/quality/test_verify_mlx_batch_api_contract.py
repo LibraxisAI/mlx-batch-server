@@ -166,8 +166,55 @@ def _mutated_anthropic_result(
         (
             "closed-auth-status-map",
             "router.py",
-            '400: "invalid_request_error"',
-            '400: "api_error"',
+            '400: ("invalid_request_error", "authentication request is invalid")',
+            '400: ("api_error", "authentication request is invalid")',
+        ),
+        (
+            "protocol-aware-global-rate-limit",
+            "auth/rate_limit.py",
+            'if request.method == "POST" and request.url.path in _ANTHROPIC_MESSAGES_PATHS:',
+            'if False and request.method == "POST" and request.url.path in _ANTHROPIC_MESSAGES_PATHS:',
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "router.py",
+            "raise _ProtocolAuthError(error) from error\n"
+            "    except Exception as error:\n"
+            "        logger.error(",
+            "raise _ProtocolAuthError(error) from error\n"
+            "    except Exception as error:\n"
+            "        raise\n"
+            "        logger.error(",
+        ),
+        (
+            "complete-physical-header-validation",
+            "router.py",
+            "if len(version_values) != 1:",
+            "if False and len(version_values) != 1:",
+        ),
+        (
+            "closed-auth-status-map",
+            "router.py",
+            "admitted = _AUTH_FAILURES.get(error.status_code)",
+            "admitted = {}.get(error.status_code)",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "messages_engine.py",
+            'projector.fail("api_error", diagnostic=type(error).__name__)',
+            'projector.fail("api_error", diagnostic=str(error))',
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "runtime_source.py",
+            'error="message generation failed",',
+            "error=str(error),",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "projector.py",
+            "message=public.message,",
+            "message=event.error,",
         ),
     ),
 )

@@ -36,6 +36,7 @@ from .capabilities import (
     role_receipt,
 )
 from .errors import (
+    ERROR_TYPE_STATUS,
     REQUEST_ID_HEADER,
     AnthropicAPIError,
     attach_request_id,
@@ -65,12 +66,17 @@ SUPPORTED_ANTHROPIC_VERSIONS: Final = frozenset({"2023-06-01"})
 # decision rather than a permissive parser change.
 IMPLEMENTED_ANTHROPIC_BETAS: Final = frozenset()
 
-_AUTH_ERROR_TYPES: Final = {
-    400: "invalid_request_error",
-    401: "authentication_error",
-    403: "permission_error",
-    413: "request_too_large",
-    429: "rate_limit_error",
+_AUTH_FAILURES: Final[dict[int, tuple[str, str]]] = {
+    400: ("invalid_request_error", "authentication request is invalid"),
+    401: ("authentication_error", "authentication failed"),
+    402: ("billing_error", "authentication billing check failed"),
+    403: ("permission_error", "authentication permission denied"),
+    404: ("not_found_error", "authentication resource was not found"),
+    413: ("request_too_large", "authentication request is too large"),
+    429: ("rate_limit_error", "authentication rate limit exceeded"),
+    500: ("api_error", "authentication service unavailable"),
+    504: ("timeout_error", "authentication service timed out"),
+    529: ("overloaded_error", "authentication service overloaded"),
 }
 
 
@@ -78,17 +84,23 @@ class _ProtocolAuthError(AnthropicAPIError):
     """An auth failure with the canonical challenge/backoff headers intact."""
 
     def __init__(self, error: HTTPException) -> None:
-        detail = error.detail
-        message = detail if isinstance(detail, str) else "authentication failed"
+        admitted = _AUTH_FAILURES.get(error.status_code)
+        if admitted is None or ERROR_TYPE_STATUS.get(admitted[0]) != error.status_code:
+            status_code = 500
+            error_type, message = _AUTH_FAILURES[status_code]
+        else:
+            status_code = error.status_code
+            error_type, message = admitted
         super().__init__(
             message,
-            error_type=_AUTH_ERROR_TYPES.get(
-                error.status_code,
-                "authentication_error" if error.status_code == 401 else "api_error",
-            ),
-            status_code=error.status_code,
+            error_type=error_type,
+            status_code=status_code,
         )
-        self.headers = dict(error.headers or {})
+        self.headers = {
+            key: value
+            for key, value in (error.headers or {}).items()
+            if key.lower() != REQUEST_ID_HEADER
+        }
 
 
 # Lazy initialization to avoid scanning cache during module import
@@ -339,7 +351,11 @@ def _validation_message(error: ValidationError) -> str:
 
 
 def _error_response(error: AnthropicAPIError, request_id: str) -> JSONResponse:
-    preserved_headers = getattr(error, "headers", {})
+    preserved_headers = {
+        key: value
+        for key, value in getattr(error, "headers", {}).items()
+        if key.lower() != REQUEST_ID_HEADER
+    }
     return JSONResponse(
         status_code=error.status_code,
         content=error.payload(request_id),

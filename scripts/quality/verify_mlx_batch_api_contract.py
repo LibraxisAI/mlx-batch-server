@@ -108,6 +108,10 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     capabilities_tree = _parse_or_none(capabilities_path)
     router_tree = _parse_or_none(router_path)
     rate_limit_tree = _parse_or_none(rate_limit_path)
+    engine_tree = _parse_or_none(engine_path)
+    runtime_source_path = directory / "runtime_source.py"
+    runtime_source_tree = _parse_or_none(runtime_source_path)
+    projector_tree = _parse_or_none(projector_path)
     mapper_tree = _parse_or_none(mapper_path)
     create_message = _function_or_none(router_tree, "create_message")
     verify_protocol_auth = _function_or_none(router_tree, "_verify_protocol_auth")
@@ -119,6 +123,25 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
         _class_or_none(rate_limit_tree, "RateLimitMiddleware"), "dispatch"
     )
     rate_limit_projector = _function_or_none(rate_limit_tree, "_rate_limit_response")
+    protocol_auth_error_init = _method_or_none(
+        _class_or_none(router_tree, "_ProtocolAuthError"), "__init__"
+    )
+    runtime_request = _method_or_none(
+        _class_or_none(runtime_source_tree, "RuntimeAnthropicTurnSource"), "_request"
+    )
+    runtime_drive = _method_or_none(
+        _class_or_none(runtime_source_tree, "RuntimeAnthropicTurnSource"), "_drive"
+    )
+    engine_generate = _method_or_none(
+        _class_or_none(engine_tree, "AnthropicMessagesEngine"), "generate"
+    )
+    engine_stream = _method_or_none(
+        _class_or_none(engine_tree, "AnthropicMessagesEngine"), "generate_stream"
+    )
+    projector_failure = _method_or_none(
+        _class_or_none(projector_tree, "AnthropicMessageProjector"),
+        "_on_turn_failed",
+    )
     enforce_line = _first_call_line(create_message, "enforce_capabilities")
     mapping_line = _first_call_line(create_message, "build_turn")
     stream_line = _first_call_line(create_message, "StreamingResponse")
@@ -176,6 +199,7 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
             rate_limit_projector is not None
             and rate_limit_dispatch is not None
             and _call_count(rate_limit_dispatch, "_rate_limit_response") == 2
+            and _live_if_guard_owns_call(rate_limit_projector, "new_request_id")
             and {
                 "/anthropic/messages",
                 "/anthropic/v1/messages",
@@ -191,18 +215,28 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
         ),
         SourceCheck(
             "safe-protocol-boundary-failures",
-            _has_except_handler(verify_protocol_auth, "Exception")
-            and _has_except_handler(parse_request, "Exception")
-            and {
-                "authentication service unavailable",
-                "request body could not be read",
-                "request could not be processed",
-                "message generation failed",
-            }
-            <= _string_constants(tree for tree in (router_tree,) if tree is not None)
-            and "AnthropicAPIError(str(error))" not in router_source
-            and '_encode_error("api_error", str(error)' not in router_source,
-            "Unexpected auth, body-read, preflight, or generation failures can escape or disclose exception detail",
+            _except_handler_raises_fixed(
+                verify_protocol_auth,
+                "Exception",
+                call_name="AnthropicAPIError",
+                message="authentication service unavailable",
+            )
+            and _except_handler_raises_fixed(
+                parse_request,
+                "Exception",
+                call_name="AnthropicAPIError",
+                message="request body could not be read",
+            )
+            and _exception_handler_calls_fixed_failure(runtime_request)
+            and _exception_handler_calls_fixed_failure(runtime_drive)
+            and _exception_handler_calls_fixed_failure(engine_generate)
+            and _exception_handler_calls_fixed_failure(engine_stream)
+            and _projector_failure_is_closed(projector_failure)
+            and _class_or_none(projector_tree, "RuntimeFailureDiagnostic") is not None
+            and not _has_public_exception_string_flow(
+                (router_tree, engine_tree, runtime_source_tree, projector_tree)
+            ),
+            "Unexpected auth, body-read, preflight, generation, or typed runtime failures can escape or disclose private detail",
         ),
         SourceCheck(
             "complete-physical-header-validation",
@@ -216,15 +250,39 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
                 "getlist",
                 "anthropic-beta",
             )
-            and "len(version_values) != 1" in router_source
+            and _has_live_exact_length_guard(
+                validate_protocol_headers,
+                variable="version_values",
+                expected=1,
+            )
             and '"," in normalized_version' in router_source,
             "Anthropic version/beta validation does not inspect all physical occurrences or require one scalar version",
         ),
         SourceCheck(
             "closed-auth-status-map",
-            '400: "invalid_request_error"' in router_source
-            and '429: "rate_limit_error"' in router_source,
-            "Canonical HMAC/session status codes do not map to the closed Anthropic error taxonomy",
+            _literal_mapping_first_values(router_tree, "_AUTH_FAILURES")
+            == {
+                400: "invalid_request_error",
+                401: "authentication_error",
+                402: "billing_error",
+                403: "permission_error",
+                404: "not_found_error",
+                413: "request_too_large",
+                429: "rate_limit_error",
+                500: "api_error",
+                504: "timeout_error",
+                529: "overloaded_error",
+            }
+            and _named_mapping_get_count(protocol_auth_error_init, "_AUTH_FAILURES")
+            >= 1
+            and _filters_header_case_insensitively(
+                protocol_auth_error_init, "REQUEST_ID_HEADER"
+            )
+            and _filters_header_case_insensitively(
+                _function_or_none(router_tree, "_error_response"),
+                "REQUEST_ID_HEADER",
+            ),
+            "Canonical auth failures lack a live closed status map or transport-owned case-insensitive request-id projection",
         ),
         SourceCheck(
             "single-capability-owner",
@@ -764,6 +822,259 @@ def _has_except_handler(node: ast.AST | None, exception_name: str) -> bool:
         and child.type.id == exception_name
         for child in ast.walk(node)
     )
+
+
+def _except_handlers(
+    node: ast.AST | None,
+    exception_name: str,
+) -> tuple[ast.ExceptHandler, ...]:
+    if node is None:
+        return ()
+    return tuple(
+        child
+        for child in ast.walk(node)
+        if isinstance(child, ast.ExceptHandler)
+        and isinstance(child.type, ast.Name)
+        and child.type.id == exception_name
+    )
+
+
+def _contains_bare_raise(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Raise) and child.exc is None for child in ast.walk(node)
+    )
+
+
+def _except_handler_raises_fixed(
+    node: ast.AST | None,
+    exception_name: str,
+    *,
+    call_name: str,
+    message: str,
+) -> bool:
+    """Require an executable fixed-message raise, not dead marker strings."""
+
+    for handler in _except_handlers(node, exception_name):
+        if _contains_bare_raise(handler):
+            continue
+        for child in ast.walk(handler):
+            if not isinstance(child, ast.Raise) or not isinstance(child.exc, ast.Call):
+                continue
+            if _call_name(child.exc) != call_name or not child.exc.args:
+                continue
+            first = child.exc.args[0]
+            if isinstance(first, ast.Constant) and first.value == message:
+                return True
+    return False
+
+
+def _call_contains_exception_string(call: ast.Call) -> bool:
+    return any(
+        isinstance(child, ast.Call)
+        and _call_name(child) == "str"
+        and child.args
+        and isinstance(child.args[0], ast.Name)
+        and child.args[0].id in {"error", "exc", "exception"}
+        for child in ast.walk(call)
+    )
+
+
+def _exception_handler_calls_fixed_failure(node: ast.AST | None) -> bool:
+    """Prove a live broad handler uses a typed/fixed failure projection."""
+
+    public_sinks = {"AnthropicAPIError", "TurnFailed", "fail"}
+    for handler in _except_handlers(node, "Exception"):
+        if _contains_bare_raise(handler):
+            continue
+        calls = tuple(
+            child for child in ast.walk(handler) if isinstance(child, ast.Call)
+        )
+        if any(
+            _call_name(call) in public_sinks
+            and not _call_contains_exception_string(call)
+            and any(
+                isinstance(value, ast.Constant) and isinstance(value.value, str)
+                for value in (
+                    *call.args,
+                    *(keyword.value for keyword in call.keywords),
+                )
+            )
+            for call in calls
+        ):
+            return True
+    return False
+
+
+def _has_public_exception_string_flow(
+    trees: Iterable[ast.Module | None],
+) -> bool:
+    """Detect exception detail flowing into a protocol-visible constructor."""
+
+    public_sinks = {
+        "AnthropicAPIError",
+        "StreamErrorBody",
+        "TurnFailed",
+        "_encode_error",
+        "fail",
+    }
+    for tree in trees:
+        if tree is None:
+            return True
+        for call in (child for child in ast.walk(tree) if isinstance(child, ast.Call)):
+            if _call_name(call) not in public_sinks:
+                continue
+            if _call_contains_exception_string(call):
+                return True
+            if _call_name(call) in {
+                "AnthropicAPIError",
+                "StreamErrorBody",
+                "fail",
+            } and any(
+                isinstance(child, ast.Attribute) and child.attr == "error"
+                for child in ast.walk(call)
+            ):
+                return True
+    return False
+
+
+def _live_if_guard_owns_call(node: ast.AST | None, call_name: str) -> bool:
+    """Find a reachable conditional branch that owns ``call_name``."""
+
+    if node is None:
+        return False
+    for branch in (child for child in ast.walk(node) if isinstance(child, ast.If)):
+        if any(
+            isinstance(child, ast.Constant) and child.value is False
+            for child in ast.walk(branch.test)
+        ):
+            continue
+        if any(
+            isinstance(child, ast.Call) and _call_name(child) == call_name
+            for statement in branch.body
+            for child in ast.walk(statement)
+        ):
+            return True
+    return False
+
+
+def _has_live_exact_length_guard(
+    node: ast.AST | None,
+    *,
+    variable: str,
+    expected: int,
+) -> bool:
+    if node is None:
+        return False
+    for branch in (child for child in ast.walk(node) if isinstance(child, ast.If)):
+        if any(
+            isinstance(child, ast.Constant) and child.value is False
+            for child in ast.walk(branch.test)
+        ):
+            continue
+        test = branch.test
+        if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+            continue
+        if not isinstance(test.ops[0], ast.NotEq) or len(test.comparators) != 1:
+            continue
+        left = test.left
+        right = test.comparators[0]
+        if (
+            isinstance(left, ast.Call)
+            and _call_name(left) == "len"
+            and len(left.args) == 1
+            and isinstance(left.args[0], ast.Name)
+            and left.args[0].id == variable
+            and isinstance(right, ast.Constant)
+            and right.value == expected
+        ):
+            return True
+    return False
+
+
+def _literal_mapping_first_values(
+    tree: ast.Module | None,
+    name: str,
+) -> dict[object, object]:
+    if tree is None:
+        return {}
+    for child in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(child, ast.Assign) and len(child.targets) == 1:
+            target, value = child.targets[0], child.value
+        elif isinstance(child, ast.AnnAssign):
+            target, value = child.target, child.value
+        if (
+            isinstance(target, ast.Name)
+            and target.id == name
+            and isinstance(value, ast.Dict)
+        ):
+            result: dict[object, object] = {}
+            for key, item in zip(value.keys, value.values, strict=True):
+                if not isinstance(key, ast.Constant):
+                    continue
+                first = (
+                    item.elts[0] if isinstance(item, ast.Tuple) and item.elts else item
+                )
+                if isinstance(first, ast.Constant):
+                    result[key.value] = first.value
+            return result
+    return {}
+
+
+def _named_mapping_get_count(node: ast.AST | None, mapping: str) -> int:
+    if node is None:
+        return 0
+    return sum(
+        1
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr == "get"
+        and isinstance(child.func.value, ast.Name)
+        and child.func.value.id == mapping
+    )
+
+
+def _filters_header_case_insensitively(
+    node: ast.AST | None,
+    owner_name: str,
+) -> bool:
+    if node is None:
+        return False
+    for comparison in (
+        child for child in ast.walk(node) if isinstance(child, ast.Compare)
+    ):
+        if not any(isinstance(operator, ast.NotEq) for operator in comparison.ops):
+            continue
+        values = (comparison.left, *comparison.comparators)
+        has_lower = any(
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "lower"
+            for value in values
+        )
+        has_owner = any(
+            isinstance(value, ast.Name) and value.id == owner_name for value in values
+        )
+        if has_lower and has_owner:
+            return True
+    return False
+
+
+def _projector_failure_is_closed(node: ast.AST | None) -> bool:
+    if node is None or _call_count(node, "_public_runtime_failure") != 1:
+        return False
+    if _call_count(node, "RuntimeFailureDiagnostic") != 1:
+        return False
+    for call in (child for child in ast.walk(node) if isinstance(child, ast.Call)):
+        if _call_name(call) != "StreamErrorBody":
+            continue
+        return not any(
+            isinstance(child, ast.Attribute) and child.attr == "error"
+            for child in ast.walk(call)
+        )
+    return False
 
 
 def _first_call_line(node: ast.AST | None, name: str) -> int | None:

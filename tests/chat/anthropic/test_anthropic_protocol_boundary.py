@@ -17,6 +17,8 @@ from starlette.requests import Request as StarletteRequest
 
 from mlx_batch_server.auth.hmac import compute_signature
 from mlx_batch_server.auth.rate_limit import RateLimitMiddleware
+from mlx_batch_server.chat.anthropic.errors import AnthropicAPIError
+from mlx_batch_server.chat.anthropic.runtime_source import RuntimeAnthropicTurnSource
 from mlx_batch_server.chat.anthropic.turn_source import (
     AnthropicTurn,
     clear_turn_source,
@@ -24,7 +26,14 @@ from mlx_batch_server.chat.anthropic.turn_source import (
 )
 from mlx_batch_server.core.config import get_settings
 from mlx_batch_server.main import app
+from mlx_batch_server.runtime.contracts import (
+    BackendKind,
+    GenerationRequest,
+    RuntimeKey,
+    TurnSink,
+)
 from mlx_batch_server.runtime.events import TurnFailed, TurnStarted
+from mlx_batch_server.runtime.service import FirstWriterCancelToken, RuntimeStartService
 
 anthropic_router = importlib.import_module("mlx_batch_server.chat.anthropic.router")
 auth_dependency = importlib.import_module("mlx_batch_server.auth.dependency")
@@ -38,6 +47,11 @@ BODY = {
     "max_tokens": 8,
     "messages": [{"role": "user", "content": "hi"}],
 }
+RUNTIME = RuntimeKey(
+    model_id="private/physical-model",
+    revision="private-revision",
+    backend=BackendKind.FUSED_MTP_MLX,
+)
 
 
 class _FailingTurnSource:
@@ -55,6 +69,134 @@ class _FailingTurnSource:
             )
 
         return events()
+
+
+class _IteratorExceptionTurnSource:
+    def stream(self, turn: AnthropicTurn):
+        async def events():
+            yield TurnStarted(
+                response_id="anthropic_iterator_failure",
+                model=turn.model_alias,
+                created_at=1,
+            )
+            raise RuntimeError("STREAM_EXCEPTION_SECRET_MARKER")
+
+        return events()
+
+
+class _ImmediateExceptionTurnSource:
+    def stream(self, turn: AnthropicTurn):
+        del turn
+        raise AnthropicAPIError("SOURCE_SECRET_MARKER")
+
+
+class _RawTurnFailedSource:
+    def stream(self, turn: AnthropicTurn):
+        async def events():
+            yield TurnStarted(
+                response_id="anthropic_raw_turn_failure",
+                model=turn.model_alias,
+                created_at=1,
+            )
+            yield TurnFailed(
+                error="TURN_FAILED_SECRET_MARKER",
+                code="overloaded_error",
+                status_code=529,
+            )
+
+        return events()
+
+
+class _ExplodingStarter(RuntimeStartService):
+    def __init__(self) -> None:
+        pass
+
+    async def start(
+        self,
+        request: GenerationRequest,
+        sink: TurnSink,
+        *,
+        cancel: FirstWriterCancelToken | None = None,
+    ):
+        del request, sink, cancel
+        raise RuntimeError("STARTER_SECRET_MARKER")
+
+
+class _ExplodingHandle:
+    def __init__(self, response_id: str) -> None:
+        self._response_id = response_id
+
+    @property
+    def response_id(self) -> str:
+        return self._response_id
+
+    def cancel(self, reason: str) -> bool:
+        del reason
+        return True
+
+    async def wait_closed(self) -> None:
+        raise RuntimeError("HANDLE_SECRET_MARKER")
+
+
+class _HandleStarter(RuntimeStartService):
+    def __init__(self) -> None:
+        pass
+
+    async def start(
+        self,
+        request: GenerationRequest,
+        sink: TurnSink,
+        *,
+        cancel: FirstWriterCancelToken | None = None,
+    ) -> _ExplodingHandle:
+        assert cancel is not None
+        sink.emit(
+            TurnStarted(
+                response_id=request.response_id,
+                model=request.runtime.model_id,
+                created_at=1,
+            )
+        )
+        return _ExplodingHandle(request.response_id)
+
+
+def _runtime_failure_source(kind: str):
+    if kind == "source":
+        return _ImmediateExceptionTurnSource(), "SOURCE_SECRET_MARKER"
+    if kind == "iterator":
+        return _IteratorExceptionTurnSource(), "STREAM_EXCEPTION_SECRET_MARKER"
+    if kind == "turn_failed":
+        return _RawTurnFailedSource(), "TURN_FAILED_SECRET_MARKER"
+    if kind == "alias":
+
+        def fail_alias(alias: str):
+            del alias
+            raise RuntimeError("ALIAS_SECRET_MARKER")
+
+        return (
+            RuntimeAnthropicTurnSource(
+                starter=_HandleStarter(),
+                resolve_model=fail_alias,
+            ),
+            "ALIAS_SECRET_MARKER",
+        )
+    if kind == "starter":
+        return (
+            RuntimeAnthropicTurnSource(
+                starter=_ExplodingStarter(),
+                resolve_model=lambda alias: (RUNTIME, alias),
+            ),
+            "STARTER_SECRET_MARKER",
+        )
+    if kind == "handle":
+        return (
+            RuntimeAnthropicTurnSource(
+                starter=_HandleStarter(),
+                resolve_model=lambda alias: (RUNTIME, alias),
+            ),
+            "HANDLE_SECRET_MARKER",
+        )
+    raise AssertionError(f"unknown hostile runtime kind: {kind}")
 
 
 @pytest.fixture
@@ -273,6 +415,118 @@ def test_unexpected_canonical_auth_failure_is_safe_and_correlated(
     payload = _assert_correlated_error(response, "api_error")
     assert payload["error"]["message"] == "authentication service unavailable"
     assert "AUTHORITY_SECRET_MARKER" not in response.text
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize(
+    ("status_code", "expected_status", "expected_type"),
+    [
+        (400, 400, "invalid_request_error"),
+        (401, 401, "authentication_error"),
+        (402, 402, "billing_error"),
+        (403, 403, "permission_error"),
+        (404, 404, "not_found_error"),
+        (413, 413, "request_too_large"),
+        (429, 429, "rate_limit_error"),
+        (500, 500, "api_error"),
+        (504, 504, "timeout_error"),
+        (529, 529, "overloaded_error"),
+        (418, 500, "api_error"),
+    ],
+)
+def test_canonical_http_auth_failure_uses_closed_safe_mapping(
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    status_code: int,
+    expected_status: int,
+    expected_type: str,
+) -> None:
+    async def fail_auth(*args, **kwargs):
+        del args, kwargs
+        raise anthropic_router.HTTPException(
+            status_code=status_code,
+            detail="AUTH_HTTP_SECRET_MARKER",
+            headers={
+                "Request-ID": "foreign-upper",
+                "rEqUeSt-Id": "foreign-mixed",
+                "Retry-After": "7",
+                "WWW-Authenticate": "Bearer",
+            },
+        )
+
+    monkeypatch.setattr(anthropic_router, "verify_auth", fail_auth)
+    response = authenticated_client.post(
+        path,
+        headers={"anthropic-version": VERSION},
+        json=BODY,
+    )
+
+    assert response.status_code == expected_status
+    payload = _assert_correlated_error(response, expected_type)
+    assert payload["error"]["message"] != "AUTH_HTTP_SECRET_MARKER"
+    assert "AUTH_HTTP_SECRET_MARKER" not in response.text
+    assert response.headers["retry-after"] == "7"
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["source", "alias", "starter", "handle", "iterator", "turn_failed"],
+)
+def test_real_engine_runtime_failures_never_disclose_private_detail(
+    authenticated_client: TestClient,
+    path: str,
+    stream: bool,
+    failure_kind: str,
+) -> None:
+    source, marker = _runtime_failure_source(failure_kind)
+    register_turn_source(source)
+    try:
+        response = authenticated_client.post(
+            path,
+            headers={
+                "x-api-key": "anthropic-boundary-secret",
+                "anthropic-version": VERSION,
+            },
+            json={**BODY, "stream": stream},
+        )
+    finally:
+        clear_turn_source(source)
+
+    assert marker not in response.text
+    assert response.headers.get_list("request-id") == [response.headers["request-id"]]
+    expected_status = 529 if failure_kind == "turn_failed" else 500
+    expected_type = "overloaded_error" if failure_kind == "turn_failed" else "api_error"
+    expected_message = (
+        "the inference runtime is temporarily overloaded"
+        if failure_kind == "turn_failed"
+        else "message generation failed"
+    )
+    if not stream:
+        assert response.status_code == expected_status
+        payload = _assert_correlated_error(response, expected_type)
+        assert payload["error"]["message"] == expected_message
+        return
+
+    assert response.status_code == 200
+    error_frames = [
+        frame
+        for frame in response.text.split("\n\n")
+        if frame.startswith("event: error\n")
+    ]
+    assert len(error_frames) == 1
+    data_line = next(
+        line for line in error_frames[0].splitlines() if line.startswith("data: ")
+    )
+    payload = json.loads(data_line.removeprefix("data: "))
+    assert payload["error"] == {
+        "type": expected_type,
+        "message": expected_message,
+    }
+    assert payload["request_id"] == response.headers["request-id"]
 
 
 @pytest.mark.parametrize("path", MESSAGES_PATHS)

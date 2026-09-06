@@ -7,6 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 
 from mlx_batch_server.runtime.contracts import (
     BackendTurn,
@@ -21,12 +22,34 @@ from mlx_batch_server.runtime.events import (
 )
 from mlx_batch_server.runtime.service import FirstWriterCancelToken, RuntimeStartService
 from mlx_batch_server.runtime.turn import GenerationTurn, TurnState
+from mlx_batch_server.utils.logger import logger
 
 from .errors import AnthropicAPIError
 from .turn_source import AnthropicTurn
 
 ResolvedModel = tuple[RuntimeKey, str]
 ResolveModel = Callable[[str], ResolvedModel]
+
+
+@dataclass(frozen=True, slots=True)
+class _PrivateRuntimeFailureDiagnostic:
+    """Internal exception identity that never enters a protocol event."""
+
+    stage: str
+    exception_type: str
+
+
+def _log_private_failure(stage: str, error: BaseException) -> None:
+    diagnostic = _PrivateRuntimeFailureDiagnostic(
+        stage=stage,
+        exception_type=type(error).__name__,
+    )
+    logger.error(
+        "Anthropic runtime bridge failed stage=%s exception_type=%s",
+        diagnostic.stage,
+        diagnostic.exception_type,
+        exc_info=True,
+    )
 
 
 class RuntimeAnthropicTurnSource:
@@ -79,11 +102,10 @@ class RuntimeAnthropicTurnSource:
             raise TypeError("turn must be an AnthropicTurn")
         try:
             runtime, role = self._resolve_model(turn.model_alias)
-        except AnthropicAPIError:
-            raise
         except Exception as error:
+            _log_private_failure("model_alias_resolution", error)
             raise AnthropicAPIError(
-                str(error) or "model alias could not be resolved",
+                "model alias could not be resolved",
                 error_type="invalid_request_error",
             ) from error
         if not isinstance(runtime, RuntimeKey):
@@ -162,10 +184,11 @@ class RuntimeAnthropicTurnSource:
                     TurnCancelled(cancel.reason or "anthropic_turn_cancelled")
                 )
         except Exception as error:
+            _log_private_failure("runtime_turn", error)
             if event_turn.state is not TurnState.TERMINAL:
                 event_turn.fail(
                     TurnFailed(
-                        error=str(error) or type(error).__name__,
+                        error="message generation failed",
                         code="runtime_start_failed",
                         status_code=500,
                     )

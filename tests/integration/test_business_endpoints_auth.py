@@ -249,7 +249,10 @@ def test_business_endpoints_accept_static_api_key(
             (
                 "post",
                 "/anthropic/v1/messages",
-                {"headers": headers, "json": _anthropic_payload()},
+                {
+                    "headers": {**headers, "anthropic-version": "2023-06-01"},
+                    "json": _anthropic_payload(),
+                },
             ),
             ("get", "/v1/models", {"headers": headers}),
             (

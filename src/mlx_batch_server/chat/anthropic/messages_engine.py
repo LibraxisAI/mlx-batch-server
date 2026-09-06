@@ -43,11 +43,9 @@ from .projector import (
     ThinkingSignatureOwner,
 )
 from .request_mapper import build_turn
-from .turn_source import AnthropicTurnSource, require_turn_source
+from .turn_source import AnthropicTurn, AnthropicTurnSource, require_turn_source
 
 if TYPE_CHECKING:
-    from mlx_batch_server.runtime.events import TurnEvent
-
     from .anthropic_schema import (
         AnthropicStreamEvent,
         MessagesRequest,
@@ -91,7 +89,7 @@ class AnthropicMessagesEngine:
         request: MessagesRequest,
         admission: CapabilityAdmission | None,
         trace_id: str | None = None,
-    ) -> tuple[AnthropicMessageProjector, AsyncIterator[TurnEvent]]:
+    ) -> tuple[AnthropicMessageProjector, AnthropicTurn]:
         if admission is None:
             admission = enforce_capabilities(request, detached_profile(request.model))
         profile = admission.profile
@@ -118,7 +116,7 @@ class AnthropicMessagesEngine:
             citations_enabled=citations_enabled,
             request_id=trace_id or new_request_id(),
         )
-        return projector, self._source().stream(turn).__aiter__()
+        return projector, turn
 
     def _thinking_projection(
         self,
@@ -169,11 +167,28 @@ class AnthropicMessagesEngine:
     ) -> MessagesResponse:
         """Run one turn and return the terminal Anthropic message."""
 
-        projector, events = self._prepare(request, admission, trace_id)
-        async for event in events:
-            projector.observe(event)
+        projector, turn = self._prepare(request, admission, trace_id)
+        try:
+            events = self._source().stream(turn).__aiter__()
+            async for event in events:
+                projector.observe(event)
+        except Exception as error:
+            logger.error(
+                "Anthropic unary runtime failed exception_type=%s",
+                type(error).__name__,
+                exc_info=True,
+            )
+            projector.fail("api_error", diagnostic=type(error).__name__)
         failure = projector.failure
         if failure is not None:
+            diagnostic = projector.failure_diagnostic
+            if diagnostic is not None:
+                logger.error(
+                    "Anthropic runtime failure code=%s status=%s fingerprint=%s",
+                    diagnostic.code,
+                    diagnostic.status_code,
+                    diagnostic.fingerprint,
+                )
             raise AnthropicAPIError(failure.message, error_type=failure.type)
         if not projector.stopped:
             raise AnthropicAPIError(
@@ -191,32 +206,42 @@ class AnthropicMessagesEngine:
     ) -> AsyncIterator[AnthropicStreamEvent]:
         """Run one turn and yield its Anthropic streaming lifecycle."""
 
-        projector, events = self._prepare(request, admission, trace_id)
+        projector, turn = self._prepare(request, admission, trace_id)
         # message_start opens every Anthropic stream, before any runtime event
         # is observed, so the lifecycle is well-formed even if the inference
         # owner starts by reporting a failure.
         yield projector.message_start_event()
         projector.observe_started()
         try:
+            events = self._source().stream(turn).__aiter__()
             async for event in events:
                 for projected in projector.observe(event):
                     yield projected
-        except AnthropicAPIError as error:
-            logger.error("Anthropic turn failed: %s", error.message)
-            for projected in projector.fail(error.error_type, error.message):
-                yield projected
-            return
         except Exception as error:
-            logger.error("Anthropic turn failed: %s", error, exc_info=True)
-            for projected in projector.fail("api_error", str(error)):
+            logger.error(
+                "Anthropic stream runtime failed exception_type=%s",
+                type(error).__name__,
+                exc_info=True,
+            )
+            for projected in projector.fail(
+                "api_error", diagnostic=type(error).__name__
+            ):
                 yield projected
             return
+        diagnostic = projector.failure_diagnostic
+        if diagnostic is not None:
+            logger.error(
+                "Anthropic runtime failure code=%s status=%s fingerprint=%s",
+                diagnostic.code,
+                diagnostic.status_code,
+                diagnostic.fingerprint,
+            )
         if not projector.stopped:
             # A stream that simply stops is indistinguishable from a truncated
             # connection. Say so explicitly instead of ending mid-message.
             for projected in projector.fail(
                 "api_error",
-                "the runtime turn ended without a terminal event",
+                diagnostic="runtime turn ended without a terminal event",
             ):
                 yield projected
 

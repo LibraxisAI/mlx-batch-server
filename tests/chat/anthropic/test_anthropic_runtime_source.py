@@ -266,7 +266,7 @@ async def test_runtime_source_maps_alias_failure_to_anthropic_error() -> None:
         resolve_model=reject,
     )
 
-    with pytest.raises(AnthropicAPIError, match="unknown model alias"):
+    with pytest.raises(AnthropicAPIError, match="model alias could not be resolved"):
         await _collect(
             source,
             AnthropicTurn(

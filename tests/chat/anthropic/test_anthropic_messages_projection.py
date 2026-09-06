@@ -388,7 +388,10 @@ def test_turn_failure_projects_a_documented_error_event():
     errors = _of_type(emitted, "error")
     assert len(errors) == 1
     assert errors[0].error.type == "api_error"
-    assert errors[0].error.message == "backend exploded"
+    assert errors[0].error.message == "message generation failed"
+    assert projector.failure_diagnostic is not None
+    assert projector.failure_diagnostic.internal_detail == "backend exploded"
+    assert "backend exploded" not in json.dumps(errors[0].model_dump(mode="json"))
     assert projector.stopped is True
 
     with pytest.raises(AnthropicAPIError) as raised:

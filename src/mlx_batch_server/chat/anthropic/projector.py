@@ -33,7 +33,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 
 from mlx_batch_server.runtime.events import (
     REASONING_CONTENT_KIND,
@@ -115,6 +115,78 @@ _TOOL_REASONS = frozenset({"tool_calls", "tool_use", "function_call"})
 _REFUSAL_REASONS = frozenset({"refusal", "content_filter"})
 _PAUSE_REASONS = frozenset({"pause_turn", "pause"})
 _STOP_SEQUENCE_REASONS = frozenset({"stop_sequence", "stop_sequences"})
+
+_PUBLIC_RUNTIME_FAILURES: Final[dict[str, tuple[str, str, int]]] = {
+    "invalid_request_error": (
+        "invalid_request_error",
+        "the inference runtime rejected the request",
+        400,
+    ),
+    "authentication_error": (
+        "authentication_error",
+        "the inference runtime could not authenticate the request",
+        401,
+    ),
+    "billing_error": ("billing_error", "the inference runtime refused billing", 402),
+    "permission_error": (
+        "permission_error",
+        "the inference runtime denied the request",
+        403,
+    ),
+    "not_found_error": (
+        "not_found_error",
+        "the requested inference resource was not found",
+        404,
+    ),
+    "request_too_large": (
+        "request_too_large",
+        "the inference request is too large",
+        413,
+    ),
+    "rate_limit_error": (
+        "rate_limit_error",
+        "the inference runtime rate limit was exceeded",
+        429,
+    ),
+    "timeout_error": ("timeout_error", "the inference runtime timed out", 504),
+    "overloaded_error": (
+        "overloaded_error",
+        "the inference runtime is temporarily overloaded",
+        529,
+    ),
+}
+_GENERIC_RUNTIME_FAILURE: Final = (
+    "api_error",
+    "message generation failed",
+    500,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeFailureDiagnostic:
+    """Private runtime detail retained for observability, never wire output."""
+
+    code: str
+    status_code: int
+    internal_detail: str
+
+    @property
+    def fingerprint(self) -> str:
+        payload = f"{self.code}\0{self.status_code}\0{self.internal_detail}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicRuntimeFailure:
+    error_type: str
+    message: str
+
+
+def _public_runtime_failure(event: TurnFailed) -> _PublicRuntimeFailure:
+    admitted = _PUBLIC_RUNTIME_FAILURES.get(event.code)
+    if admitted is None or event.status_code != admitted[2]:
+        admitted = _GENERIC_RUNTIME_FAILURE
+    return _PublicRuntimeFailure(error_type=admitted[0], message=admitted[1])
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +365,7 @@ class AnthropicMessageProjector:
         self._started = False
         self._stopped = False
         self._failed: StreamErrorBody | None = None
+        self._failure_diagnostic: RuntimeFailureDiagnostic | None = None
 
     # -- public surface ---------------------------------------------------
 
@@ -311,6 +384,12 @@ class AnthropicMessageProjector:
     @property
     def failure(self) -> StreamErrorBody | None:
         return self._failed
+
+    @property
+    def failure_diagnostic(self) -> RuntimeFailureDiagnostic | None:
+        """Private runtime detail for trusted logs; never serialize this value."""
+
+        return self._failure_diagnostic
 
     @property
     def usage(self) -> Usage:
@@ -380,9 +459,13 @@ class AnthropicMessageProjector:
         if isinstance(event, TurnCompleted):
             return self._on_turn_completed(event)
         if isinstance(event, TurnFailed):
-            return self._on_turn_failed(event.code, event.error)
+            return self._on_turn_failed(event)
         if isinstance(event, TurnCancelled):
-            return self._on_turn_failed("api_error", f"turn cancelled: {event.reason}")
+            return self._on_turn_failed(
+                TurnFailed(
+                    error=event.reason, code="runtime_cancelled", status_code=500
+                )
+            )
         return ()
 
     def observe_started(self) -> None:
@@ -390,10 +473,13 @@ class AnthropicMessageProjector:
 
         self._started = True
 
-    def fail(self, code: str, message: str) -> tuple[AnthropicStreamEvent, ...]:
-        """Project a failure onto the documented Anthropic ``error`` event."""
+    def fail(self, code: str, *, diagnostic: str) -> tuple[AnthropicStreamEvent, ...]:
+        """Project an internal failure through the closed public allowlist."""
 
-        return self._on_turn_failed(code, message)
+        status_code = _PUBLIC_RUNTIME_FAILURES.get(code, _GENERIC_RUNTIME_FAILURE)[2]
+        return self._on_turn_failed(
+            TurnFailed(error=diagnostic, code=code, status_code=status_code)
+        )
 
     def message_start_event(self) -> MessageStartEvent:
         """The opening event, also used to seed a non-stream projection."""
@@ -488,15 +574,19 @@ class AnthropicMessageProjector:
         emitted.append(MessageStopEvent())
         return tuple(emitted)
 
-    def _on_turn_failed(
-        self, code: str, message: str
-    ) -> tuple[AnthropicStreamEvent, ...]:
+    def _on_turn_failed(self, event: TurnFailed) -> tuple[AnthropicStreamEvent, ...]:
         if self._stopped:
             return ()
         self._stopped = True
+        self._failure_diagnostic = RuntimeFailureDiagnostic(
+            code=event.code,
+            status_code=event.status_code,
+            internal_detail=event.error,
+        )
+        public = _public_runtime_failure(event)
         body = StreamErrorBody(
-            type=AnthropicAPIError(message, error_type=code).error_type,
-            message=message,
+            type=public.error_type,
+            message=public.message,
         )
         self._failed = body
         return (StreamErrorEvent(error=body, request_id=self._request_id),)
