@@ -1211,6 +1211,9 @@ class _ChildSink:
                     # honest assistant answer. This bounded guard suppresses
                     # only the listed literal contradictions; it is not a
                     # general semantic-honesty classifier.
+                    for event in events:
+                        if isinstance(event, UsageUpdate):
+                            self._owner._forward(event)
                     return
             for event in events:
                 self._owner._forward(event)

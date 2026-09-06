@@ -347,6 +347,10 @@ def _request(tools: tuple[Mapping[str, Any], ...]) -> GenerationRequest:
     )
 
 
+def _web_fetch_tool() -> Mapping[str, Any]:
+    return {"type": "web_fetch", "name": "web_fetch"}
+
+
 def _starter(
     inner: _FakeInner,
     tools: tuple[Any, ...],
@@ -682,8 +686,7 @@ async def test_post_failure_hosted_call_is_not_executed() -> None:
     assert receipts[0].receipt["error"]["code"] == "provider_auth_failed"
     assert inner.requests[1].tools == ()
     assert inner.requests[1].sampling["tool_choice"] == "none"
-    assert _of(events, TurnCompleted)
-    assert not _of(events, TurnFailed)
+    assert _of(events, TurnFailed)
     assert not _of(events, TurnCompleted)
 
 
@@ -829,7 +832,11 @@ async def test_failure_continuation_cannot_publish_a_success_claim() -> None:
     emitted = "".join(event.delta for event in _of(events, TextDelta))
     assert "verified everything" not in emitted
     assert HOSTED_FAILURE_DISCLOSURE in emitted
-    assert _of(events, TurnCompleted)
+    usage = _of(events, UsageUpdate)
+    assert [event.total_tokens for event in usage] == [15, 30]
+    completed = _of(events, TurnCompleted)
+    assert len(completed) == 1
+    assert completed[0].usage == usage[-1]
     assert not _of(events, TurnFailed)
 
 
@@ -1404,7 +1411,7 @@ async def test_result_receipt_identity_disagreement_is_f12(
         catalog=catalog,
         executor=executor_cls(catalog),
     )
-    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _request((_web_fetch_tool(),)))
 
     failed = _of(events, TurnFailed)
     assert len(failed) == 1 and failed[0].status_code == 500
@@ -1439,7 +1446,7 @@ async def test_aggregate_budget_drops_only_the_overflowing_call() -> None:
     )
     tool = _CountingTool("web_fetch", by_url)
     starter, _ = _starter(inner, (tool,), max_result_chars_total=60)
-    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _request((_web_fetch_tool(),)))
 
     results = _of(events, HostedCallResult)
     assert len(results) == 1
@@ -1484,7 +1491,7 @@ async def test_f12_result_mismatch_precedes_aggregate_overflow() -> None:
         executor=_ResultMutatingExecutor(catalog),
         max_result_chars_total=1,
     )
-    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _request((_web_fetch_tool(),)))
 
     failed = _of(events, TurnFailed)
     assert len(failed) == 1 and failed[0].status_code == 500
@@ -1576,7 +1583,7 @@ async def test_armed_filter_grounds_one_citation_and_strips_markup() -> None:
     inner = _FakeInner(_cited_rounds(_RAW_CITED, deltas))
     tool = _CountingTool("web_fetch", _doc_behavior)
     starter, _ = _starter(inner, (tool,))
-    events, outer = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+    events, outer = await _drive(starter, _cited_request((_web_fetch_tool(),)))
 
     # No raw control markup on any surface; the turn contract stayed green.
     assert "<cite" not in repr(events)
@@ -1652,7 +1659,7 @@ async def test_full_nfc_hangul_proof_survives_every_delta_boundary() -> None:
     starter, _ = _starter(inner, (tool,))
     events, outer = await _drive(
         starter,
-        _cited_request(({"type": "web_fetch"},)),
+        _cited_request((_web_fetch_tool(),)),
     )
 
     assert outer.state is TurnState.TERMINAL
@@ -1709,14 +1716,19 @@ async def test_one_prepared_corpus_is_shared_and_extended_incrementally(
         )
     )
     starter, _ = _starter(inner, (_CountingTool("web_fetch", document),))
-    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _cited_request((_web_fetch_tool(),)))
 
     assert prepared_call_ids == ["call_a", "call_b"]
     assert len(corpora) == 9
     assert all(corpus is corpora[0] for corpus in corpora[:8])
     assert corpora[8] is not corpora[0]
     assert corpora[8]._parent is corpora[0]
-    assert len(_of(events, HostedCitation)) == 9
+    # The eight first-corpus filters prove preparation sharing, but that round
+    # selected another hosted action, so its prose and citations stay
+    # quarantined. Only the final no-tool round is public.
+    citations = _of(events, HostedCitation)
+    assert len(citations) == 1
+    assert citations[0].source_call_id == "call_b"
 
 
 @pytest.mark.asyncio
@@ -1729,7 +1741,7 @@ async def test_split_sentinels_produce_identical_output_for_every_boundary() -> 
         inner = _FakeInner(_cited_rounds(_RAW_CITED, deltas))
         tool = _CountingTool("web_fetch", _doc_behavior)
         starter, _ = _starter(inner, (tool,))
-        events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+        events, _ = await _drive(starter, _cited_request((_web_fetch_tool(),)))
         assert "<cite" not in repr(events)
         texts = [e.text for e in _of(events, TextCompleted)]
         citations = [
@@ -1759,7 +1771,7 @@ async def test_unknown_url_citation_is_stripped_without_event() -> None:
     inner = _FakeInner(_cited_rounds(raw, (raw,)))
     tool = _CountingTool("web_fetch", _doc_behavior)
     starter, _ = _starter(inner, (tool,))
-    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _cited_request((_web_fetch_tool(),)))
 
     assert "<cite" not in repr(events)
     assert not _of(events, HostedCitation)
@@ -1781,7 +1793,7 @@ async def test_malformed_and_nested_markup_never_reaches_public_events() -> None
     inner = _FakeInner(_cited_rounds(raw, tuple(raw)))
     tool = _CountingTool("web_fetch", _doc_behavior)
     starter, _ = _starter(inner, (tool,))
-    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _cited_request((_web_fetch_tool(),)))
 
     assert all("<cite" not in repr(event) for event in events)
     assert all("</cite>" not in repr(event) for event in events)
@@ -1797,7 +1809,7 @@ async def test_unarmed_sentinel_text_passes_through_byte_identically() -> None:
     inner = _FakeInner(_cited_rounds(_RAW_CITED, (_RAW_CITED,)))
     tool = _CountingTool("web_fetch", _doc_behavior)
     starter, _ = _starter(inner, (tool,))
-    events, _ = await _drive(starter, _request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _request((_web_fetch_tool(),)))
 
     texts = [e.text for e in _of(events, TextCompleted)]
     assert _RAW_CITED in texts  # raw model text, byte-identical
@@ -1832,7 +1844,7 @@ async def test_only_internal_literal_true_arms_citations(
         response_id="resp_hosted",
         runtime=RuntimeKey(model_id="model-x"),
         messages=({"role": "user", "content": "co pisza o loctree?"},),
-        tools=({"type": "web_fetch"},),
+        tools=(_web_fetch_tool(),),
         metadata=metadata,
     )
     inner = _FakeInner(_cited_rounds(_RAW_CITED, (_RAW_CITED,)))
@@ -1857,7 +1869,7 @@ async def test_armed_ordinary_text_is_byte_identical_on_every_completion() -> No
     inner = _FakeInner(_cited_rounds(text, tuple(text)))
     tool = _CountingTool("web_fetch", _doc_behavior)
     starter, _ = _starter(inner, (tool,))
-    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _cited_request((_web_fetch_tool(),)))
 
     completed = [event for event in _of(events, TextCompleted) if event.text == text]
     assert len(completed) == 1
@@ -1891,7 +1903,7 @@ async def test_armed_reasoning_path_is_byte_identical_and_never_filtered() -> No
     )
     tool = _CountingTool("web_fetch", _doc_behavior)
     starter, _ = _starter(inner, (tool,))
-    events, _ = await _drive(starter, _cited_request(({"type": "web_fetch"},)))
+    events, _ = await _drive(starter, _cited_request((_web_fetch_tool(),)))
 
     assert [event.delta for event in _of(events, ReasoningDelta)] == [reasoning]
     assert [event.text for event in _of(events, ReasoningCompleted)] == [reasoning]
@@ -1977,7 +1989,7 @@ async def test_filter_state_dies_with_the_turn(monkeypatch: Any) -> None:
 
     outer = GenerationTurn(max_pending_events=512)
     handle = await starter.start(
-        _cited_request(({"type": "web_fetch"},)),
+        _cited_request((_web_fetch_tool(),)),
         outer,
         cancel=FirstWriterCancelToken(),
     )
