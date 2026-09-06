@@ -475,6 +475,53 @@ def test_canonical_http_auth_failure_uses_closed_safe_mapping(
 
 @pytest.mark.parametrize("path", MESSAGES_PATHS)
 @pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
+def test_auth_projection_allows_only_public_headers_case_insensitively(
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    stream: bool,
+) -> None:
+    marker = "AUTH_HEADER_SECRET_F5"
+
+    async def fail_auth(*args, **kwargs):
+        del args, kwargs
+        raise anthropic_router.HTTPException(
+            status_code=429,
+            detail=marker,
+            headers={
+                "wWw-aUtHeNtIcAtE": "Bearer",
+                "Retry-After": "6",
+                "rEtRy-AfTeR": "7",
+                "retry-after": marker,
+                "X-rAtElImIt-LiMiT": "10",
+                "x-RATELIMIT-remaining": "0",
+                "X-RateLimit-Reset": "99",
+                "X-Internal-Auth-Diagnostic": marker,
+                "Request-ID": "foreign-id",
+            },
+        )
+
+    monkeypatch.setattr(anthropic_router, "verify_auth", fail_auth)
+    response = authenticated_client.post(
+        path,
+        headers={"anthropic-version": VERSION},
+        json={**BODY, "stream": stream},
+    )
+
+    assert response.status_code == 429
+    payload = _assert_correlated_error(response, "rate_limit_error")
+    assert payload["error"]["message"] == "authentication rate limit exceeded"
+    assert marker not in response.text
+    assert "x-internal-auth-diagnostic" not in response.headers
+    assert response.headers.get_list("www-authenticate") == ["Bearer"]
+    assert response.headers.get_list("retry-after") == ["7"]
+    assert response.headers.get_list("x-ratelimit-limit") == ["10"]
+    assert response.headers.get_list("x-ratelimit-remaining") == ["0"]
+    assert response.headers.get_list("x-ratelimit-reset") == ["99"]
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
 @pytest.mark.parametrize(
     "failure_kind",
     ["source", "alias", "starter", "handle", "iterator", "turn_failed"],
@@ -584,8 +631,8 @@ def test_post_super_auth_message_overwrite_cannot_reach_either_transport(
     marker = "INDIRECT_AUTH_SECRET"
     original_init = anthropic_router._ProtocolAuthError.__init__
 
-    def unsafe_init(self, error):
-        original_init(self, error)
+    def unsafe_init(self, error, request_id):
+        original_init(self, error, request_id)
         self.message = str(error.detail)
 
     async def fail_auth(*args, **kwargs):
@@ -604,6 +651,89 @@ def test_post_super_auth_message_overwrite_cannot_reach_either_transport(
     payload = _assert_correlated_error(response, "authentication_error")
     assert payload["error"]["message"] == "authentication failed"
     assert marker not in response.text
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "getattr-receipt",
+        "setattr-status",
+        "helper-alias-receipt",
+        "subscript-receipt",
+        "post-construction-receipt",
+    ],
+)
+def test_auth_projection_reseals_semantic_receipt_and_status_mutations(
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    stream: bool,
+    mutation: str,
+) -> None:
+    marker = f"AUTH_MUTATION_SECRET_{mutation}"
+    original_init = anthropic_router._ProtocolAuthError.__init__
+
+    def unsafe_init(self, error, request_id):
+        original_init(self, error, request_id)
+        if mutation == "getattr-receipt":
+            self._public_projection = getattr(error, "detail")  # noqa: B009
+        elif mutation == "setattr-status":
+            setattr(self, "status_code", 200)  # noqa: B010
+        elif mutation == "helper-alias-receipt":
+
+            def unsafe_helper(value):
+                return value
+
+            alias = self
+            alias._public_projection = unsafe_helper(error.detail)
+        elif mutation == "subscript-receipt":
+            unsafe = {"receipt": error.detail}
+            self._public_projection = unsafe["receipt"]
+        elif mutation == "post-construction-receipt":
+            self._public_projection = anthropic_router._PublicErrorProjection(
+                status_code=401,
+                error_type="authentication_error",
+                message=error.detail,
+                request_id="foreign-request-id",
+                headers=(
+                    ("X-Internal-Auth-Diagnostic", error.detail),
+                    ("Retry-After", "9"),
+                    ("retry-after", error.detail),
+                    ("Request-ID", "foreign-request-id"),
+                ),
+            )
+        else:  # pragma: no cover - parametrization owns the closed set
+            raise AssertionError(mutation)
+
+    async def fail_auth(*args, **kwargs):
+        del args, kwargs
+        raise anthropic_router.HTTPException(status_code=401, detail=marker)
+
+    monkeypatch.setattr(anthropic_router._ProtocolAuthError, "__init__", unsafe_init)
+    monkeypatch.setattr(anthropic_router, "verify_auth", fail_auth)
+    response = authenticated_client.post(
+        path,
+        headers={"anthropic-version": VERSION},
+        json={**BODY, "stream": stream},
+    )
+
+    expected_status = (
+        401 if mutation in {"setattr-status", "post-construction-receipt"} else 500
+    )
+    expected_type = "authentication_error" if expected_status == 401 else "api_error"
+    expected_message = (
+        "authentication failed"
+        if expected_status == 401
+        else "authentication service unavailable"
+    )
+    assert response.status_code == expected_status
+    payload = _assert_correlated_error(response, expected_type)
+    assert payload["error"]["message"] == expected_message
+    assert marker not in response.text
+    assert marker not in str(response.headers)
+    assert response.headers["request-id"] != "foreign-request-id"
 
 
 @pytest.mark.parametrize("path", MESSAGES_PATHS)

@@ -178,10 +178,10 @@ def _mutated_anthropic_result(
         (
             "safe-protocol-boundary-failures",
             "router.py",
-            "raise _ProtocolAuthError(error) from error\n"
+            "raise _ProtocolAuthError(error, request_id) from error\n"
             "    except Exception as error:\n"
             "        logger.error(",
-            "raise _ProtocolAuthError(error) from error\n"
+            "raise _ProtocolAuthError(error, request_id) from error\n"
             "    except Exception as error:\n"
             "        raise\n"
             "        logger.error(",
@@ -197,6 +197,25 @@ def _mutated_anthropic_result(
             "router.py",
             "admitted = _AUTH_FAILURES.get(error.status_code)",
             "admitted = {}.get(error.status_code)",
+        ),
+        (
+            "closed-auth-status-map",
+            "router.py",
+            '    "www-authenticate": "WWW-Authenticate",',
+            '    "x-internal-auth-diagnostic": "X-Internal-Auth-Diagnostic",\n'
+            '    "www-authenticate": "WWW-Authenticate",',
+        ),
+        (
+            "closed-auth-status-map",
+            "router.py",
+            "        elif not value.isascii() or not value.isdigit():",
+            "        elif False:",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "router.py",
+            "        status_code=projection.status_code,",
+            "        status_code=error.status_code,",
         ),
         (
             "safe-protocol-boundary-failures",
@@ -231,9 +250,8 @@ def _mutated_anthropic_result(
         (
             "safe-protocol-boundary-failures",
             "router.py",
-            "        self._public_projection = (error_type, message, status_code)",
-            "        self.message = str(error.detail)\n"
-            "        self._public_projection = (error_type, message, status_code)",
+            "@dataclass(frozen=True, slots=True)\nclass _PublicErrorProjection:",
+            "@dataclass(frozen=False, slots=True)\nclass _PublicErrorProjection:",
         ),
         (
             "safe-protocol-boundary-failures",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
@@ -80,11 +81,141 @@ _AUTH_FAILURES: Final[dict[int, tuple[str, str]]] = {
     529: ("overloaded_error", "authentication service overloaded"),
 }
 
+_PUBLIC_AUTH_HEADERS: Final[dict[str, str]] = {
+    "www-authenticate": "WWW-Authenticate",
+    "retry-after": "Retry-After",
+    "x-ratelimit-limit": "X-RateLimit-Limit",
+    "x-ratelimit-remaining": "X-RateLimit-Remaining",
+    "x-ratelimit-reset": "X-RateLimit-Reset",
+}
+_PUBLIC_AUTH_CHALLENGES: Final = frozenset({"Bearer", "Bearer, ApiKey"})
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicErrorProjection:
+    """One immutable receipt for an HTTP-visible Anthropic failure.
+
+    The response writer consumes this value only.  Auth receipts are resealed
+    immediately before use: their status selects the canonical body and their
+    headers pass through the closed allowlist again.  Consequently even an
+    accidental post-construction replacement cannot introduce a raw detail,
+    foreign request id, unowned status, or diagnostic header.
+    """
+
+    status_code: int
+    error_type: str
+    message: str
+    request_id: str
+    headers: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def from_api_error(
+        cls,
+        error: AnthropicAPIError,
+        request_id: str,
+    ) -> _PublicErrorProjection:
+        error_type = error.error_type
+        if error_type not in ERROR_TYPE_STATUS:
+            error_type = "api_error"
+        status_code = ERROR_TYPE_STATUS[error_type]
+        return cls(
+            status_code=status_code,
+            error_type=error_type,
+            message=error.message,
+            request_id=request_id,
+            headers=((REQUEST_ID_HEADER, request_id),),
+        )
+
+    @classmethod
+    def from_http_exception(
+        cls,
+        error: HTTPException,
+        request_id: str,
+    ) -> _PublicErrorProjection:
+        status_code = error.status_code
+        admitted = _AUTH_FAILURES.get(status_code)
+        if admitted is None or ERROR_TYPE_STATUS.get(admitted[0]) != status_code:
+            status_code = 500
+            admitted = _AUTH_FAILURES[status_code]
+        error_type, message = admitted
+        return cls(
+            status_code=status_code,
+            error_type=error_type,
+            message=message,
+            request_id=request_id,
+            headers=(
+                *_project_public_auth_headers(error.headers),
+                (REQUEST_ID_HEADER, request_id),
+            ),
+        )
+
+    @classmethod
+    def reseal_auth(
+        cls,
+        candidate: object,
+        request_id: str,
+    ) -> _PublicErrorProjection:
+        if type(candidate) is cls:
+            status_code = candidate.status_code
+            candidate_headers: object = candidate.headers
+        else:
+            status_code = 500
+            candidate_headers = ()
+        admitted = _AUTH_FAILURES.get(status_code)
+        if admitted is None or ERROR_TYPE_STATUS.get(admitted[0]) != status_code:
+            status_code = 500
+            admitted = _AUTH_FAILURES[status_code]
+        error_type, message = admitted
+        return cls(
+            status_code=status_code,
+            error_type=error_type,
+            message=message,
+            request_id=request_id,
+            headers=(
+                *_project_public_auth_headers(candidate_headers),
+                (REQUEST_ID_HEADER, request_id),
+            ),
+        )
+
+    def payload(self) -> dict[str, Any]:
+        return AnthropicErrorEnvelope(
+            error={"type": self.error_type, "message": self.message},
+            request_id=self.request_id,
+        ).model_dump(mode="json")
+
+
+def _project_public_auth_headers(raw_headers: object) -> tuple[tuple[str, str], ...]:
+    """Project only deliberately public auth challenge/backoff metadata."""
+
+    if isinstance(raw_headers, dict):
+        entries = raw_headers.items()
+    elif isinstance(raw_headers, tuple):
+        entries = raw_headers
+    else:
+        return ()
+    projected: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            continue
+        key, value = entry
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        canonical = _PUBLIC_AUTH_HEADERS.get(key.lower())
+        if canonical is None:
+            continue
+        if canonical == "WWW-Authenticate":
+            if value not in _PUBLIC_AUTH_CHALLENGES:
+                continue
+        elif not value.isascii() or not value.isdigit():
+            continue
+        projected[canonical] = value
+    return tuple(projected.items())
+
 
 class _ProtocolAuthError(AnthropicAPIError):
     """An auth failure with the canonical challenge/backoff headers intact."""
 
-    def __init__(self, error: HTTPException) -> None:
+    def __init__(self, error: HTTPException, request_id: str) -> None:
         admitted = _AUTH_FAILURES.get(error.status_code)
         if admitted is None or ERROR_TYPE_STATUS.get(admitted[0]) != error.status_code:
             status_code = 500
@@ -97,25 +228,13 @@ class _ProtocolAuthError(AnthropicAPIError):
             error_type=error_type,
             status_code=status_code,
         )
-        # Keep an immutable-by-convention projection receipt independent of
-        # Exception's mutable compatibility attributes.  The response path
-        # below calls this override through ``payload``; a later accidental
-        # assignment to ``self.message`` therefore cannot disclose the raw
-        # HTTPException detail.
-        self._public_projection = (error_type, message, status_code)
-        self.headers = {
-            key: value
-            for key, value in (error.headers or {}).items()
-            if key.lower() != REQUEST_ID_HEADER
-        }
+        self._public_projection = _PublicErrorProjection.from_http_exception(
+            error,
+            request_id,
+        )
 
-    def envelope(self, request_id: str | None = None) -> AnthropicErrorEnvelope:
-        error_type, message, status_code = self._public_projection
-        return AnthropicAPIError(
-            message,
-            error_type=error_type,
-            status_code=status_code,
-        ).envelope(request_id)
+    def sealed_public_projection(self, request_id: str) -> _PublicErrorProjection:
+        return _PublicErrorProjection.reseal_auth(self._public_projection, request_id)
 
 
 # Lazy initialization to avoid scanning cache during module import
@@ -179,7 +298,7 @@ async def create_message(
         # Keep the canonical auth implementation as the single authority, but
         # invoke it inside this protocol boundary so its HTTPException cannot
         # escape as FastAPI's generic {"detail": ...} body.
-        await _verify_protocol_auth(http_request, api_key, bearer_creds)
+        await _verify_protocol_auth(http_request, api_key, bearer_creds, request_id)
         _validate_protocol_headers(http_request)
         request = await _parse_request(http_request)
         # Capability preflight runs exactly once, here: before any model is
@@ -201,7 +320,7 @@ async def create_message(
         # is in use.
         build_turn(request)
     except AnthropicAPIError as error:
-        return _error_response(error, request_id)
+        return _error_response(_public_error_projection(error, request_id))
     except Exception as error:
         logger.error(
             "Anthropic request preflight failed (%s)",
@@ -209,8 +328,10 @@ async def create_message(
             exc_info=True,
         )
         return _error_response(
-            AnthropicAPIError("request could not be processed"),
-            request_id,
+            _public_error_projection(
+                AnthropicAPIError("request could not be processed"),
+                request_id,
+            )
         )
 
     if not request.stream:
@@ -220,7 +341,7 @@ async def create_message(
                 engine.generate(request, admission=admission, trace_id=request_id)
             )
         except AnthropicAPIError as error:
-            return _error_response(error, request_id)
+            return _error_response(_public_error_projection(error, request_id))
         except Exception as error:
             logger.error(
                 "Anthropic message failed (%s)",
@@ -228,8 +349,10 @@ async def create_message(
                 exc_info=True,
             )
             return _error_response(
-                AnthropicAPIError("message generation failed"),
-                request_id,
+                _public_error_projection(
+                    AnthropicAPIError("message generation failed"),
+                    request_id,
+                )
             )
         return JSONResponse(
             content=completion.model_dump(mode="json"),
@@ -266,6 +389,7 @@ async def _verify_protocol_auth(
     http_request: Request,
     api_key: str | None,
     bearer_creds: HTTPAuthorizationCredentials | None,
+    request_id: str,
 ) -> dict[str, Any]:
     """Run canonical auth while retaining Anthropic error ownership."""
 
@@ -276,7 +400,7 @@ async def _verify_protocol_auth(
             bearer_creds=bearer_creds,
         )
     except HTTPException as error:
-        raise _ProtocolAuthError(error) from error
+        raise _ProtocolAuthError(error, request_id) from error
     except Exception as error:
         logger.error(
             "Anthropic authentication authority failed (%s)",
@@ -365,16 +489,20 @@ def _validation_message(error: ValidationError) -> str:
     return "; ".join(parts) or "request failed validation"
 
 
-def _error_response(error: AnthropicAPIError, request_id: str) -> JSONResponse:
-    preserved_headers = {
-        key: value
-        for key, value in getattr(error, "headers", {}).items()
-        if key.lower() != REQUEST_ID_HEADER
-    }
+def _public_error_projection(
+    error: AnthropicAPIError,
+    request_id: str,
+) -> _PublicErrorProjection:
+    if isinstance(error, _ProtocolAuthError):
+        return _ProtocolAuthError.sealed_public_projection(error, request_id)
+    return _PublicErrorProjection.from_api_error(error, request_id)
+
+
+def _error_response(projection: _PublicErrorProjection) -> JSONResponse:
     return JSONResponse(
-        status_code=error.status_code,
-        content=error.payload(request_id),
-        headers={**preserved_headers, REQUEST_ID_HEADER: request_id},
+        status_code=projection.status_code,
+        content=projection.payload(),
+        headers=dict(projection.headers),
     )
 
 

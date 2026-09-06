@@ -126,8 +126,14 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     protocol_auth_error_init = _method_or_none(
         _class_or_none(router_tree, "_ProtocolAuthError"), "__init__"
     )
-    protocol_auth_error_envelope = _method_or_none(
-        _class_or_none(router_tree, "_ProtocolAuthError"), "envelope"
+    protocol_auth_error_seal = _method_or_none(
+        _class_or_none(router_tree, "_ProtocolAuthError"),
+        "sealed_public_projection",
+    )
+    public_error_projection = _class_or_none(router_tree, "_PublicErrorProjection")
+    error_response = _function_or_none(router_tree, "_error_response")
+    public_auth_header_projector = _function_or_none(
+        router_tree, "_project_public_auth_headers"
     )
     runtime_request = _method_or_none(
         _class_or_none(runtime_source_tree, "RuntimeAnthropicTurnSource"), "_request"
@@ -244,7 +250,12 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
                 owner="self",
                 attributes={"message", "error_type", "status_code", "request_id"},
             )
-            and _protocol_auth_projection_is_closed(protocol_auth_error_envelope)
+            and _protocol_auth_projection_is_closed(
+                public_error_projection,
+                protocol_auth_error_init,
+                protocol_auth_error_seal,
+                error_response,
+            )
             and not _writes_owned_attribute(
                 engine_generate,
                 owner="projector",
@@ -298,14 +309,24 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
             }
             and _named_mapping_get_count(protocol_auth_error_init, "_AUTH_FAILURES")
             >= 1
-            and _filters_header_case_insensitively(
-                protocol_auth_error_init, "REQUEST_ID_HEADER"
+            and _literal_mapping_first_values(router_tree, "_PUBLIC_AUTH_HEADERS")
+            == {
+                "www-authenticate": "WWW-Authenticate",
+                "retry-after": "Retry-After",
+                "x-ratelimit-limit": "X-RateLimit-Limit",
+                "x-ratelimit-remaining": "X-RateLimit-Remaining",
+                "x-ratelimit-reset": "X-RateLimit-Reset",
+            }
+            and _call_count(
+                public_auth_header_projector,
+                "lower",
             )
-            and _filters_header_case_insensitively(
-                _function_or_none(router_tree, "_error_response"),
-                "REQUEST_ID_HEADER",
-            ),
-            "Canonical auth failures lack a live closed status map or transport-owned case-insensitive request-id projection",
+            == 1
+            and _call_count(public_auth_header_projector, "isascii") == 1
+            and _call_count(public_auth_header_projector, "isdigit") == 1
+            and _literal_frozenset_values(router_tree, "_PUBLIC_AUTH_CHALLENGES")
+            == {"Bearer", "Bearer, ApiKey"},
+            "Canonical auth failures lack a sealed status/body/request-id receipt or the exact case-insensitive public-header allowlist",
         ),
         SourceCheck(
             "single-capability-owner",
@@ -1094,6 +1115,32 @@ def _literal_mapping_first_values(
     return {}
 
 
+def _literal_frozenset_values(tree: ast.Module | None, name: str) -> set[object]:
+    if tree is None:
+        return set()
+    for child in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(child, ast.Assign) and len(child.targets) == 1:
+            target, value = child.targets[0], child.value
+        elif isinstance(child, ast.AnnAssign):
+            target, value = child.target, child.value
+        if (
+            isinstance(target, ast.Name)
+            and target.id == name
+            and isinstance(value, ast.Call)
+            and _call_name(value) == "frozenset"
+            and len(value.args) == 1
+            and isinstance(value.args[0], ast.Set)
+        ):
+            return {
+                item.value
+                for item in value.args[0].elts
+                if isinstance(item, ast.Constant)
+            }
+    return set()
+
+
 def _named_mapping_get_count(node: ast.AST | None, mapping: str) -> int:
     if node is None:
         return 0
@@ -1176,17 +1223,48 @@ def _is_named_subscript(node: ast.AST | None, owner: str, index: int) -> bool:
     )
 
 
-def _protocol_auth_projection_is_closed(node: ast.AST | None) -> bool:
-    if node is None or _contains_private_failure_detail(node):
+def _protocol_auth_projection_is_closed(
+    projection: ast.ClassDef | None,
+    initializer: ast.AST | None,
+    resealer: ast.AST | None,
+    response_writer: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> bool:
+    """Check only the exact sealed-receipt structure, not semantic taint flow."""
+
+    if (
+        projection is None
+        or initializer is None
+        or resealer is None
+        or response_writer is None
+    ):
         return False
+    immutable = any(
+        isinstance(decorator, ast.Call)
+        and _call_name(decorator) == "dataclass"
+        and {
+            keyword.arg: keyword.value.value
+            for keyword in decorator.keywords
+            if keyword.arg in {"frozen", "slots"}
+            and isinstance(keyword.value, ast.Constant)
+        }
+        == {"frozen": True, "slots": True}
+        for decorator in projection.decorator_list
+    )
+    response_args = [argument.arg for argument in response_writer.args.args]
+    response_names = {
+        child.id for child in ast.walk(response_writer) if isinstance(child, ast.Name)
+    }
     return (
-        _call_count(node, "AnthropicAPIError") == 1
-        and _call_count(node, "envelope") == 1
-        and not _writes_owned_attribute(
-            node,
-            owner="self",
-            attributes={"message", "error_type", "status_code", "request_id"},
-        )
+        immutable
+        and _call_count(initializer, "from_http_exception") == 1
+        and _call_count(resealer, "reseal_auth") == 1
+        and not _contains_private_failure_detail(initializer)
+        and not _contains_private_failure_detail(resealer)
+        and response_args == ["projection"]
+        and not {"error", "request_id"}.intersection(response_names)
+        and _call_count(response_writer, "JSONResponse") == 1
+        and _call_count(response_writer, "payload") == 1
+        and _call_count(response_writer, "dict") == 1
     )
 
 
