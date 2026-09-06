@@ -55,6 +55,9 @@ from mlx_batch_server.runtime.events import (
     TurnStarted,
     UsageUpdate,
 )
+from mlx_batch_server.runtime.fusion.qwen4_exp.model.tensor import (
+    _chat_template_messages,
+)
 from mlx_batch_server.runtime.service import (
     FirstWriterCancelToken,
     RuntimeStartError,
@@ -470,6 +473,19 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
     assert len(preparations) == 1
     assert code not in FAILURE_CONTINUATION_PREPARATION
 
+    # Exercise the real fused-Qwen continuation projection, not only the fake
+    # child service.  The checkpoint accepts trusted instructions only before
+    # conversation and requires tool-call arguments to be a mapping.
+    rendered = _chat_template_messages(continuation)
+    assert rendered[0] == {
+        "role": "system",
+        "content": FAILURE_CONTINUATION_PREPARATION,
+    }
+    rendered_call = next(message for message in rendered if message.get("tool_calls"))
+    assert rendered_call["tool_calls"][0]["function"]["arguments"] == {
+        "query": "loctree"
+    }
+
     # Explanatory, non-empty model text closed the turn.
     texts = _of(events, TextCompleted)
     assert texts and texts[-1].text
@@ -509,10 +525,16 @@ async def test_empty_completed_failure_continuation_settles_on_runtime_disclosur
 
 
 @pytest.mark.asyncio
-async def test_model_generated_invalid_arguments_are_f10_receipts() -> None:
+@pytest.mark.parametrize(
+    "arguments",
+    ("{not json", '{"query":"one","query":"two"}'),
+)
+async def test_model_generated_invalid_arguments_are_f10_receipts(
+    arguments: str,
+) -> None:
     inner = _FakeInner(
         (
-            _Round(tool_calls=(("call_a", "web_search", "{not json"),)),
+            _Round(tool_calls=(("call_a", "web_search", arguments),)),
             _Round(text="I could not run the search because its input was invalid."),
         )
     )
@@ -526,6 +548,9 @@ async def test_model_generated_invalid_arguments_are_f10_receipts() -> None:
     assert tool.invocations == 0
     assert len(inner.requests) == 2
     assert not _of(events, TurnFailed)
+    rendered = _chat_template_messages(inner.requests[1].messages)
+    rendered_call = next(message for message in rendered if message.get("tool_calls"))
+    assert rendered_call["tool_calls"][0]["function"]["arguments"] == {}
 
 
 @pytest.mark.asyncio
@@ -1922,7 +1947,7 @@ async def test_armed_reasoning_path_is_byte_identical_and_never_filtered() -> No
 
 @pytest.mark.asyncio
 async def test_continuation_messages_match_baseline_exactly() -> None:
-    """Golden equality vs baseline 35b95ae: armed adds only the preparation."""
+    """Citations add only one leading checkpoint-safe preparation message."""
 
     def build() -> tuple[_FakeInner, HostedAgenticRuntimeStarter]:
         inner = _FakeInner(
@@ -1950,7 +1975,7 @@ async def test_continuation_messages_match_baseline_exactly() -> None:
                     "type": "function",
                     "function": {
                         "name": "web_search",
-                        "arguments": '{"query":"loctree"}',
+                        "arguments": {"query": "loctree"},
                     },
                 }
             ],
@@ -1966,8 +1991,8 @@ async def test_continuation_messages_match_baseline_exactly() -> None:
     armed = [dict(m) for m in inner_armed.requests[1].messages]
     assert plain == expected_baseline
     assert armed == [
-        *expected_baseline,
         {"role": "system", "content": CITATION_PREPARATION},
+        *expected_baseline,
     ]
 
 

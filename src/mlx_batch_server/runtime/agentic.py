@@ -464,7 +464,7 @@ class _HostedAgenticTurn:
                 )
             finally:
                 reset_execution_scope(scope_token)
-            messages.append(_assistant_tool_call_message(calls))
+            messages.append(_assistant_tool_call_message(calls, results))
             for call, result in zip(calls, results, strict=True):
                 messages.append(_tool_result_message(call, result))
             if limit_hit or any(not result.ok for result in results):
@@ -473,11 +473,9 @@ class _HostedAgenticTurn:
                 # the untrusted error payload.
                 terminal_continuation = True
                 self._emit_failure_disclosure()
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": FAILURE_CONTINUATION_PREPARATION,
-                    }
+                _insert_trusted_instruction(
+                    messages,
+                    FAILURE_CONTINUATION_PREPARATION,
                 )
             if (
                 self._citations_requested
@@ -488,7 +486,7 @@ class _HostedAgenticTurn:
                 # payload; outside this one message the continuation input
                 # stays byte-identical to the unfiltered baseline.
                 self._citation_preparation_added = True
-                messages.append({"role": "system", "content": CITATION_PREPARATION})
+                _insert_trusted_instruction(messages, CITATION_PREPARATION)
             round_index += 1
             if hosted_attempted and round_index > 2 * self._starter._max_tool_rounds:
                 raise HostedRuntimeIntegrityError(  # pragma: no cover - guard
@@ -1622,7 +1620,12 @@ def _message_urls(messages: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
 
 def _assistant_tool_call_message(
     calls: Sequence[ParsedToolCall],
+    results: Sequence[ToolExecutionResult],
 ) -> Mapping[str, Any]:
+    if len(calls) != len(results):
+        raise HostedRuntimeIntegrityError(
+            "hosted continuation received a mismatched receipt set"
+        )
     return {
         "role": "assistant",
         "content": "",
@@ -1630,11 +1633,68 @@ def _assistant_tool_call_message(
             {
                 "id": call.call_id,
                 "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
+                "function": {
+                    "name": call.name,
+                    "arguments": _model_tool_arguments(call, result),
+                },
             }
-            for call in calls
+            for call, result in zip(calls, results, strict=True)
         ],
     }
+
+
+def _model_tool_arguments(
+    call: ParsedToolCall,
+    result: ToolExecutionResult,
+) -> dict[str, Any]:
+    """Project audited JSON text onto the mapping required by Qwen's template.
+
+    The original byte-exact argument text remains on ``ParsedToolCall`` and in
+    request-level claim evidence. Invalid JSON has already failed closed in the
+    hosted executor, so its terminal continuation replays an empty mapping
+    rather than handing malformed attacker/model text to the checkpoint Jinja.
+    """
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON object key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        decoded = json.loads(call.arguments, object_pairs_hook=unique_object)
+    except (TypeError, ValueError) as error:
+        metadata = result.metadata or {}
+        if not result.ok and metadata.get("error_code") == "invalid_tool_arguments":
+            return {}
+        raise HostedRuntimeIntegrityError(
+            "hosted continuation argument identity changed after execution"
+        ) from error
+    if not isinstance(decoded, dict):
+        metadata = result.metadata or {}
+        if not result.ok and metadata.get("error_code") == "invalid_tool_arguments":
+            return {}
+        raise HostedRuntimeIntegrityError(
+            "hosted continuation arguments are not a JSON object"
+        )
+    return decoded
+
+
+def _insert_trusted_instruction(
+    messages: list[Mapping[str, Any]],
+    content: str,
+) -> None:
+    """Keep server-authored preparation in Qwen's leading instruction block."""
+
+    insertion_index = 0
+    while insertion_index < len(messages) and messages[insertion_index].get("role") in {
+        "system",
+        "developer",
+    }:
+        insertion_index += 1
+    messages.insert(insertion_index, {"role": "system", "content": content})
 
 
 def _tool_result_message(
