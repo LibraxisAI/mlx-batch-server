@@ -11,6 +11,7 @@ CONFIG_PATH = ROOT / "src/mlx_batch_server/core/config.py"
 BRAVE_PATH = ROOT / "src/mlx_batch_server/tools/brave_search.py"
 BOOTSTRAP_PATH = ROOT / "src/mlx_batch_server/responses/runtime_bootstrap.py"
 MAIN_PATH = ROOT / "src/mlx_batch_server/main.py"
+EVIDENCE_ROUTER_PATH = ROOT / "src/mlx_batch_server/runtime/hosted_evidence_router.py"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -96,6 +97,8 @@ def test_production_factory_has_exact_closed_catalog_and_public_fetch_policy() -
     catalog_calls = _calls(function, "HostedToolCatalog")
     assert len(catalog_calls) == 1
     assert len(_calls(function, "HostedWebSearchTool")) == 1
+    assert len(_calls(function, "HostedOpenPageTool")) == 1
+    assert len(_calls(function, "HostedFindInPageTool")) == 1
     fetch_tool_calls = _calls(function, "HostedWebFetchTool")
     assert len(fetch_tool_calls) == 1
     fetch_calls = _calls(function, "SafePublicFetch")
@@ -122,21 +125,44 @@ def test_production_factory_has_exact_closed_catalog_and_public_fetch_policy() -
         "text/plain",
         "text/markdown",
         "application/json",
+        "application/pdf",
     )
     tools = catalog_calls[0].args[0]
-    assert isinstance(tools, ast.Tuple)
-    tool_names = [
-        _call_name(item.func) for item in tools.elts if isinstance(item, ast.Call)
-    ]
-    assert tool_names == [
-        "HostedWebSearchTool",
-        "HostedWebFetchTool",
-    ]
+    assert isinstance(tools, ast.Name) and tools.id == "tools"
+    assert "tools = (search, open_page, find_in_page, web_fetch)" in function_source
+    assert (
+        'acceptance_profile in {"provider-present", "provider-absent"}'
+        in function_source
+    )
+    assert "tools = (search,)" in function_source
     assert _calls(function, "AsyncClient") == []
     assert "allowed_url_origins" not in function_source
     assert "media_url_origins" not in function_source
     assert "execute_web_search" not in function_source
     assert "compose_production_hosted_catalog" in source.rsplit("__all__", 1)[-1]
+
+
+def test_acceptance_evidence_is_localhost_only_and_nonproduction() -> None:
+    main_source = MAIN_PATH.read_text(encoding="utf-8")
+    router_source = EVIDENCE_ROUTER_PATH.read_text(encoding="utf-8")
+    main_tree = _tree(MAIN_PATH)
+    validator = _function(main_tree, "_validate_hosted_acceptance_bind")
+    validator_source = ast.unparse(validator)
+
+    assert 'host not in {"127.0.0.1", "::1"}' in validator_source
+    assert "port in PRODUCTION_ROLE_PORTS" in validator_source
+    assert "workers != 1" in validator_source
+    assert 'profile not in {"provider-present", "provider-absent"}' in validator_source
+    assert main_source.count("_validate_hosted_acceptance_bind(") == 3
+    assert "hosted_evidence_registry" in main_source
+    assert "hosted_acceptance_profile" in main_source
+
+    router_tree = _tree(EVIDENCE_ROUTER_PATH)
+    builder = _function(router_tree, "build_hosted_evidence_router")
+    assert len(_calls(builder, "verify_auth")) == 0
+    assert router_source.count("Depends(verify_auth)") == 3
+    assert 'prefix="/internal/v1/hosted-evidence"' in router_source
+    assert 'host not in {"127.0.0.1", "::1"}' in router_source
 
 
 def test_brave_provider_source_is_fixed_single_attempt_and_secret_closed() -> None:

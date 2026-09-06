@@ -241,6 +241,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Exact HTTP(S) origin allowed for canonical media fetches",
     )
+    parser.add_argument(
+        "--hosted-acceptance-profile",
+        choices=("provider-present", "provider-absent"),
+        default=None,
+        help="Enable localhost-only hosted acceptance evidence",
+    )
     return parser
 
 
@@ -392,6 +398,43 @@ def create_app(  # noqa: PLR0915
 
     # Include all API routes
     application.include_router(api_router)
+    if responses_route_runtime is not None:
+        evidence = getattr(responses_route_runtime, "hosted_evidence_registry", None)
+        profile = getattr(responses_route_runtime, "hosted_acceptance_profile", None)
+        if evidence is not None and profile is not None:
+            bind_host = os.environ.get("MLX_BATCH_HOST", "0.0.0.0")
+            bind_port = int(
+                os.environ.get(
+                    "MLX_BATCH_PORT",
+                    responses_route_runtime.process_port,
+                )
+            )
+            _validate_hosted_acceptance_bind(
+                profile=profile,
+                host=bind_host,
+                port=bind_port,
+                workers=configured_worker_count,
+            )
+            from .runtime.hosted_evidence_router import build_hosted_evidence_router
+
+            build = getattr(responses_route_runtime, "build_receipt", None)
+            application.include_router(
+                build_hosted_evidence_router(
+                    evidence,
+                    config={
+                        "schema": "mlx-batch-server.hosted-evidence.v1",
+                        "profile": profile,
+                        "build_sha": None if build is None else build.target_sha,
+                        "runtime_role": responses_route_runtime.process_role.value,
+                        "role_port": responses_route_runtime.process_port,
+                        "admission_bind_port": bind_port,
+                        "total_deadline_s": 90,
+                        "per_call_timeout_s": 30,
+                        "evidence_ttl_s": 900,
+                        "evidence_capacity": 256,
+                    },
+                )
+            )
 
     # Configure CORS from environment
     cors_origins = os.environ.get("MLX_BATCH_CORS", DEFAULT_CORS_ALLOW_ORIGINS)
@@ -450,9 +493,21 @@ def _compose_process_runtime(
     runtime_role: str | None,
     port: int,
     media_url_origins: tuple[str, ...] = (),
+    hosted_acceptance_profile: str | None = None,
+    host: str = "0.0.0.0",
+    workers: int = 1,
 ):
     """Build the explicit role graph or reject ambiguous production ports."""
 
+    if hosted_acceptance_profile is not None:
+        _validate_hosted_acceptance_bind(
+            profile=hosted_acceptance_profile,
+            host=host,
+            port=port,
+            workers=workers,
+        )
+        if runtime_role is None:
+            raise RuntimeError("hosted acceptance profiles require a runtime role")
     if runtime_role is None:
         if port in PRODUCTION_ROLE_PORTS:
             raise RuntimeError(
@@ -470,7 +525,7 @@ def _compose_process_runtime(
 
     manifest = load_role_manifest(packaged_role_manifest_path())
     spec = manifest.role_directory().resolve(runtime_role)
-    if port != spec.port:
+    if port != spec.port and hosted_acceptance_profile is None:
         raise RuntimeError(
             f"runtime role {spec.name.value!r} owns port {spec.port}, not {port}"
         )
@@ -482,14 +537,35 @@ def _compose_process_runtime(
     brave_api_key = (
         brave_secret.get_secret_value() if brave_secret is not None else None
     )
-    hosted_tools = compose_production_hosted_catalog(brave_api_key=brave_api_key)
+    hosted_tools = compose_production_hosted_catalog(
+        brave_api_key=brave_api_key,
+        acceptance_profile=hosted_acceptance_profile,
+    )
     return compose_role_responses_runtime(
         process_role=spec.name,
         role_manifest_path=manifest.source.path,
         allowed_url_origins=media_url_origins,
         build_receipt=build_receipt,
         hosted_tools=hosted_tools,
+        hosted_acceptance_profile=hosted_acceptance_profile,
     )
+
+
+def _validate_hosted_acceptance_bind(
+    *,
+    profile: str,
+    host: str,
+    port: int,
+    workers: int,
+) -> None:
+    if profile not in {"provider-present", "provider-absent"}:
+        raise RuntimeError("hosted acceptance profile is unknown")
+    if host not in {"127.0.0.1", "::1"}:
+        raise RuntimeError("hosted acceptance profiles are localhost-only")
+    if workers != 1:
+        raise RuntimeError("hosted acceptance profiles require one worker")
+    if port in PRODUCTION_ROLE_PORTS:
+        raise RuntimeError("hosted acceptance profiles require a non-production port")
 
 
 # Lazy app instance for uvicorn
@@ -515,6 +591,11 @@ def _get_app():
             runtime_role=runtime_role,
             port=port,
             media_url_origins=origins,
+            hosted_acceptance_profile=(
+                os.environ.get("MLX_BATCH_HOSTED_ACCEPTANCE_PROFILE") or None
+            ),
+            host=os.environ.get("MLX_BATCH_HOST", "0.0.0.0"),
+            workers=_configured_worker_count(None),
         )
         _app_instance = create_app(responses_runtime=runtime)
     return _app_instance
@@ -540,11 +621,18 @@ def start():
     os.environ["MLX_BATCH_CORS"] = args.cors_allow_origins
     os.environ["MLX_BATCH_WORKERS"] = str(args.workers)
     os.environ["MLX_BATCH_PORT"] = str(args.port)
+    os.environ["MLX_BATCH_HOST"] = args.host
     if args.runtime_role is None:
         os.environ.pop("MLX_BATCH_RUNTIME_ROLE", None)
     else:
         os.environ["MLX_BATCH_RUNTIME_ROLE"] = args.runtime_role
     os.environ["MLX_BATCH_MEDIA_URL_ORIGINS"] = ",".join(args.media_url_origin)
+    if args.hosted_acceptance_profile is None:
+        os.environ.pop("MLX_BATCH_HOSTED_ACCEPTANCE_PROFILE", None)
+    else:
+        os.environ["MLX_BATCH_HOSTED_ACCEPTANCE_PROFILE"] = (
+            args.hosted_acceptance_profile
+        )
     # Capture the source checkout before Uvicorn imports the app or forks
     # workers. The inherited environment is the provenance contract.
     stamp_runtime_environment()
@@ -555,6 +643,9 @@ def start():
         runtime_role=args.runtime_role,
         port=args.port,
         media_url_origins=tuple(args.media_url_origin),
+        hosted_acceptance_profile=args.hosted_acceptance_profile,
+        host=args.host,
+        workers=args.workers,
     )
     application = (
         "mlx_batch_server.main:app"

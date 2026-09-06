@@ -1,5 +1,38 @@
 # W5-IMPLEMENT Hosted Arsenal Source Report
 
+## P6 activation wiring
+
+P6 is replayed on the independently integrated W2+W5 parent
+`ef7c5512ff905dcef36d33257f15c1604ef54786`. The real CLI/lazy application
+composition now builds one process-local production catalog containing
+`web_search`, `open_page`, `find_in_page`, and `web_fetch`, and hands that exact
+catalog to the shared OpenAI Responses/Anthropic runtime starter. W2's closed
+`trusted_backend` authority is preserved; P6 neither restores nor forwards
+`execution_factory`.
+
+- Runtime class: Fleet Worktree
+- Worker root: `/Users/tester/.vibecrafted/worktrees/LibraxisAI/mlx-batch-server/2026_0906/W5-hosted-arsenal-implementation`
+- Worker branch: `cut/P6-hosted-wiring`
+- Integration disposition: isolated; not integrated and not pushed
+
+Hosted acceptance evidence is absent in ordinary production composition. It is
+enabled only by the explicit `provider-present` or `provider-absent` acceptance
+profile, and the profile fails closed unless the bind is loopback, the port is
+outside 8100-8102, and the process has one worker. `create_app` repeats this
+validation before mounting the authenticated internal evidence router, so a
+direct composition cannot bypass the CLI guard. Every evidence request also
+checks the ASGI peer address and accepts only loopback clients.
+
+The earlier `deadline-short` draft is deliberately not activated: without a
+controlled, pre-admitted slow transport it would be a false live probe. A
+future timing acceptance cut must provide that deterministic transport before
+adding the profile back. This does not block production hosted tools or the two
+provider-presence acceptance profiles.
+
+P6 source and contract tests were authored/reconciled but not executed under
+Compile Embargo. BUILD, LINT, TEST, RUNTIME and LIVE ACCEPTANCE remain
+NOT_ASSESSED.
+
 ## W5c recovery correction
 
 The production composition source contract again reads the actual working-tree
@@ -91,7 +124,7 @@ success/failure, a non-empty final model reply, exact failure-continuation
 capabilities, the no-tool oracle, request-policy isolation, URL 250/251,
 open/find bounds, PDF byte equality and evidence prepare/deliver/fail ordering.
 
-## Sequenced P6 wiring, excluded from the core commit
+## Historical sequenced P6 boundary
 
 W2b legitimately owns `src/mlx_batch_server/responses/runtime_bootstrap.py` to
 remove the forgeable production `execution_factory` seam. The W5 hosted-profile
@@ -101,11 +134,9 @@ dependent `src/mlx_batch_server/main.py` hunk and new
 core baton with it. Replay must preserve W2b's constructor authority and must
 not restore or forward `execution_factory`.
 
-The pending P6 wiring composes provider-present/provider-absent profiles and an
-authenticated localhost evidence route. Its current deadline-short draft is
-not admissible yet: it still needs the accepted controlled blocking transport,
-pre-admitted manifest slow URL, and exact bind/role receipt tests. It must not
-be used as live deadline evidence in its present form.
+The P6 replay composes provider-present/provider-absent profiles and an
+authenticated localhost evidence route. The non-deterministic deadline-short
+draft was removed rather than admitted as live evidence.
 
 ## Deferred acceptance
 
@@ -119,8 +150,7 @@ runtime probe. `git diff --check` is the only mechanical source check allowed.
 - RUNTIME: NOT_ASSESSED
 - LIVE ACCEPTANCE: NOT_ASSESSED
 
-The post-W2b recovery point is: replay P6 without `execution_factory`, author
-the deterministic deadline-short transport/profile tests, then wait for exact
-`W2_STRUCTURALLY_CLOSED` before running the repository-owned W2/W3 gates and
-three-profile live verifier/combiner. No source-only result in this report is a
-claim that Buddy or hosted tools are live.
+The next recovery point is the Agent-Operator's source admission of P6 onto the
+W2+W5 integration line, followed by exact `W2_STRUCTURALLY_CLOSED` before the
+repository-owned W3 gates and two-profile live verifier. No source-only result
+in this report is a claim that Buddy or hosted tools are live.

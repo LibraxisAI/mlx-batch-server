@@ -41,6 +41,7 @@ from ..runtime.fusion.qwen4_exp.request_preparation import (
     Qwen4ExpRequestPreparerPort,
 )
 from ..runtime.fusion.scheduler import SchedulerConfig
+from ..runtime.hosted_evidence import HostedEvidenceRegistry
 from ..runtime.manager import RuntimeManager
 from ..runtime.readiness import ReadinessService
 from ..runtime.role_manifest import (
@@ -52,7 +53,12 @@ from ..runtime.roles import RoleDirectory
 from ..runtime.service import RuntimeStartService
 from ..tools.brave_search import BraveSearchProvider
 from ..tools.hosted import HostedToolCatalog, HostedToolExecutor
-from ..tools.hosted_web import HostedWebFetchTool, HostedWebSearchTool
+from ..tools.hosted_web import (
+    HostedFindInPageTool,
+    HostedOpenPageTool,
+    HostedWebFetchTool,
+    HostedWebSearchTool,
+)
 from ..utils.safe_public_fetch import SafePublicFetch, SafePublicFetchLimits
 from ..vision.input import MediaSourceField, MultimodalInputCapabilities
 from .compaction import LocalCompactionCodec
@@ -90,6 +96,8 @@ class RuntimeCompositionReceipt:
     responses_mapper: CanonicalResponsesMapper
     responses_controller: ResponsesController
     responses_operations: LocalResponsesOperations
+    hosted_evidence_registry: HostedEvidenceRegistry | None = None
+    hosted_acceptance_profile: str | None = None
     build_receipt: BuildReceipt | None = None
     response_store_scope: str = "process_local"
     requires_single_worker: bool = True
@@ -150,10 +158,21 @@ class RoleRuntimeCompositionReceipt:
 def compose_production_hosted_catalog(
     *,
     brave_api_key: str | None,
+    acceptance_profile: str | None = None,
 ) -> HostedToolCatalog:
     """Build the one inert, process-local hosted web catalog for role startup."""
 
+    if acceptance_profile not in {
+        None,
+        "provider-present",
+        "provider-absent",
+    }:
+        raise ValueError("hosted acceptance profile is unknown")
     normalized_key = brave_api_key.strip() if brave_api_key is not None else ""
+    if acceptance_profile == "provider-absent":
+        normalized_key = ""
+    if acceptance_profile == "provider-present" and not normalized_key:
+        raise ValueError("provider-present requires a Brave API key")
     search_provider = BraveSearchProvider(normalized_key) if normalized_key else None
     public_fetch = SafePublicFetch(
         limits=SafePublicFetchLimits(
@@ -167,22 +186,46 @@ def compose_production_hosted_catalog(
         ),
         allowed_origins=(),
     )
-    return HostedToolCatalog(
-        (
-            HostedWebSearchTool(provider=search_provider),
-            HostedWebFetchTool(
-                fetch=public_fetch,
-                accepted_media_types=(
-                    "text/html",
-                    "text/plain",
-                    "text/markdown",
-                    "application/json",
-                ),
-                max_bytes=1_048_576,
-                max_text_chars=262_144,
-            ),
-        )
+    search = HostedWebSearchTool(provider=search_provider)
+    open_page = HostedOpenPageTool(
+        fetch=public_fetch,
+        accepted_media_types=(
+            "text/html",
+            "text/plain",
+            "text/markdown",
+            "application/json",
+        ),
+        max_bytes=1_048_576,
+        max_text_chars=262_144,
     )
+    find_in_page = HostedFindInPageTool(
+        fetch=public_fetch,
+        accepted_media_types=(
+            "text/html",
+            "text/plain",
+            "text/markdown",
+            "application/json",
+        ),
+        max_bytes=1_048_576,
+        max_text_chars=262_144,
+    )
+    web_fetch = HostedWebFetchTool(
+        fetch=public_fetch,
+        accepted_media_types=(
+            "text/html",
+            "text/plain",
+            "text/markdown",
+            "application/json",
+            "application/pdf",
+        ),
+        max_bytes=1_048_576,
+        max_text_chars=262_144,
+    )
+    if acceptance_profile in {"provider-present", "provider-absent"}:
+        tools = (search,)
+    else:
+        tools = (search, open_page, find_in_page, web_fetch)
+    return HostedToolCatalog(tools)
 
 
 def compose_responses_runtime(
@@ -193,6 +236,7 @@ def compose_responses_runtime(
     public_aliases: Mapping[str, RoleName | str] | None = None,
     build_receipt: BuildReceipt | None = None,
     hosted_tools: HostedToolCatalog | None = None,
+    hosted_acceptance_profile: str | None = None,
 ) -> RuntimeCompositionReceipt:
     """Build one inert process-local graph from explicit trusted inputs.
 
@@ -212,6 +256,7 @@ def compose_responses_runtime(
         build_receipt=build_receipt,
         media_source_fields=frozenset(),
         hosted_tools=hosted_tools,
+        hosted_acceptance_profile=hosted_acceptance_profile,
     )
 
 
@@ -232,6 +277,7 @@ def _compose_responses_runtime(
     build_receipt: BuildReceipt | None,
     media_source_fields: frozenset[MediaSourceField],
     hosted_tools: HostedToolCatalog | None = None,
+    hosted_acceptance_profile: str | None = None,
 ) -> RuntimeCompositionReceipt:
     topology = manifest.role_directory()
     process_spec = topology.resolve(process_role)
@@ -261,10 +307,16 @@ def _compose_responses_runtime(
     catalog = HostedToolCatalog() if hosted_tools is None else hosted_tools
     # One immutable catalog/executor/starter owner handed to both protocol
     # paths; with an empty catalog the starter is a transparent pass-through.
+    evidence = (
+        HostedEvidenceRegistry() if hosted_acceptance_profile is not None else None
+    )
     starter = HostedAgenticRuntimeStarter(
         inner_starter,
         catalog=catalog,
-        executor=HostedToolExecutor(catalog),
+        executor=HostedToolExecutor(catalog, per_call_timeout_s=30.0),
+        deadline_s=None if hosted_acceptance_profile is None else 90.0,
+        evidence_registry=evidence,
+        acceptance_profile=hosted_acceptance_profile,
     )
     registry = ResponseRegistry()
     resolver = ManifestRuntimeResolver(roles, aliases)
@@ -316,6 +368,8 @@ def _compose_responses_runtime(
         runtime_manager=manager,
         runtime_start_service=starter,
         hosted_catalog=catalog,
+        hosted_evidence_registry=evidence,
+        hosted_acceptance_profile=hosted_acceptance_profile,
         anthropic_turn_source=anthropic_turn_source,
         response_registry=registry,
         runtime_resolver=resolver,
@@ -355,6 +409,7 @@ def compose_role_responses_runtime(
     file_id_resolver: FileIdResolverPort | None = None,
     build_receipt: BuildReceipt | None = None,
     hosted_tools: HostedToolCatalog | None = None,
+    hosted_acceptance_profile: str | None = None,
 ) -> RoleRuntimeCompositionReceipt:
     """Compose exactly the backend family selected by one manifest role.
 
@@ -423,6 +478,7 @@ def compose_role_responses_runtime(
         build_receipt=build_receipt,
         media_source_fields=media_source_fields,
         hosted_tools=hosted_tools,
+        hosted_acceptance_profile=hosted_acceptance_profile,
     )
     return RoleRuntimeCompositionReceipt(
         responses=responses,

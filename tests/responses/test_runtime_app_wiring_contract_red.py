@@ -220,7 +220,9 @@ def test_process_role_composes_the_exact_manifest_lane(
 
     assert result is sentinel
     assert settings_calls == [None]
-    assert catalog_calls == [{"brave_api_key": "brave-test-key"}]
+    assert catalog_calls == [
+        {"brave_api_key": "brave-test-key", "acceptance_profile": None}
+    ]
     assert calls == [
         {
             "process_role": RoleName.MAIN,
@@ -228,6 +230,7 @@ def test_process_role_composes_the_exact_manifest_lane(
             "allowed_url_origins": ("https://media.example",),
             "build_receipt": build_receipt,
             "hosted_tools": hosted_catalog,
+            "hosted_acceptance_profile": None,
         }
     ]
 
@@ -268,6 +271,9 @@ def test_lazy_application_path_delegates_role_composition_to_the_one_owner(
                 "https://media.example",
                 "https://images.example",
             ),
+            "hosted_acceptance_profile": None,
+            "host": "0.0.0.0",
+            "workers": 1,
         }
     ]
 
@@ -291,6 +297,52 @@ def test_cli_exposes_explicit_role_and_repeatable_media_origins() -> None:
         "https://one.example",
         "https://two.example",
     ]
+
+
+@pytest.mark.parametrize(
+    "kwargs,message",
+    [
+        (
+            {
+                "hosted_acceptance_profile": "provider-absent",
+                "host": "0.0.0.0",
+                "port": 18100,
+            },
+            "localhost-only",
+        ),
+        (
+            {
+                "hosted_acceptance_profile": "provider-absent",
+                "host": "127.0.0.1",
+                "port": 8100,
+            },
+            "non-production",
+        ),
+        (
+            {
+                "hosted_acceptance_profile": "provider-absent",
+                "host": "127.0.0.1",
+                "port": 18100,
+                "workers": 2,
+            },
+            "one worker",
+        ),
+        (
+            {
+                "hosted_acceptance_profile": "deadline-short",
+                "host": "127.0.0.1",
+                "port": 18100,
+            },
+            "unknown",
+        ),
+    ],
+)
+def test_acceptance_profiles_fail_closed_before_runtime_composition(
+    kwargs: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        _compose_process_runtime(runtime_role="main", **kwargs)
 
 
 def test_canonical_import_path_has_no_eager_legacy_graph() -> None:

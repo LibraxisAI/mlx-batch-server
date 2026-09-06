@@ -40,7 +40,12 @@ from mlx_batch_server.runtime.roles import RoleDirectory
 from mlx_batch_server.runtime.service import RuntimeStartService
 from mlx_batch_server.tools.brave_search import BraveSearchProvider
 from mlx_batch_server.tools.hosted import HostedToolExecutor
-from mlx_batch_server.tools.hosted_web import HostedWebFetchTool, HostedWebSearchTool
+from mlx_batch_server.tools.hosted_web import (
+    HostedFindInPageTool,
+    HostedOpenPageTool,
+    HostedWebFetchTool,
+    HostedWebSearchTool,
+)
 from mlx_batch_server.tools.parser import ParsedToolCall
 from mlx_batch_server.utils.safe_public_fetch import SafePublicFetch
 from mlx_batch_server.vision.input import MediaSourceField
@@ -505,11 +510,17 @@ def test_production_catalog_retains_search_when_provider_is_absent(
 ) -> None:
     catalog = compose_production_hosted_catalog(brave_api_key=brave_api_key)
 
-    assert catalog.names == frozenset({"web_search", "web_fetch"})
+    assert catalog.names == frozenset(
+        {"web_search", "open_page", "find_in_page", "web_fetch"}
+    )
     search = catalog.get("web_search")
+    open_page = catalog.get("open_page")
+    find_in_page = catalog.get("find_in_page")
     fetch = catalog.get("web_fetch")
     assert isinstance(search, HostedWebSearchTool)
     assert search._provider is None
+    assert isinstance(open_page, HostedOpenPageTool)
+    assert isinstance(find_in_page, HostedFindInPageTool)
     assert isinstance(fetch, HostedWebFetchTool)
     assert isinstance(fetch._fetch, SafePublicFetch)
 
@@ -528,6 +539,7 @@ def test_production_catalog_owns_exact_fresh_public_fetch_policy() -> None:
         "text/plain",
         "text/markdown",
         "application/json",
+        "application/pdf",
     )
     assert first_fetch._max_bytes == 1_048_576
     assert first_fetch._max_text_chars == 262_144
@@ -550,6 +562,32 @@ def test_production_catalog_injects_one_closed_brave_provider() -> None:
     assert isinstance(search, HostedWebSearchTool)
     assert isinstance(search._provider, BraveSearchProvider)
     assert search._provider._api_key == "test-key"
+
+
+def test_acceptance_profiles_are_action_specific_and_fail_closed() -> None:
+    absent = compose_production_hosted_catalog(
+        brave_api_key="ignored",
+        acceptance_profile="provider-absent",
+    )
+    assert absent.names == frozenset({"web_search"})
+    assert absent.get("web_search")._provider is None
+
+    present = compose_production_hosted_catalog(
+        brave_api_key="test-key",
+        acceptance_profile="provider-present",
+    )
+    assert present.names == frozenset({"web_search"})
+    assert isinstance(present.get("web_search")._provider, BraveSearchProvider)
+
+    with pytest.raises(ValueError, match="requires a Brave API key"):
+        compose_production_hosted_catalog(
+            brave_api_key=None, acceptance_profile="provider-present"
+        )
+    with pytest.raises(ValueError, match="unknown"):
+        compose_production_hosted_catalog(
+            brave_api_key=None,
+            acceptance_profile="deadline-short",
+        )
 
 
 @pytest.mark.asyncio
