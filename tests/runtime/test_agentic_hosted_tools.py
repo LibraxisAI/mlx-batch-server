@@ -576,6 +576,9 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     ]
     receipts = _of(events, HostedCallCompleted)
     assert len(item_starts) == len(started) == len(receipts) == 1
+    assert item_starts[0].call_id == "call_a"
+    assert started[0].call_id == "call_a"
+    assert receipts[0].call_id == "call_a"
     assert item_starts[0].action == started[0].action == {"query": "loctree"}
     with pytest.raises(TypeError):
         item_starts[0].action["query"] = "mutated"  # type: ignore[index,union-attr]
@@ -594,6 +597,7 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     # closing item carries the validated sealed action with proven sources.
     results = _of(events, HostedCallResult)
     assert len(results) == 1
+    assert results[0].call_id == "call_a"
     assert events.index(started[0]) < events.index(results[0])
     assert events.index(results[0]) < events.index(receipts[0])
     assert results[0].result["kind"] == "search_results"
@@ -602,6 +606,7 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
         e for e in _of(events, OutputItemCompleted) if e.kind == "hosted_call"
     ]
     assert len(hosted_items) == 1
+    assert hosted_items[0].call_id == "call_a"
     action = hosted_items[0].action
     assert action is not None
     assert action["kind"] == "search"
@@ -620,6 +625,12 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     assert completed_payload["action"]["sources"] == [
         {"type": "url", "url": "https://ok.example"}
     ]
+    tool_messages = [
+        message
+        for message in inner.requests[1].messages
+        if message.get("role") == "tool"
+    ]
+    assert tool_messages[0]["tool_call_id"] == "call_a"
 
     # V4: the outer usage equals the monotone sum over both child rounds.
     completed = _of(events, TurnCompleted)[0]

@@ -133,12 +133,16 @@ class AgentLoop:
         policy: AgentLoopPolicy | None = None,
         *,
         loop_id: str | None = None,
+        scope_call_ids: bool = True,
     ) -> None:
         if loop_id is not None and not loop_id.strip():
             raise ValueError("loop_id must not be empty")
+        if not isinstance(scope_call_ids, bool):
+            raise TypeError("scope_call_ids must be a bool")
         self._executor = executor
         self._policy = policy or AgentLoopPolicy()
         self._loop_id = loop_id or uuid.uuid4().hex
+        self._scope_call_ids_enabled = scope_call_ids
         self._claims: dict[str, _ToolClaim] = {}
         self._results: dict[str, ToolExecutionResult] = {}
         self._failures: dict[str, BaseException] = {}
@@ -275,6 +279,8 @@ class AgentLoop:
         *,
         round_id: str,
     ) -> tuple[ParsedToolCall, ...]:
+        if not self._scope_call_ids_enabled:
+            return tuple(calls)
         scoped: list[ParsedToolCall] = []
         for call in calls:
             digest = hashlib.sha256(

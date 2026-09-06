@@ -401,6 +401,9 @@ class _HostedAgenticTurn:
             self._starter._executor,
             hosted_agent_loop_policy(max_rounds=self._starter._max_tool_rounds),
             loop_id=request.response_id,
+            # Hosted calls are read-only and already claimed request-globally;
+            # their public protocol identity must remain the model's call_id.
+            scope_call_ids=False,
         )
         terminal_continuation = False
         hosted_attempted = False

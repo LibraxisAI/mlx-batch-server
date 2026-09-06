@@ -201,6 +201,22 @@ async def test_repeated_source_call_id_is_unique_across_model_rounds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_unscoped_mode_preserves_source_call_id() -> None:
+    executor = _TrackingExecutor()
+    loop = AgentLoop(
+        executor,
+        loop_id="hosted-response-123",
+        scope_call_ids=False,
+    )
+
+    results = await loop.execute_round((_call("call_hosted"),), round_id="model-0")
+
+    assert executor.calls[0].call_id == "call_hosted"
+    assert results[0].call_id == "call_hosted"
+    assert loop.receipts[0].call_id == "call_hosted"
+
+
+@pytest.mark.asyncio
 async def test_reused_call_id_with_changed_payload_is_rejected() -> None:
     executor = _TrackingExecutor()
     loop = AgentLoop(executor, AgentLoopPolicy(max_rounds=2))
