@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -149,6 +150,24 @@ def test_cold_role_is_alive_available_and_wakeable_but_not_resident() -> None:
     assert loaded["runtime_contract"]["available"] is True
     assert loaded["runtime_contract"]["text"]["capable"] is True
     assert loaded["runtime_contract"]["multimodal"]["capable"] is True
+
+
+def test_runtime_contract_publishes_exact_stable_local_hosted_catalog() -> None:
+    service, _ = _service()
+
+    contract = service.runtime_contract()
+
+    assert contract["schema_version"] == "mlx-batch-server.role-runtime.v1"
+    assert contract["text"] == {
+        "capable": True,
+        "resident": False,
+        "tool_capable": True,
+        "hosted_tool_types": ["web_search"],
+        "batch_capable": False,
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+    assert '"hosted_tool_types":["web_search"]' in encoded
+    assert json.loads(encoded) == contract
 
 
 @pytest.mark.asyncio

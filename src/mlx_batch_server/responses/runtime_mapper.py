@@ -48,7 +48,7 @@ _FUNCTION_OUTPUT_CONTENT_FIELDS: Mapping[str, frozenset[str]] = {
     ),
 }
 _HOSTED_WEB_SEARCH_TYPE = "web_search"
-_HOSTED_TOOL_TYPES = frozenset({_HOSTED_WEB_SEARCH_TYPE})
+HOSTED_TOOL_TYPES: frozenset[str] = frozenset({_HOSTED_WEB_SEARCH_TYPE})
 
 
 class _FrozenDict(dict[str, Any]):
@@ -990,7 +990,7 @@ def _tools(value: Any) -> tuple[Mapping[str, Any], ...]:
             raise _invalid("each tool must be a non-empty mapping", f"tools[{index}]")
         param = f"tools[{index}]"
         tool_type = tool.get("type")
-        if tool_type in _HOSTED_TOOL_TYPES:
+        if tool_type in HOSTED_TOOL_TYPES:
             unknown = set(tool) - {"type"}
             if unknown:
                 field = sorted(unknown)[0]
@@ -1344,6 +1344,7 @@ def _invalid(message: str, param: str) -> ResponsesMappingError:
 
 
 __all__ = [
+    "HOSTED_TOOL_TYPES",
     "CanonicalResponsesMapper",
     "ProjectionFactory",
     "ResolvedRuntime",

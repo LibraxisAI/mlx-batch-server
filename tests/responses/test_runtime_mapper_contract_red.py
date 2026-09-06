@@ -17,6 +17,7 @@ from mlx_batch_server.responses.compaction import (
     compacted_user_messages,
 )
 from mlx_batch_server.responses.runtime_mapper import (
+    HOSTED_TOOL_TYPES,
     CanonicalResponsesMapper,
     ResolvedRuntime,
     ResponsesMappingError,
@@ -1032,6 +1033,8 @@ def test_owner_bound_compaction_restores_context_before_new_input() -> None:
 @pytest.mark.parametrize(
     "tool_type",
     [
+        "code_interpreter",
+        "url_fetch",
         "web_search_2025_08_26",
         "web_search_preview",
         "web_fetch",
@@ -1054,6 +1057,13 @@ def test_hosted_tools_fail_closed_with_stable_error(tool_type: str) -> None:
 
     assert error.value.code == "unsupported_tool"
     assert error.value.param == "tools[0].type"
+
+
+def test_exported_hosted_tool_catalog_is_exact_and_immutable() -> None:
+    assert frozenset({"web_search"}) == HOSTED_TOOL_TYPES
+
+    with pytest.raises(AttributeError):
+        HOSTED_TOOL_TYPES.add("code_interpreter")  # type: ignore[attr-defined]
 
 
 def test_exact_web_search_declaration_is_admitted_and_immutable() -> None:

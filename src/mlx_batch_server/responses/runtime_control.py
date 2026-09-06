@@ -20,7 +20,7 @@ from ..runtime.contracts import (
     RoleName,
     TensorMaterializationReceipt,
 )
-from .runtime_mapper import ResponsesMappingError
+from .runtime_mapper import HOSTED_TOOL_TYPES, ResponsesMappingError
 
 if TYPE_CHECKING:
     from ..runtime.manager import RuntimeManager
@@ -141,6 +141,9 @@ class RoleControlService:
                     "capable": True,
                     "resident": resident,
                     "tool_capable": tools_capable,
+                    "hosted_tool_types": (
+                        sorted(HOSTED_TOOL_TYPES) if tools_capable else []
+                    ),
                     "batch_capable": batch_capable,
                 }
                 if text_capable
