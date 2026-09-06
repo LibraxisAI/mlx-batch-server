@@ -216,6 +216,34 @@ def _mutated_anthropic_result(
             "message=public.message,",
             "message=event.error,",
         ),
+        (
+            "safe-protocol-boundary-failures",
+            "projector.py",
+            "def _public_runtime_failure(event: TurnFailed) -> _PublicRuntimeFailure:\n"
+            "    admitted = _PUBLIC_RUNTIME_FAILURES.get(event.code)",
+            "def _public_runtime_failure(event: TurnFailed) -> _PublicRuntimeFailure:\n"
+            "    if event.error:\n"
+            "        return _PublicRuntimeFailure(\n"
+            '            error_type="api_error", message=event.error\n'
+            "        )\n"
+            "    admitted = _PUBLIC_RUNTIME_FAILURES.get(event.code)",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "router.py",
+            "        self._public_projection = (error_type, message, status_code)",
+            "        self.message = str(error.detail)\n"
+            "        self._public_projection = (error_type, message, status_code)",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "messages_engine.py",
+            '            projector.fail("api_error", diagnostic=type(error).__name__)',
+            '            projector.fail("api_error", diagnostic=type(error).__name__)\n'
+            "            projector._failed = StreamErrorBody(\n"
+            '                type="api_error", message=error.args[0]\n'
+            "            )",
+        ),
     ),
 )
 def test_anthropic_verifier_independently_falsifies_each_admission_clause(

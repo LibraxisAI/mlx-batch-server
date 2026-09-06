@@ -126,6 +126,9 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     protocol_auth_error_init = _method_or_none(
         _class_or_none(router_tree, "_ProtocolAuthError"), "__init__"
     )
+    protocol_auth_error_envelope = _method_or_none(
+        _class_or_none(router_tree, "_ProtocolAuthError"), "envelope"
+    )
     runtime_request = _method_or_none(
         _class_or_none(runtime_source_tree, "RuntimeAnthropicTurnSource"), "_request"
     )
@@ -141,6 +144,9 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     projector_failure = _method_or_none(
         _class_or_none(projector_tree, "AnthropicMessageProjector"),
         "_on_turn_failed",
+    )
+    public_runtime_failure = _function_or_none(
+        projector_tree, "_public_runtime_failure"
     )
     enforce_line = _first_call_line(create_message, "enforce_capabilities")
     mapping_line = _first_call_line(create_message, "build_turn")
@@ -232,6 +238,23 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
             and _exception_handler_calls_fixed_failure(engine_generate)
             and _exception_handler_calls_fixed_failure(engine_stream)
             and _projector_failure_is_closed(projector_failure)
+            and _public_runtime_failure_is_closed(public_runtime_failure)
+            and not _writes_owned_attribute(
+                protocol_auth_error_init,
+                owner="self",
+                attributes={"message", "error_type", "status_code", "request_id"},
+            )
+            and _protocol_auth_projection_is_closed(protocol_auth_error_envelope)
+            and not _writes_owned_attribute(
+                engine_generate,
+                owner="projector",
+                attributes={"_failed", "_failure_diagnostic"},
+            )
+            and not _writes_owned_attribute(
+                engine_stream,
+                owner="projector",
+                attributes={"_failed", "_failure_diagnostic"},
+            )
             and _class_or_none(projector_tree, "RuntimeFailureDiagnostic") is not None
             and not _has_public_exception_string_flow(
                 (router_tree, engine_tree, runtime_source_tree, projector_tree)
@@ -879,6 +902,53 @@ def _call_contains_exception_string(call: ast.Call) -> bool:
     )
 
 
+def _root_name(node: ast.AST) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _contains_private_failure_detail(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Attribute)
+        and child.attr in {"args", "detail", "error"}
+        and _root_name(child) in {"error", "event", "exc", "exception"}
+        for child in ast.walk(node)
+    )
+
+
+def _assignment_targets(node: ast.AST | None) -> tuple[ast.AST, ...]:
+    if node is None:
+        return ()
+    targets: list[ast.AST] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Assign):
+            targets.extend(child.targets)
+        elif isinstance(child, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets.append(child.target)
+    return tuple(targets)
+
+
+def _writes_owned_attribute(
+    node: ast.AST | None,
+    *,
+    owner: str,
+    attributes: set[str],
+) -> bool:
+    def contains_forbidden_target(target: ast.AST) -> bool:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(contains_forbidden_target(item) for item in target.elts)
+        return (
+            isinstance(target, ast.Attribute)
+            and target.attr in attributes
+            and _root_name(target) == owner
+        )
+
+    return any(
+        contains_forbidden_target(target) for target in _assignment_targets(node)
+    )
+
+
 def _exception_handler_calls_fixed_failure(node: ast.AST | None) -> bool:
     """Prove a live broad handler uses a typed/fixed failure projection."""
 
@@ -924,6 +994,8 @@ def _has_public_exception_string_flow(
             if _call_name(call) not in public_sinks:
                 continue
             if _call_contains_exception_string(call):
+                return True
+            if _contains_private_failure_detail(call):
                 return True
             if _call_name(call) in {
                 "AnthropicAPIError",
@@ -1075,6 +1147,47 @@ def _projector_failure_is_closed(node: ast.AST | None) -> bool:
             for child in ast.walk(call)
         )
     return False
+
+
+def _public_runtime_failure_is_closed(node: ast.AST | None) -> bool:
+    """Require one canonical return and no access to the private detail field."""
+
+    if node is None or _contains_private_failure_detail(node):
+        return False
+    returns = tuple(child for child in ast.walk(node) if isinstance(child, ast.Return))
+    if len(returns) != 1 or not isinstance(returns[0].value, ast.Call):
+        return False
+    call = returns[0].value
+    if _call_name(call) != "_PublicRuntimeFailure":
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    return _is_named_subscript(
+        keywords.get("error_type"), "admitted", 0
+    ) and _is_named_subscript(keywords.get("message"), "admitted", 1)
+
+
+def _is_named_subscript(node: ast.AST | None, owner: str, index: int) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == owner
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == index
+    )
+
+
+def _protocol_auth_projection_is_closed(node: ast.AST | None) -> bool:
+    if node is None or _contains_private_failure_detail(node):
+        return False
+    return (
+        _call_count(node, "AnthropicAPIError") == 1
+        and _call_count(node, "envelope") == 1
+        and not _writes_owned_attribute(
+            node,
+            owner="self",
+            attributes={"message", "error_type", "status_code", "request_id"},
+        )
+    )
 
 
 def _first_call_line(node: ast.AST | None, name: str) -> int | None:

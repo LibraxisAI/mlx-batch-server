@@ -36,6 +36,9 @@ from mlx_batch_server.runtime.events import TurnFailed, TurnStarted
 from mlx_batch_server.runtime.service import FirstWriterCancelToken, RuntimeStartService
 
 anthropic_router = importlib.import_module("mlx_batch_server.chat.anthropic.router")
+anthropic_projector = importlib.import_module(
+    "mlx_batch_server.chat.anthropic.projector"
+)
 auth_dependency = importlib.import_module("mlx_batch_server.auth.dependency")
 hmac_auth = importlib.import_module("mlx_batch_server.auth.hmac")
 session_auth_module = importlib.import_module("mlx_batch_server.auth.session")
@@ -527,6 +530,128 @@ def test_real_engine_runtime_failures_never_disclose_private_detail(
         "message": expected_message,
     }
     assert payload["request_id"] == response.headers["request-id"]
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
+def test_helper_mediated_runtime_detail_is_rejected_by_closed_public_type(
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    stream: bool,
+) -> None:
+    def unsafe_public_failure(event: TurnFailed):
+        return anthropic_projector._PublicRuntimeFailure(
+            error_type="api_error",
+            message=event.error,
+        )
+
+    monkeypatch.setattr(
+        anthropic_projector, "_public_runtime_failure", unsafe_public_failure
+    )
+    source = _RawTurnFailedSource()
+    register_turn_source(source)
+    try:
+        response = authenticated_client.post(
+            path,
+            headers={
+                "x-api-key": "anthropic-boundary-secret",
+                "anthropic-version": VERSION,
+            },
+            json={**BODY, "stream": stream},
+        )
+    finally:
+        clear_turn_source(source)
+
+    assert "TURN_FAILED_SECRET_MARKER" not in response.text
+    if stream:
+        assert response.status_code == 200
+        assert '"message": "message generation failed"' in response.text
+    else:
+        assert response.status_code == 500
+        payload = _assert_correlated_error(response, "api_error")
+        assert payload["error"]["message"] == "message generation failed"
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
+def test_post_super_auth_message_overwrite_cannot_reach_either_transport(
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    stream: bool,
+) -> None:
+    marker = "INDIRECT_AUTH_SECRET"
+    original_init = anthropic_router._ProtocolAuthError.__init__
+
+    def unsafe_init(self, error):
+        original_init(self, error)
+        self.message = str(error.detail)
+
+    async def fail_auth(*args, **kwargs):
+        del args, kwargs
+        raise anthropic_router.HTTPException(status_code=401, detail=marker)
+
+    monkeypatch.setattr(anthropic_router._ProtocolAuthError, "__init__", unsafe_init)
+    monkeypatch.setattr(anthropic_router, "verify_auth", fail_auth)
+    response = authenticated_client.post(
+        path,
+        headers={"anthropic-version": VERSION},
+        json={**BODY, "stream": stream},
+    )
+
+    assert response.status_code == 401
+    payload = _assert_correlated_error(response, "authentication_error")
+    assert payload["error"]["message"] == "authentication failed"
+    assert marker not in response.text
+
+
+@pytest.mark.parametrize("path", MESSAGES_PATHS)
+@pytest.mark.parametrize("stream", [False, True], ids=["unary", "stream"])
+def test_post_fail_projector_state_overwrite_is_resealed_before_projection(
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    stream: bool,
+) -> None:
+    marker = "ENGINE_POST_FAIL_SECRET"
+    original_fail = anthropic_projector.AnthropicMessageProjector.fail
+
+    def unsafe_fail(self, code: str, *, diagnostic: str):
+        events = original_fail(self, code, diagnostic=diagnostic)
+        self._failed = anthropic_projector.StreamErrorBody(
+            type="api_error",
+            message=marker,
+        )
+        return events
+
+    monkeypatch.setattr(
+        anthropic_projector.AnthropicMessageProjector,
+        "fail",
+        unsafe_fail,
+    )
+    source = _ImmediateExceptionTurnSource()
+    register_turn_source(source)
+    try:
+        response = authenticated_client.post(
+            path,
+            headers={
+                "x-api-key": "anthropic-boundary-secret",
+                "anthropic-version": VERSION,
+            },
+            json={**BODY, "stream": stream},
+        )
+    finally:
+        clear_turn_source(source)
+
+    assert marker not in response.text
+    if stream:
+        assert response.status_code == 200
+        assert '"message": "message generation failed"' in response.text
+    else:
+        assert response.status_code == 500
+        payload = _assert_correlated_error(response, "api_error")
+        assert payload["error"]["message"] == "message generation failed"
 
 
 @pytest.mark.parametrize("path", MESSAGES_PATHS)

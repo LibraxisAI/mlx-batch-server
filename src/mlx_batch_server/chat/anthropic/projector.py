@@ -181,6 +181,16 @@ class _PublicRuntimeFailure:
     error_type: str
     message: str
 
+    def __post_init__(self) -> None:
+        admitted = {
+            (error_type, message)
+            for error_type, message, _status_code in _PUBLIC_RUNTIME_FAILURES.values()
+        }
+        admitted.add((_GENERIC_RUNTIME_FAILURE[0], _GENERIC_RUNTIME_FAILURE[1]))
+        if (self.error_type, self.message) not in admitted:
+            object.__setattr__(self, "error_type", _GENERIC_RUNTIME_FAILURE[0])
+            object.__setattr__(self, "message", _GENERIC_RUNTIME_FAILURE[1])
+
 
 def _public_runtime_failure(event: TurnFailed) -> _PublicRuntimeFailure:
     admitted = _PUBLIC_RUNTIME_FAILURES.get(event.code)
@@ -383,7 +393,13 @@ class AnthropicMessageProjector:
 
     @property
     def failure(self) -> StreamErrorBody | None:
-        return self._failed
+        if self._failed is None:
+            return None
+        public = _PublicRuntimeFailure(
+            error_type=self._failed.type,
+            message=self._failed.message,
+        )
+        return StreamErrorBody(type=public.error_type, message=public.message)
 
     @property
     def failure_diagnostic(self) -> RuntimeFailureDiagnostic | None:

@@ -39,6 +39,7 @@ from .errors import (
     ERROR_TYPE_STATUS,
     REQUEST_ID_HEADER,
     AnthropicAPIError,
+    AnthropicErrorEnvelope,
     attach_request_id,
     error_payload,
     new_request_id,
@@ -96,11 +97,25 @@ class _ProtocolAuthError(AnthropicAPIError):
             error_type=error_type,
             status_code=status_code,
         )
+        # Keep an immutable-by-convention projection receipt independent of
+        # Exception's mutable compatibility attributes.  The response path
+        # below calls this override through ``payload``; a later accidental
+        # assignment to ``self.message`` therefore cannot disclose the raw
+        # HTTPException detail.
+        self._public_projection = (error_type, message, status_code)
         self.headers = {
             key: value
             for key, value in (error.headers or {}).items()
             if key.lower() != REQUEST_ID_HEADER
         }
+
+    def envelope(self, request_id: str | None = None) -> AnthropicErrorEnvelope:
+        error_type, message, status_code = self._public_projection
+        return AnthropicAPIError(
+            message,
+            error_type=error_type,
+            status_code=status_code,
+        ).envelope(request_id)
 
 
 # Lazy initialization to avoid scanning cache during module import
