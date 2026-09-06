@@ -402,8 +402,10 @@ class _HostedAgenticTurn:
     async def _run_rounds(self) -> None:
         request = self._request
         messages: list[Mapping[str, Any]] = [dict(m) for m in request.messages]
+        media: list[Mapping[str, Any]] = [dict(item) for item in request.media]
         if not self._hosted_names:
-            messages.insert(0, {"role": "system", "content": NO_WEB_PREPARATION})
+            inserted_at = _insert_trusted_instruction(messages, NO_WEB_PREPARATION)
+            media = _rebase_media_after_message_insert(media, inserted_at)
         loop = AgentLoop(
             self._starter._executor,
             hosted_agent_loop_policy(max_rounds=self._starter._max_tool_rounds),
@@ -426,7 +428,12 @@ class _HostedAgenticTurn:
                     else HostedRoundMode.SUCCESS_FOLLOWUP
                 )
             )
-            child = await self._run_child_round(messages, round_index, mode=mode)
+            child = await self._run_child_round(
+                messages,
+                media,
+                round_index,
+                mode=mode,
+            )
             if isinstance(child.terminal, TurnFailed):
                 self._emit_terminal(child.terminal)
                 return
@@ -474,8 +481,8 @@ class _HostedAgenticTurn:
                 self._argument_mapping(call, result)
                 for call, result in zip(calls, results, strict=True)
             )
-            messages.append(
-                _assistant_tool_call_message(calls, results, argument_mappings)
+            messages.extend(
+                _assistant_tool_call_messages(calls, results, argument_mappings)
             )
             for call, result in zip(calls, results, strict=True):
                 messages.append(_tool_result_message(call, result))
@@ -484,10 +491,11 @@ class _HostedAgenticTurn:
                 # continuation; the trusted preparation quotes nothing from
                 # the untrusted error payload.
                 terminal_continuation = True
-                _insert_trusted_instruction(
+                inserted_at = _insert_trusted_instruction(
                     messages,
                     FAILURE_CONTINUATION_PREPARATION,
                 )
+                media = _rebase_media_after_message_insert(media, inserted_at)
             if (
                 self._citations_requested
                 and self._success_results
@@ -497,7 +505,11 @@ class _HostedAgenticTurn:
                 # payload; outside this one message the continuation input
                 # stays byte-identical to the unfiltered baseline.
                 self._citation_preparation_added = True
-                _insert_trusted_instruction(messages, CITATION_PREPARATION)
+                inserted_at = _insert_trusted_instruction(
+                    messages,
+                    CITATION_PREPARATION,
+                )
+                media = _rebase_media_after_message_insert(media, inserted_at)
             round_index += 1
             if hosted_attempted and round_index > 2 * self._starter._max_tool_rounds:
                 raise HostedRuntimeIntegrityError(  # pragma: no cover - guard
@@ -656,6 +668,7 @@ class _HostedAgenticTurn:
     async def _run_child_round(
         self,
         messages: Sequence[Mapping[str, Any]],
+        media: Sequence[Mapping[str, Any]],
         round_index: int,
         *,
         mode: HostedRoundMode,
@@ -676,6 +689,7 @@ class _HostedAgenticTurn:
                 self._request,
                 response_id=child_response_id,
                 messages=tuple(messages),
+                media=tuple(media),
             )
         else:
             sampling = dict(self._request.sampling)
@@ -690,6 +704,7 @@ class _HostedAgenticTurn:
                 self._request,
                 response_id=child_response_id,
                 messages=tuple(messages),
+                media=tuple(media),
                 tools=tools,
                 sampling=sampling,
             )
@@ -1713,38 +1728,35 @@ def _message_urls(messages: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(urls))
 
 
-def _assistant_tool_call_message(
+def _assistant_tool_call_messages(
     calls: Sequence[ParsedToolCall],
     results: Sequence[ToolExecutionResult],
     argument_mappings: Sequence[Mapping[str, Any]],
-) -> Mapping[str, Any]:
+) -> tuple[Mapping[str, Any], ...]:
     if len(calls) != len(results) or len(calls) != len(argument_mappings):
         raise HostedRuntimeIntegrityError(
             "hosted continuation received a mismatched receipt set"
         )
-    return {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {
-                "id": call.call_id,
-                "type": "function",
-                "function": {
-                    "name": call.name,
-                    "arguments": dict(arguments),
-                },
-            }
-            for call, _result, arguments in zip(
-                calls, results, argument_mappings, strict=True
-            )
-        ],
-    }
+    return tuple(
+        {
+            "role": "assistant",
+            "type": "function_call",
+            "content": "",
+            "call_id": call.call_id,
+            "name": call.name,
+            "arguments": canonical_json(dict(_arguments)),
+            "status": "completed",
+        }
+        for call, _result, _arguments in zip(
+            calls, results, argument_mappings, strict=True
+        )
+    )
 
 
 def _insert_trusted_instruction(
     messages: list[Mapping[str, Any]],
     content: str,
-) -> None:
+) -> int:
     """Keep server-authored preparation in Qwen's leading instruction block."""
 
     insertion_index = 0
@@ -1754,6 +1766,27 @@ def _insert_trusted_instruction(
     }:
         insertion_index += 1
     messages.insert(insertion_index, {"role": "system", "content": content})
+    return insertion_index
+
+
+def _rebase_media_after_message_insert(
+    media: Sequence[Mapping[str, Any]],
+    insertion_index: int,
+) -> list[Mapping[str, Any]]:
+    """Keep canonical media provenance aligned with an inserted instruction."""
+
+    rebased: list[Mapping[str, Any]] = []
+    for raw_item in media:
+        item = dict(raw_item)
+        message_index = item.get("_message_index")
+        if isinstance(message_index, bool) or not isinstance(message_index, int):
+            raise HostedRuntimeIntegrityError(
+                "canonical media message provenance is invalid"
+            )
+        if message_index >= insertion_index:
+            item["_message_index"] = message_index + 1
+        rebased.append(item)
+    return rebased
 
 
 def _tool_result_message(
@@ -1777,9 +1810,11 @@ def _tool_result_message(
         )
     return {
         "role": "tool",
-        "tool_call_id": call.call_id,
-        "name": call.name,
-        "content": content,
+        "type": "function_call_output",
+        "call_id": call.call_id,
+        "output": content,
+        "content": ({"type": "input_text", "text": content},),
+        "is_error": not result.ok,
     }
 
 

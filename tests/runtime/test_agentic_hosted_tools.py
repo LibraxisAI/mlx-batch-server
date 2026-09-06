@@ -59,6 +59,9 @@ from mlx_batch_server.runtime.events import (
 from mlx_batch_server.runtime.fusion.qwen4_exp.model.tensor import (
     _chat_template_messages,
 )
+from mlx_batch_server.runtime.fusion.qwen4_exp.request_preparation import (
+    _reconstruct_mixed_messages,
+)
 from mlx_batch_server.runtime.service import (
     FirstWriterCancelToken,
     RuntimeStartError,
@@ -473,8 +476,8 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
     continuation = inner.requests[1].messages
     tool_messages = [m for m in continuation if m.get("role") == "tool"]
     assert len(tool_messages) == 1
-    assert code in tool_messages[0]["content"]
-    assert tool_messages[0]["tool_call_id"] == "call_a"
+    assert code in tool_messages[0]["output"]
+    assert tool_messages[0]["call_id"] == "call_a"
     preparations = [
         m
         for m in continuation
@@ -501,6 +504,44 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
     texts = _of(events, TextCompleted)
     assert texts and texts[-1].text
     assert outer.state is TurnState.TERMINAL
+
+
+@pytest.mark.asyncio
+async def test_failure_continuation_rebases_media_after_instruction_insert() -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_media", "web_search", '{"query":"q"}'),)),
+            _Round(text="The search failed; I can still describe the image."),
+        )
+    )
+    tool = _CountingTool(
+        "web_search", _raising_behavior("provider_unavailable", "unavailable")
+    )
+    starter, _ = _starter(inner, (tool,))
+    request = replace(
+        _request(({"type": "web_search"},)),
+        messages=({"role": "user", "content": "Describe this image."},),
+        media=(
+            {
+                "type": "input_image",
+                "image_url": "https://example.test/image.png",
+                "_role": "user",
+                "_message_index": 0,
+                "_content_index": 1,
+            },
+        ),
+    )
+
+    events, _ = await _drive(starter, request)
+
+    assert _of(events, TurnCompleted)
+    assert not _of(events, TurnFailed)
+    assert inner.requests[0].media[0]["_message_index"] == 0
+    continuation = inner.requests[1]
+    assert continuation.messages[0]["content"] == FAILURE_CONTINUATION_PREPARATION
+    assert continuation.messages[1]["role"] == "user"
+    assert continuation.media[0]["_message_index"] == 1
+    _reconstruct_mixed_messages(continuation)
 
 
 @pytest.mark.asyncio
@@ -789,7 +830,7 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
         for message in inner.requests[1].messages
         if message.get("role") == "tool"
     ]
-    assert tool_messages[0]["tool_call_id"] == "call_a"
+    assert tool_messages[0]["call_id"] == "call_a"
 
     # V4: the outer usage equals the monotone sum over both child rounds.
     completed = _of(events, TurnCompleted)[0]
@@ -1901,7 +1942,7 @@ async def test_result_payload_at_depth_limit_and_supplementary_unicode_is_canoni
         for message in inner.requests[1].messages
         if message.get("role") == "tool"
     )
-    assert json.loads(tool_message["content"]) == payload
+    assert json.loads(tool_message["output"]) == payload
     rendered = _chat_template_messages(inner.requests[1].messages)
     assert json.dumps(rendered, ensure_ascii=False).encode("utf-8")
 
@@ -2533,23 +2574,27 @@ async def test_continuation_messages_match_baseline_exactly() -> None:
         {"role": "user", "content": "co pisza o loctree?"},
         {
             "role": "assistant",
+            "type": "function_call",
             "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_a",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": {"query": "loctree"},
-                    },
-                }
-            ],
+            "call_id": "call_a",
+            "name": "web_search",
+            "arguments": '{"query":"loctree"}',
+            "status": "completed",
         },
         {
             "role": "tool",
-            "tool_call_id": "call_a",
-            "name": "web_search",
-            "content": canonical_json({"query": "loctree", "results": _OK_RESULTS}),
+            "type": "function_call_output",
+            "call_id": "call_a",
+            "output": canonical_json({"query": "loctree", "results": _OK_RESULTS}),
+            "content": (
+                {
+                    "type": "input_text",
+                    "text": canonical_json(
+                        {"query": "loctree", "results": _OK_RESULTS}
+                    ),
+                },
+            ),
+            "is_error": False,
         },
     ]
     plain = [dict(m) for m in inner_plain.requests[1].messages]
