@@ -29,6 +29,7 @@ _INTERNAL_REQUEST_HEADER = "x-mlx-internal"
 _INTERNAL_OWNER_HEADER = "x-mlx-internal-owner-key"
 _TRUSTED_INTERNAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _FALLBACK_MAX_CLIENTS = 50_000
+_ANTHROPIC_MESSAGES_PATHS = frozenset({"/anthropic/messages", "/anthropic/v1/messages"})
 
 _LUA_INCR_EXPIRE = (
     "local current = redis.call('INCR', KEYS[1]);"
@@ -40,6 +41,38 @@ _LUA_INCR_EXPIRE = (
 def hash_client_fingerprint(credential: str | None) -> str:
     normalized = (credential or "anonymous").strip() or "anonymous"
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _rate_limit_response(
+    request: Request,
+    *,
+    message: str,
+    headers: dict[str, str],
+    legacy_content: dict[str, Any],
+) -> JSONResponse:
+    """Project 429 through the protocol owner selected by the exact route."""
+
+    if request.method == "POST" and request.url.path in _ANTHROPIC_MESSAGES_PATHS:
+        from ..chat.anthropic.errors import (
+            REQUEST_ID_HEADER,
+            AnthropicAPIError,
+            new_request_id,
+        )
+
+        request_id = new_request_id()
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=AnthropicAPIError(
+                message,
+                error_type="rate_limit_error",
+            ).payload(request_id),
+            headers={**headers, REQUEST_ID_HEADER: request_id},
+        )
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content=legacy_content,
+        headers=headers,
+    )
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -198,14 +231,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 self._fallback_concurrent[concurrent_key] = max(
                     0, self._fallback_concurrent[concurrent_key] - 1
                 )
-            return JSONResponse(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                content={
+            message = (
+                f"Concurrent request limit exceeded. "
+                f"Maximum {self.concurrent_limit} concurrent requests."
+            )
+            return _rate_limit_response(
+                request,
+                message=message,
+                legacy_content={
                     "error": "Too Many Requests",
-                    "message": (
-                        f"Concurrent request limit exceeded. "
-                        f"Maximum {self.concurrent_limit} concurrent requests."
-                    ),
+                    "message": message,
                 },
                 headers={"Retry-After": "5"},
             )
@@ -215,14 +250,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             remaining = max(self.requests_per_minute - count, 0)
             reset = int(time.time() + ttl)
             if count > self.requests_per_minute:
-                return JSONResponse(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
+                message = (
+                    f"Rate limit exceeded. Maximum "
+                    f"{self.requests_per_minute} requests per minute."
+                )
+                return _rate_limit_response(
+                    request,
+                    message=message,
+                    legacy_content={
                         "error": "Too Many Requests",
-                        "message": (
-                            f"Rate limit exceeded. Maximum "
-                            f"{self.requests_per_minute} requests per minute."
-                        ),
+                        "message": message,
                         "retry_after": ttl,
                     },
                     headers={

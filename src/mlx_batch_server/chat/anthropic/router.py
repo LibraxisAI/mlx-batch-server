@@ -66,6 +66,7 @@ SUPPORTED_ANTHROPIC_VERSIONS: Final = frozenset({"2023-06-01"})
 IMPLEMENTED_ANTHROPIC_BETAS: Final = frozenset()
 
 _AUTH_ERROR_TYPES: Final = {
+    400: "invalid_request_error",
     401: "authentication_error",
     403: "permission_error",
     413: "request_too_large",
@@ -174,6 +175,16 @@ async def create_message(
         build_turn(request)
     except AnthropicAPIError as error:
         return _error_response(error, request_id)
+    except Exception as error:
+        logger.error(
+            "Anthropic request preflight failed (%s)",
+            type(error).__name__,
+            exc_info=True,
+        )
+        return _error_response(
+            AnthropicAPIError("request could not be processed"),
+            request_id,
+        )
 
     if not request.stream:
         try:
@@ -184,8 +195,15 @@ async def create_message(
         except AnthropicAPIError as error:
             return _error_response(error, request_id)
         except Exception as error:
-            logger.error("Anthropic message failed: %s", error, exc_info=True)
-            return _error_response(AnthropicAPIError(str(error)), request_id)
+            logger.error(
+                "Anthropic message failed (%s)",
+                type(error).__name__,
+                exc_info=True,
+            )
+            return _error_response(
+                AnthropicAPIError("message generation failed"),
+                request_id,
+            )
         return JSONResponse(
             content=completion.model_dump(mode="json"),
             headers={REQUEST_ID_HEADER: request_id},
@@ -203,8 +221,12 @@ async def create_message(
         except AnthropicAPIError as error:
             yield _encode_error(error.error_type, error.message, request_id)
         except Exception as error:
-            logger.error("Anthropic stream failed: %s", error, exc_info=True)
-            yield _encode_error("api_error", str(error), request_id)
+            logger.error(
+                "Anthropic stream failed (%s)",
+                type(error).__name__,
+                exc_info=True,
+            )
+            yield _encode_error("api_error", "message generation failed", request_id)
 
     return StreamingResponse(
         anthropic_event_generator(),
@@ -228,19 +250,31 @@ async def _verify_protocol_auth(
         )
     except HTTPException as error:
         raise _ProtocolAuthError(error) from error
+    except Exception as error:
+        logger.error(
+            "Anthropic authentication authority failed (%s)",
+            type(error).__name__,
+            exc_info=True,
+        )
+        raise AnthropicAPIError("authentication service unavailable") from error
 
 
 def _validate_protocol_headers(http_request: Request) -> None:
     """Require the exact admitted Messages version and reject unowned betas."""
 
-    version = http_request.headers.get("anthropic-version")
-    if version is None or not version.strip():
+    version_values = http_request.headers.getlist("anthropic-version")
+    if len(version_values) != 1:
         raise AnthropicAPIError(
-            "anthropic-version header is required; supported version: 2023-06-01",
+            "exactly one anthropic-version header is required; "
+            "supported version: 2023-06-01",
             error_type="invalid_request_error",
         )
-    normalized_version = version.strip()
-    if normalized_version not in SUPPORTED_ANTHROPIC_VERSIONS:
+    normalized_version = version_values[0].strip()
+    if (
+        not normalized_version
+        or "," in normalized_version
+        or normalized_version not in SUPPORTED_ANTHROPIC_VERSIONS
+    ):
         raise AnthropicAPIError(
             f"unsupported anthropic-version {normalized_version!r}; "
             "supported version: 2023-06-01",
@@ -272,9 +306,16 @@ async def _parse_request(http_request: Request) -> MessagesRequest:
         payload = await http_request.json()
     except (ValueError, UnicodeDecodeError) as error:
         raise AnthropicAPIError(
-            f"request body is not valid JSON: {error}",
+            "request body is not valid JSON",
             error_type="invalid_request_error",
         ) from error
+    except Exception as error:
+        logger.error(
+            "Anthropic request body read failed (%s)",
+            type(error).__name__,
+            exc_info=True,
+        )
+        raise AnthropicAPIError("request body could not be read") from error
     if not isinstance(payload, dict):
         raise AnthropicAPIError(
             "request body must be a JSON object",

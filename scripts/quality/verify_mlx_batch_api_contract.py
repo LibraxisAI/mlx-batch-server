@@ -100,14 +100,25 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     strict_request = any(_has_strict_model_config(tree) for tree in trees)
     capabilities_path = directory / "capabilities.py"
     router_path = directory / "router.py"
+    rate_limit_path = root / "src/mlx_batch_server/auth/rate_limit.py"
     engine_path = directory / "messages_engine.py"
     mapper_path = directory / "request_mapper.py"
     content_mapper_path = directory / "content_mapper.py"
     projector_path = directory / "projector.py"
     capabilities_tree = _parse_or_none(capabilities_path)
     router_tree = _parse_or_none(router_path)
+    rate_limit_tree = _parse_or_none(rate_limit_path)
     mapper_tree = _parse_or_none(mapper_path)
     create_message = _function_or_none(router_tree, "create_message")
+    verify_protocol_auth = _function_or_none(router_tree, "_verify_protocol_auth")
+    validate_protocol_headers = _function_or_none(
+        router_tree, "_validate_protocol_headers"
+    )
+    parse_request = _function_or_none(router_tree, "_parse_request")
+    rate_limit_dispatch = _method_or_none(
+        _class_or_none(rate_limit_tree, "RateLimitMiddleware"), "dispatch"
+    )
+    rate_limit_projector = _function_or_none(rate_limit_tree, "_rate_limit_response")
     enforce_line = _first_call_line(create_message, "enforce_capabilities")
     mapping_line = _first_call_line(create_message, "build_turn")
     stream_line = _first_call_line(create_message, "StreamingResponse")
@@ -115,6 +126,8 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
     mapper_source = _read_or_empty(mapper_path)
     content_mapper_source = _read_or_empty(content_mapper_path)
     projector_source = _read_or_empty(projector_path)
+    router_source = _read_or_empty(router_path)
+    rate_limit_source = _read_or_empty(rate_limit_path)
     unsupported_keys = _classification_keys(capabilities_tree, "_unsupported")
     explicit_refusals = {
         "cache_control",
@@ -157,6 +170,61 @@ def _anthropic_checks(root: Path) -> tuple[SourceCheck, ...]:
             "typed-error-request-id",
             "request_id" in constants and "error" in constants,
             "Anthropic error projection has no request_id-bearing error contract",
+        ),
+        SourceCheck(
+            "protocol-aware-global-rate-limit",
+            rate_limit_projector is not None
+            and rate_limit_dispatch is not None
+            and _call_count(rate_limit_dispatch, "_rate_limit_response") == 2
+            and {
+                "/anthropic/messages",
+                "/anthropic/v1/messages",
+                "rate_limit_error",
+            }
+            <= _string_constants(
+                tree for tree in (rate_limit_tree,) if tree is not None
+            )
+            and _call_count(rate_limit_projector, "new_request_id") == 1
+            and "headers={**headers, REQUEST_ID_HEADER: request_id}"
+            in rate_limit_source,
+            "Global ordinary and concurrent Messages 429s do not share one correlated Anthropic rate-limit projector",
+        ),
+        SourceCheck(
+            "safe-protocol-boundary-failures",
+            _has_except_handler(verify_protocol_auth, "Exception")
+            and _has_except_handler(parse_request, "Exception")
+            and {
+                "authentication service unavailable",
+                "request body could not be read",
+                "request could not be processed",
+                "message generation failed",
+            }
+            <= _string_constants(tree for tree in (router_tree,) if tree is not None)
+            and "AnthropicAPIError(str(error))" not in router_source
+            and '_encode_error("api_error", str(error)' not in router_source,
+            "Unexpected auth, body-read, preflight, or generation failures can escape or disclose exception detail",
+        ),
+        SourceCheck(
+            "complete-physical-header-validation",
+            _call_has_literal_argument(
+                validate_protocol_headers,
+                "getlist",
+                "anthropic-version",
+            )
+            and _call_has_literal_argument(
+                validate_protocol_headers,
+                "getlist",
+                "anthropic-beta",
+            )
+            and "len(version_values) != 1" in router_source
+            and '"," in normalized_version' in router_source,
+            "Anthropic version/beta validation does not inspect all physical occurrences or require one scalar version",
+        ),
+        SourceCheck(
+            "closed-auth-status-map",
+            '400: "invalid_request_error"' in router_source
+            and '429: "rate_limit_error"' in router_source,
+            "Canonical HMAC/session status codes do not map to the closed Anthropic error taxonomy",
         ),
         SourceCheck(
             "single-capability-owner",
@@ -684,6 +752,17 @@ def _call_count(
         1
         for child in ast.walk(node)
         if isinstance(child, ast.Call) and _call_name(child) == name
+    )
+
+
+def _has_except_handler(node: ast.AST | None, exception_name: str) -> bool:
+    if node is None:
+        return False
+    return any(
+        isinstance(child, ast.ExceptHandler)
+        and isinstance(child.type, ast.Name)
+        and child.type.id == exception_name
+        for child in ast.walk(node)
     )
 
 

@@ -88,7 +88,8 @@ async def _resolve_api_key_auth(candidate: str | None) -> tuple[str, str] | None
     try:
         if await _validate_dynamic_key(candidate):
             return ("api_key_dynamic", candidate)
-    except Exception:
+    # Dynamic-key storage is optional on this static-key fallback path.
+    except Exception:  # nosec B110
         pass
     if settings.api_key and _hmac.compare_digest(candidate, settings.api_key):
         return ("api_key_static", candidate)
@@ -183,8 +184,12 @@ async def verify_auth(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired session",
             )
-        except HTTPException:
-            if level == 3:
+        except HTTPException as error:
+            # An invalid session may still fall through to an independently
+            # valid API key at level 2. A throttled session is already an
+            # authenticated principal, so its 429 is terminal and must retain
+            # the canonical Retry-After contract.
+            if level == 3 or error.status_code != status.HTTP_401_UNAUTHORIZED:
                 raise
 
     if level == 3:
@@ -209,7 +214,8 @@ async def verify_auth(
                 val = request.headers.get(header_name)
                 if val and val not in candidates:
                     candidates.append(val)
-    except Exception:
+    # Request-compatible detached callers may not expose a header mapping.
+    except Exception:  # nosec B110
         pass
     if bearer_creds and bearer_creds.credentials not in candidates:
         candidates.append(bearer_creds.credentials)

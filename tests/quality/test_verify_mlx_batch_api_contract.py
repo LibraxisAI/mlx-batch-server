@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from shutil import copytree
+from shutil import copy2, copytree
 
 import pytest
 from scripts.quality.verify_mlx_batch_api_contract import evaluate_section
@@ -81,7 +81,13 @@ def _mutated_anthropic_result(
 ):
     target = tmp_path / ANTHROPIC_RELATIVE
     copytree(ROOT / ANTHROPIC_RELATIVE, target)
-    path = target / relative
+    rate_limit = tmp_path / "src/mlx_batch_server/auth/rate_limit.py"
+    rate_limit.parent.mkdir(parents=True, exist_ok=True)
+    copy2(ROOT / "src/mlx_batch_server/auth/rate_limit.py", rate_limit)
+    if relative.startswith("auth/"):
+        path = tmp_path / "src/mlx_batch_server" / relative
+    else:
+        path = target / relative
     source = path.read_text(encoding="utf-8")
     assert before in source
     path.write_text(source.replace(before, after, 1), encoding="utf-8")
@@ -120,6 +126,48 @@ def _mutated_anthropic_result(
             "capabilities.py",
             '"output_config.format", "structured-output execution"',
             '"output_config.unclassified", "structured-output execution"',
+        ),
+        (
+            "protocol-aware-global-rate-limit",
+            "auth/rate_limit.py",
+            "return _rate_limit_response(\n                request,",
+            "return _legacy_rate_limit_response(\n                request,",
+        ),
+        (
+            "protocol-aware-global-rate-limit",
+            "auth/rate_limit.py",
+            "headers={**headers, REQUEST_ID_HEADER: request_id}",
+            "headers=headers",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "router.py",
+            'AnthropicAPIError("authentication service unavailable")',
+            "AnthropicAPIError(str(error))",
+        ),
+        (
+            "safe-protocol-boundary-failures",
+            "router.py",
+            'AnthropicAPIError("request body could not be read")',
+            "AnthropicAPIError(str(error))",
+        ),
+        (
+            "complete-physical-header-validation",
+            "router.py",
+            'http_request.headers.getlist("anthropic-version")',
+            '[http_request.headers.get("anthropic-version")]',
+        ),
+        (
+            "complete-physical-header-validation",
+            "router.py",
+            'http_request.headers.getlist("anthropic-beta")',
+            '[http_request.headers.get("anthropic-beta")]',
+        ),
+        (
+            "closed-auth-status-map",
+            "router.py",
+            '400: "invalid_request_error"',
+            '400: "api_error"',
         ),
     ),
 )
