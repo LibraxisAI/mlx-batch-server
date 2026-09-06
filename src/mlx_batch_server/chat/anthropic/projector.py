@@ -255,6 +255,7 @@ class AnthropicMessageProjector:
         *,
         message_id: str,
         model_alias: str,
+        request_id: str,
         initial_usage: Usage | None = None,
         thinking: ThinkingProjection | None = None,
         service_tier: ResponseServiceTier = ResponseServiceTier.STANDARD,
@@ -264,7 +265,10 @@ class AnthropicMessageProjector:
             raise ValueError("message_id must not be empty")
         if not model_alias.strip():
             raise ValueError("model_alias must not be empty")
+        if not request_id.strip():
+            raise ValueError("request_id must not be empty")
         self._message_id = message_id
+        self._request_id = request_id
         # Omitted means refused. A caller that forgets to pass a decision gets
         # the truthful tier, not the permissive one.
         self._thinking = thinking or ThinkingProjection.refused()
@@ -495,7 +499,7 @@ class AnthropicMessageProjector:
             message=message,
         )
         self._failed = body
-        return (StreamErrorEvent(error=body),)
+        return (StreamErrorEvent(error=body, request_id=self._request_id),)
 
     # -- content parts ----------------------------------------------------
 

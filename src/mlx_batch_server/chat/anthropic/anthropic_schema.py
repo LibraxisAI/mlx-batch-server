@@ -765,6 +765,7 @@ class StreamErrorEvent(BaseModel):
 
     type: Literal["error"] = "error"
     error: StreamErrorBody
+    request_id: str = Field(..., min_length=1)
 
 
 AnthropicStreamEvent = Union[

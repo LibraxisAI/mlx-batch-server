@@ -32,6 +32,12 @@ canonical inference runtime owns both protocols.
 | Local service tier | requests `auto` and `standard_only`; delivered `usage.service_tier` is always `standard` | this process has no priority or batch capacity lane |
 | Acceptance receipt | `mlx-batch-server.live-api-acceptance.v1` | finalized JSON with exact required probe and matrix cell IDs |
 
+`anthropic-version` is required and the only admitted value is
+`2023-06-01`. This bounded profile currently implements no
+`anthropic-beta` token: if the header is present, every unknown or
+unimplemented token fails with `invalid_request_error` instead of being
+silently ignored.
+
 ## Supported requests
 
 The public admission verifier covers all of these on one server instance:

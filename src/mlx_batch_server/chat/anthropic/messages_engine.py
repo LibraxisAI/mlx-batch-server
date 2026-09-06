@@ -36,7 +36,7 @@ from .capabilities import (
     detached_profile,
     enforce_capabilities,
 )
-from .errors import AnthropicAPIError, UnsupportedCapabilityError
+from .errors import AnthropicAPIError, UnsupportedCapabilityError, new_request_id
 from .projector import (
     AnthropicMessageProjector,
     ThinkingProjection,
@@ -116,6 +116,7 @@ class AnthropicMessagesEngine:
             thinking=thinking,
             service_tier=service_tier,
             citations_enabled=citations_enabled,
+            request_id=trace_id or new_request_id(),
         )
         return projector, self._source().stream(turn).__aiter__()
 

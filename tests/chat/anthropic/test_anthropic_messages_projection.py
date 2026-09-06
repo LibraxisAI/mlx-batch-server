@@ -80,7 +80,10 @@ def _projector(
     *, thinking: ThinkingProjection | None = None
 ) -> AnthropicMessageProjector:
     return AnthropicMessageProjector(
-        message_id="msg_test", model_alias=ALIAS, thinking=thinking
+        message_id="msg_test",
+        model_alias=ALIAS,
+        request_id="req_projection",
+        thinking=thinking,
     )
 
 

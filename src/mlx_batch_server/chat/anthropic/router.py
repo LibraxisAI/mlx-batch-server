@@ -11,13 +11,18 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Final
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials  # noqa: TC002
 from pydantic import ValidationError
 
-from mlx_batch_server.auth.dependency import verify_auth
+from mlx_batch_server.auth.dependency import (
+    api_key_header,
+    session_scheme,
+    verify_auth,
+)
 from mlx_batch_server.utils.logger import logger
 
 from .anthropic_schema import (
@@ -49,6 +54,41 @@ _SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+
+# This adapter deliberately implements one stable Messages wire version. A
+# newer date can carry changed fields or semantics, so accepting it without an
+# implementation owner would be a compatibility lie.
+SUPPORTED_ANTHROPIC_VERSIONS: Final = frozenset({"2023-06-01"})
+
+# No beta header currently has a complete semantic owner in this bounded
+# adapter. Keep the set explicit so adding support is a reviewed protocol
+# decision rather than a permissive parser change.
+IMPLEMENTED_ANTHROPIC_BETAS: Final = frozenset()
+
+_AUTH_ERROR_TYPES: Final = {
+    401: "authentication_error",
+    403: "permission_error",
+    413: "request_too_large",
+    429: "rate_limit_error",
+}
+
+
+class _ProtocolAuthError(AnthropicAPIError):
+    """An auth failure with the canonical challenge/backoff headers intact."""
+
+    def __init__(self, error: HTTPException) -> None:
+        detail = error.detail
+        message = detail if isinstance(detail, str) else "authentication failed"
+        super().__init__(
+            message,
+            error_type=_AUTH_ERROR_TYPES.get(
+                error.status_code,
+                "authentication_error" if error.status_code == 401 else "api_error",
+            ),
+            status_code=error.status_code,
+        )
+        self.headers = dict(error.headers or {})
+
 
 # Lazy initialization to avoid scanning cache during module import
 _models_service: AnthropicModelsService | None = None
@@ -94,7 +134,8 @@ async def list_anthropic_models(
 @router.post("/v1/messages", response_model=MessagesResponse)
 async def create_message(
     http_request: Request,
-    _auth: dict = Depends(verify_auth),
+    api_key: str | None = Security(api_key_header),
+    bearer_creds: HTTPAuthorizationCredentials | None = Security(session_scheme),
 ) -> JSONResponse | StreamingResponse:
     """Create an Anthropic Messages API completion.
 
@@ -107,6 +148,11 @@ async def create_message(
 
     request_id = new_request_id()
     try:
+        # Keep the canonical auth implementation as the single authority, but
+        # invoke it inside this protocol boundary so its HTTPException cannot
+        # escape as FastAPI's generic {"detail": ...} body.
+        await _verify_protocol_auth(http_request, api_key, bearer_creds)
+        _validate_protocol_headers(http_request)
         request = await _parse_request(http_request)
         # Capability preflight runs exactly once, here: before any model is
         # acquired and — for stream=true — before the StreamingResponse
@@ -167,6 +213,58 @@ async def create_message(
     )
 
 
+async def _verify_protocol_auth(
+    http_request: Request,
+    api_key: str | None,
+    bearer_creds: HTTPAuthorizationCredentials | None,
+) -> dict[str, Any]:
+    """Run canonical auth while retaining Anthropic error ownership."""
+
+    try:
+        return await verify_auth(
+            http_request,
+            api_key=api_key,
+            bearer_creds=bearer_creds,
+        )
+    except HTTPException as error:
+        raise _ProtocolAuthError(error) from error
+
+
+def _validate_protocol_headers(http_request: Request) -> None:
+    """Require the exact admitted Messages version and reject unowned betas."""
+
+    version = http_request.headers.get("anthropic-version")
+    if version is None or not version.strip():
+        raise AnthropicAPIError(
+            "anthropic-version header is required; supported version: 2023-06-01",
+            error_type="invalid_request_error",
+        )
+    normalized_version = version.strip()
+    if normalized_version not in SUPPORTED_ANTHROPIC_VERSIONS:
+        raise AnthropicAPIError(
+            f"unsupported anthropic-version {normalized_version!r}; "
+            "supported version: 2023-06-01",
+            error_type="invalid_request_error",
+        )
+
+    beta_values = http_request.headers.getlist("anthropic-beta")
+    if not beta_values:
+        return
+    tokens = [token.strip() for value in beta_values for token in value.split(",")]
+    if any(not token for token in tokens):
+        raise AnthropicAPIError(
+            "anthropic-beta contains an empty beta token",
+            error_type="invalid_request_error",
+        )
+    unsupported = sorted(set(tokens).difference(IMPLEMENTED_ANTHROPIC_BETAS))
+    if unsupported:
+        raise AnthropicAPIError(
+            "unsupported or unimplemented anthropic-beta token(s): "
+            + ", ".join(unsupported),
+            error_type="invalid_request_error",
+        )
+
+
 async def _parse_request(http_request: Request) -> MessagesRequest:
     """Validate the body against the strict schema, Anthropic-style."""
 
@@ -200,10 +298,11 @@ def _validation_message(error: ValidationError) -> str:
 
 
 def _error_response(error: AnthropicAPIError, request_id: str) -> JSONResponse:
+    preserved_headers = getattr(error, "headers", {})
     return JSONResponse(
         status_code=error.status_code,
         content=error.payload(request_id),
-        headers={REQUEST_ID_HEADER: request_id},
+        headers={**preserved_headers, REQUEST_ID_HEADER: request_id},
     )
 
 

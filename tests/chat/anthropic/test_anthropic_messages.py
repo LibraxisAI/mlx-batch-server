@@ -88,7 +88,7 @@ class _SDKConformanceTurnSource:
 @pytest.fixture
 def client():
     """Create test client"""
-    return TestClient(app)
+    return TestClient(app, headers={"anthropic-version": "2023-06-01"})
 
 
 @pytest.fixture

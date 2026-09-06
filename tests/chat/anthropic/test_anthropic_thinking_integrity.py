@@ -165,7 +165,7 @@ def reasoning_client() -> Iterator[TestClient]:
     source = _AlwaysReasoningTurnSource()
     register_turn_source(source)
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"anthropic-version": "2023-06-01"})
     finally:
         clear_turn_source(source)
 
@@ -191,7 +191,10 @@ def _sse_events(text: str) -> list[dict]:
 
 def _projector(*, thinking: ThinkingProjection | None = None):
     return AnthropicMessageProjector(
-        message_id="msg_integrity", model_alias=ALIAS, thinking=thinking
+        message_id="msg_integrity",
+        model_alias=ALIAS,
+        request_id="req_integrity",
+        thinking=thinking,
     )
 
 

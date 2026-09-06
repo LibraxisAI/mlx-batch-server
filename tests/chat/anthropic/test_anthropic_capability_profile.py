@@ -143,7 +143,7 @@ def client(source: _CountingTurnSource) -> Iterator[TestClient]:
     previous = getattr(app.state, "responses_runtime", None)
     app.state.responses_runtime = _fake_receipt(source)
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"anthropic-version": "2023-06-01"})
     finally:
         if previous is None:
             delattr(app.state, "responses_runtime")

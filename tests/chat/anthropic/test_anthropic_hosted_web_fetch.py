@@ -151,6 +151,7 @@ def _citation_ready_projector(
     projector = AnthropicMessageProjector(
         message_id="msg_citation",
         model_alias="m",
+        request_id="req_citation",
         citations_enabled=citations_enabled,
     )
     projector.observe(
@@ -271,6 +272,7 @@ def test_mixed_tools_fail_as_anthropic_400_before_source_entry(stream: bool) -> 
     try:
         response = TestClient(app).post(
             "/anthropic/v1/messages",
+            headers={"anthropic-version": "2023-06-01"},
             json={
                 "model": "qwen-flash",
                 "max_tokens": 16,
@@ -302,7 +304,10 @@ def test_mutually_exclusive_domain_filters_are_rejected_at_the_field() -> None:
 
 def test_duplicate_result_and_unknown_citation_fail_closed_but_pdf_projects() -> None:
     projector = AnthropicMessageProjector(
-        message_id="msg_mutation", model_alias="m", citations_enabled=True
+        message_id="msg_mutation",
+        model_alias="m",
+        request_id="req_mutation",
+        citations_enabled=True,
     )
     started = HostedCallStarted(
         0, "hosted_fetch", "call_fetch", "web_fetch", {"url": _URL}
@@ -328,7 +333,9 @@ def test_duplicate_result_and_unknown_citation_fail_closed_but_pdf_projects() ->
     with pytest.raises(AnthropicAPIError, match="no completed web_fetch receipt"):
         projector.observe(unknown)
 
-    pdf = AnthropicMessageProjector(message_id="msg_pdf", model_alias="m")
+    pdf = AnthropicMessageProjector(
+        message_id="msg_pdf", model_alias="m", request_id="req_pdf"
+    )
     pdf.observe(started)
     raw = b"%PDF-1.7\nclosed fixture"
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -393,7 +400,9 @@ def test_citation_event_fails_closed_when_request_did_not_enable_it() -> None:
 
 
 def test_cancel_is_a_hard_barrier_against_late_result_and_continuation() -> None:
-    projector = AnthropicMessageProjector(message_id="msg_cancel", model_alias="m")
+    projector = AnthropicMessageProjector(
+        message_id="msg_cancel", model_alias="m", request_id="req_cancel"
+    )
     projector.observe(
         HostedCallStarted(0, "hosted_fetch", "call_fetch", "web_fetch", {"url": _URL})
     )
@@ -418,7 +427,9 @@ def test_cancel_is_a_hard_barrier_against_late_result_and_continuation() -> None
 
 
 def test_typed_fetch_rate_limit_projects_as_anthropic_too_many_requests() -> None:
-    projector = AnthropicMessageProjector(message_id="msg_rate", model_alias="m")
+    projector = AnthropicMessageProjector(
+        message_id="msg_rate", model_alias="m", request_id="req_rate"
+    )
     projector.observe(
         HostedCallStarted(0, "hosted_fetch", "call_rate", "web_fetch", {"url": _URL})
     )

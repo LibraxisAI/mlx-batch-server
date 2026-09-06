@@ -97,7 +97,7 @@ def _client(runtime: RoleRuntimeCompositionReceipt) -> Iterator[TestClient]:
     previous = getattr(app.state, "responses_runtime", None)
     app.state.responses_runtime = runtime
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers={"anthropic-version": "2023-06-01"}) as client:
             yield client
     finally:
         clear_turn_source()
