@@ -6,8 +6,8 @@ connect-time IP pinning and fail-closed classification can be proven.
 
 from __future__ import annotations
 
-import socket
 import gzip
+import socket
 
 import httpx
 import pytest
@@ -149,7 +149,9 @@ async def test_compressed_bomb_is_rejected_by_decoded_budget() -> None:
 
     fetch, _ = _fetcher(handler, max_bytes=1024)
     with pytest.raises(SafePublicFetchError) as caught:
-        await fetch.fetch("https://cdn.example/bomb", accepted_media_types=("text/plain",))
+        await fetch.fetch(
+            "https://cdn.example/bomb", accepted_media_types=("text/plain",)
+        )
     assert caught.value.code == "decoded_bytes_exceeded"
 
 
@@ -160,7 +162,9 @@ async def test_http_429_survives_as_typed_rate_limit_without_body() -> None:
 
     fetch, _ = _fetcher(handler)
     with pytest.raises(SafePublicFetchError) as caught:
-        await fetch.fetch("https://cdn.example/limited", accepted_media_types=("text/plain",))
+        await fetch.fetch(
+            "https://cdn.example/limited", accepted_media_types=("text/plain",)
+        )
     assert caught.value.code == "rate_limited"
     assert caught.value.http_status == 429
     assert "secret" not in str(caught.value)

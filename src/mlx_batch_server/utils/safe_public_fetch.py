@@ -75,7 +75,9 @@ _MAX_DECODE_RATIO = 64
 class SafePublicFetchError(ValueError):
     """Structured fail-closed error from the public fetch boundary."""
 
-    def __init__(self, code: str, message: str, *, http_status: int | None = None) -> None:
+    def __init__(
+        self, code: str, message: str, *, http_status: int | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.http_status = http_status
@@ -363,7 +365,11 @@ class SafePublicFetch:
                     )
                     continue
                 if response.status_code < 200 or response.status_code >= 300:
-                    code = "rate_limited" if response.status_code == 429 else "url_fetch_status"
+                    code = (
+                        "rate_limited"
+                        if response.status_code == 429
+                        else "url_fetch_status"
+                    )
                     raise SafePublicFetchError(
                         code,
                         "URL fetch returned an unsuccessful HTTP status",
@@ -791,9 +797,9 @@ def _validate_content_length(response: httpx.Response, max_bytes: int) -> None:
 
 __all__ = [
     "FetchCancelCheck",
-    "FetchedResource",
     "FetchHopReceipt",
     "FetchTransportReceipt",
+    "FetchedResource",
     "SafePublicFetch",
     "SafePublicFetchError",
     "SafePublicFetchLimits",

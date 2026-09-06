@@ -16,7 +16,6 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal
 
-
 DeliveryState = Literal["prepared", "delivered", "delivery_failed"]
 RequestState = Literal["in_progress", "completed", "failed", "cancelled"]
 
@@ -173,20 +172,27 @@ class HostedEvidenceRegistry:
         token = uuid.uuid4().hex
         with self._lock:
             record = self._open(response_id)
-            if evidence.call_id in {call.call_id for call in record.snapshot.calls} or any(
-                item.call_id == evidence.call_id for item in record.pending_calls.values()
+            if evidence.call_id in {
+                call.call_id for call in record.snapshot.calls
+            } or any(
+                item.call_id == evidence.call_id
+                for item in record.pending_calls.values()
             ):
                 raise ValueError("hosted call evidence id is duplicated")
             delivered = replace(evidence, delivery_state="delivered")
             delivery_failed = replace(evidence, delivery_state="delivery_failed")
             failure_event = (
-                HostedConsumerEvent(
-                    "tool_failed_but_continuing",
-                    time.monotonic_ns(),
-                    call_id=evidence.call_id,
-                    error_code=evidence.error_code,
-                ),
-            ) if evidence.status == "failed" else ()
+                (
+                    HostedConsumerEvent(
+                        "tool_failed_but_continuing",
+                        time.monotonic_ns(),
+                        call_id=evidence.call_id,
+                        error_code=evidence.error_code,
+                    ),
+                )
+                if evidence.status == "failed"
+                else ()
+            )
             record.pending_calls[token] = _PreparedCall(
                 call_id=evidence.call_id,
                 delivered=replace(
@@ -216,9 +222,7 @@ class HostedEvidenceRegistry:
             if prepared is None:
                 return
             record.snapshot = (
-                prepared.delivered
-                if state == "delivered"
-                else prepared.delivery_failed
+                prepared.delivered if state == "delivered" else prepared.delivery_failed
             )
 
     def record_round(self, response_id: str, evidence: HostedRoundEvidence) -> None:
@@ -247,32 +251,34 @@ class HostedEvidenceRegistry:
             if record.pending_terminal is not None:
                 raise ValueError("terminal evidence was already prepared")
             now = time.monotonic_ns()
-            common = {
-                "cancel_reason": cancel_reason,
-                "terminal_usage": (
-                    None
-                    if terminal_usage is None
-                    else MappingProxyType(dict(terminal_usage))
-                ),
-                "consumer_events": (
-                    *record.snapshot.consumer_events,
-                    HostedConsumerEvent("terminal", now),
-                ),
-                "sealed_monotonic_ns": now,
-            }
+            sealed_usage = (
+                None
+                if terminal_usage is None
+                else MappingProxyType(dict(terminal_usage))
+            )
+            consumer_events = (
+                *record.snapshot.consumer_events,
+                HostedConsumerEvent("terminal", now),
+            )
             record.pending_terminal = _PreparedTerminal(
                 token=token,
                 delivered=replace(
                     record.snapshot,
                     state=state,
                     terminal_delivery_state="delivered",
-                    **common,
+                    cancel_reason=cancel_reason,
+                    terminal_usage=sealed_usage,
+                    consumer_events=consumer_events,
+                    sealed_monotonic_ns=now,
                 ),
                 delivery_failed=replace(
                     record.snapshot,
                     state="failed",
                     terminal_delivery_state="delivery_failed",
-                    **common,
+                    cancel_reason=cancel_reason,
+                    terminal_usage=sealed_usage,
+                    consumer_events=consumer_events,
+                    sealed_monotonic_ns=now,
                 ),
             )
         return token

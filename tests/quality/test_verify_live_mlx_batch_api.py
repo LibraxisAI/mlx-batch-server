@@ -36,9 +36,9 @@ from scripts.quality.verify_live_mlx_batch_api import (
 )
 
 from mlx_batch_server.utils.safe_public_fetch import (
+    FetchedResource,
     FetchHopReceipt,
     FetchTransportReceipt,
-    FetchedResource,
     SafePublicFetchError,
 )
 
@@ -637,8 +637,15 @@ class _FakeSafeFetcher:
             )
         final_url = "https://public.example/final?secret=hidden"
         hop = FetchHopReceipt(
-            url, ("1.1.1.1",), "1.1.1.1", "1.1.1.1", 200, None,
-            "identity", 14, 14,
+            url,
+            ("1.1.1.1",),
+            "1.1.1.1",
+            "1.1.1.1",
+            200,
+            None,
+            "identity",
+            14,
+            14,
         )
         return FetchedResource(
             content=b"public fixture",
@@ -657,8 +664,15 @@ class _UnsafeFakeFetcher(_FakeSafeFetcher):
         max_bytes: int | None = None,
     ) -> FetchedResource:
         hop = FetchHopReceipt(
-            url, ("1.1.1.1",), "1.1.1.1", "1.1.1.1", 200, None,
-            "identity", 15, 15,
+            url,
+            ("1.1.1.1",),
+            "1.1.1.1",
+            "1.1.1.1",
+            200,
+            None,
+            "identity",
+            15,
+            15,
         )
         return FetchedResource(
             content=b"private fixture",

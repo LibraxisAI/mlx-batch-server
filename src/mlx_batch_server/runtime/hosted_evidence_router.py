@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..auth.dependency import verify_auth
-from .hosted_evidence import HostedEvidenceRegistry, HostedRequestEvidence
+
+if TYPE_CHECKING:
+    from .hosted_evidence import HostedEvidenceRegistry, HostedRequestEvidence
 
 
 def build_hosted_evidence_router(

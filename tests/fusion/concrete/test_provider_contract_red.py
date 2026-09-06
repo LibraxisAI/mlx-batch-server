@@ -34,6 +34,7 @@ from mlx_batch_server.runtime.fusion.concrete import (
     FusedTensorIdentityError,
     FusedTensorOwnerBinding,
     FusedTensorRegistryClosedError,
+    FusedTensorRegistryError,
     FusedTensorRuntimeRegistry,
     OmlxMtplxCacheFactory,
     OmlxMtplxExecutorFactory,
@@ -455,9 +456,7 @@ async def test_shutdown_closes_active_owner_once_and_rejects_future_work() -> No
 async def test_shutdown_timeout_leaves_eventual_owner_cleanup_tracked() -> None:
     registry, executor_factory, _, loader = _factories()
     loader.proceed.clear()
-    acquisition = asyncio.create_task(
-        executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
-    )
+    acquisition = asyncio.create_task(executor_factory.load(RUNTIME, CONFIG, SCHEDULER))
     await loader.started.wait()
 
     with pytest.raises(FusedTensorRegistryError, match="eventual cleanup"):
@@ -474,12 +473,12 @@ async def test_shutdown_timeout_leaves_eventual_owner_cleanup_tracked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_spends_one_positive_budget_across_load_and_owner_close() -> None:
+async def test_shutdown_spends_one_positive_budget_across_load_and_owner_close() -> (
+    None
+):
     registry, executor_factory, _, loader = _factories()
     loader.proceed.clear()
-    acquisition = asyncio.create_task(
-        executor_factory.load(RUNTIME, CONFIG, SCHEDULER)
-    )
+    acquisition = asyncio.create_task(executor_factory.load(RUNTIME, CONFIG, SCHEDULER))
     await loader.started.wait()
 
     shutdown = asyncio.create_task(registry.shutdown(5.0))

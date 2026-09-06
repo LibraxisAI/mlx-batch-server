@@ -332,7 +332,11 @@ def _validate_find_result(result: Mapping[str, Any]) -> dict[str, Any]:
             }
         )
     retrieved_at = result["retrieved_at"]
-    if isinstance(retrieved_at, bool) or not isinstance(retrieved_at, int) or retrieved_at < 0:
+    if (
+        isinstance(retrieved_at, bool)
+        or not isinstance(retrieved_at, int)
+        or retrieved_at < 0
+    ):
         raise ValueError("retrieved_at must be a non-negative UTC integer")
     return {
         "kind": "find_matches",
@@ -350,6 +354,58 @@ def result_identities(result: Mapping[str, Any]) -> tuple[str, ...]:
     if result["kind"] in {"document", "find_matches"}:
         return (result["url"],)
     return tuple(entry["url"] for entry in result["results"])
+
+
+def _validate_search_action(
+    action: Mapping[str, Any],
+    result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if set(action) != _SEARCH_ACTION_KEYS:
+        raise ValueError("search action carries exactly kind, query and sources")
+    query = _require_result_identity("query", action["query"])
+    sources = action["sources"]
+    if isinstance(sources, str | bytes) or not isinstance(sources, Sequence):
+        raise ValueError("search action sources must be a sequence")
+    validated_sources = tuple(
+        _require_result_identity("source", source) for source in sources
+    )
+    if len(set(validated_sources)) != len(validated_sources):
+        raise ValueError("search action sources must be unique")
+    if result is not None:
+        proven = set(result_identities(validate_result_payload("web_search", result)))
+        if not set(validated_sources) <= proven:
+            raise ValueError("search action sources are not proven by the result")
+    return {"kind": "search", "query": query, "sources": list(validated_sources)}
+
+
+def _validate_find_action(
+    action: Mapping[str, Any],
+    result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if set(action) != _FIND_ACTION_KEYS:
+        raise ValueError("find action carries exactly kind, url and pattern")
+    validated = {
+        "kind": "find_in_page",
+        "url": _require_result_identity("url", action["url"]),
+        "pattern": _require_result_identity("pattern", action["pattern"]),
+    }
+    if result is not None:
+        validate_result_payload("find_in_page", result)
+    return validated
+
+
+def _validate_fetch_action(
+    tool_name: str,
+    expected_kind: str,
+    action: Mapping[str, Any],
+    result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if set(action) != _FETCH_ACTION_KEYS:
+        raise ValueError("fetch action carries exactly kind and url")
+    url = _require_result_identity("url", action["url"])
+    if result is not None:
+        validate_result_payload(tool_name, result)
+    return {"kind": expected_kind, "url": url}
 
 
 def validate_sealed_action(
@@ -376,41 +432,11 @@ def validate_sealed_action(
         raise ValueError("sealed action must be a mapping")
     if action.get("kind") != expected_kind:
         raise ValueError(f"sealed action kind must be {expected_kind!r}")
-    keys = set(action)
     if expected_kind == "search":
-        if keys != _SEARCH_ACTION_KEYS:
-            raise ValueError("search action carries exactly kind, query and sources")
-        query = _require_result_identity("query", action["query"])
-        sources = action["sources"]
-        if isinstance(sources, str | bytes) or not isinstance(sources, Sequence):
-            raise ValueError("search action sources must be a sequence")
-        validated_sources = tuple(
-            _require_result_identity("source", source) for source in sources
-        )
-        if len(set(validated_sources)) != len(validated_sources):
-            raise ValueError("search action sources must be unique")
-        if result is not None:
-            proven = set(result_identities(validate_result_payload(tool_name, result)))
-            if not set(validated_sources) <= proven:
-                raise ValueError("search action sources are not proven by the result")
-        return {"kind": "search", "query": query, "sources": list(validated_sources)}
+        return _validate_search_action(action, result)
     if expected_kind == "find_in_page":
-        if keys != _FIND_ACTION_KEYS:
-            raise ValueError("find action carries exactly kind, url and pattern")
-        action_result = {
-            "kind": "find_in_page",
-            "url": _require_result_identity("url", action["url"]),
-            "pattern": _require_result_identity("pattern", action["pattern"]),
-        }
-        if result is not None:
-            validate_result_payload(tool_name, result)
-        return action_result
-    if keys != _FETCH_ACTION_KEYS:
-        raise ValueError("fetch action carries exactly kind and url")
-    url = _require_result_identity("url", action["url"])
-    if result is not None:
-        validate_result_payload(tool_name, result)
-    return {"kind": expected_kind, "url": url}
+        return _validate_find_action(action, result)
+    return _validate_fetch_action(tool_name, expected_kind, action, result)
 
 
 def _verify_result_receipt_agreement(
@@ -421,12 +447,16 @@ def _verify_result_receipt_agreement(
 
     if receipt_fields.get("result_digest") != result["digest"]:
         raise ValueError("receipt result_digest does not match the result digest")
-    if result["kind"] in {"document", "find_matches"}:
-        if receipt_fields.get("final_url") != result["url"]:
-            raise ValueError("receipt final_url does not match the result url")
-    if result["kind"] == "document":
-        if receipt_fields.get("mime") != result["media_type"]:
-            raise ValueError("receipt mime does not match the result media_type")
+    if (
+        result["kind"] in {"document", "find_matches"}
+        and receipt_fields.get("final_url") != result["url"]
+    ):
+        raise ValueError("receipt final_url does not match the result url")
+    if (
+        result["kind"] == "document"
+        and receipt_fields.get("mime") != result["media_type"]
+    ):
+        raise ValueError("receipt mime does not match the result media_type")
 
 
 class HostedRoundMode(StrEnum):
@@ -463,7 +493,9 @@ class HostedExecutionPolicy:
         ):
             raise ValueError("hosted policy max_url_chars must be positive")
         if self.allowed_domains and self.blocked_domains:
-            raise ValueError("allowed_domains and blocked_domains are mutually exclusive")
+            raise ValueError(
+                "allowed_domains and blocked_domains are mutually exclusive"
+            )
         for field_name, values in (
             ("allowed_domains", self.allowed_domains),
             ("blocked_domains", self.blocked_domains),
@@ -764,9 +796,7 @@ class HostedToolCatalog:
         for tool in declarations:
             kind = tool.get("type")
             name = tool.get("name")
-            if kind == "web_search":
-                hosted.append(tool)
-            elif kind == "web_fetch" and name == "web_fetch":
+            if kind == "web_search" or (kind == "web_fetch" and name == "web_fetch"):
                 hosted.append(tool)
             else:
                 if kind == "function" and name in {"open_page", "find_in_page"}:
@@ -807,9 +837,7 @@ class HostedToolCatalog:
             public_names=(public_name,),
             executable_names=executable,
             model_tools=tuple(
-                _MODEL_TOOL_DESCRIPTORS[name]
-                for name in desired
-                if name in executable
+                _MODEL_TOOL_DESCRIPTORS[name] for name in desired if name in executable
             ),
             policy=policy,
         )

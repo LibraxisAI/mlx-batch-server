@@ -32,9 +32,9 @@ from mlx_batch_server.tools.hosted_web import (
 )
 from mlx_batch_server.tools.parser import ParsedToolCall
 from mlx_batch_server.utils.safe_public_fetch import (
+    FetchedResource,
     FetchHopReceipt,
     FetchTransportReceipt,
-    FetchedResource,
     SafePublicFetch,
     SafePublicFetchLimits,
 )
@@ -93,9 +93,7 @@ async def _execute(
     *,
     policy: HostedExecutionPolicy | None = None,
 ):
-    token = set_execution_scope(
-        HostedExecutionScope(policy=policy or _policy())
-    )
+    token = set_execution_scope(HostedExecutionScope(policy=policy or _policy()))
     try:
         return await executor.execute(call)
     finally:
@@ -225,9 +223,7 @@ async def test_successful_fetch_produces_digest_provenance() -> None:
     tool = HostedWebFetchTool(fetch=_fetch(_text_handler))
     success = await tool.invoke(
         {"url": "https://cdn.example/page"},
-        policy=_policy(
-            "anthropic_messages", prior_urls=("https://cdn.example/page",)
-        ),
+        policy=_policy("anthropic_messages", prior_urls=("https://cdn.example/page",)),
     )
 
     assert isinstance(success, HostedToolSuccess)
@@ -378,8 +374,15 @@ class _ResourceFetch:
     async def fetch(self, url: str, **kwargs):
         self.calls += 1
         hop = FetchHopReceipt(
-            url, ("1.1.1.1",), "1.1.1.1", "1.1.1.1", 200, None,
-            "identity", len(self.content), len(self.content),
+            url,
+            ("1.1.1.1",),
+            "1.1.1.1",
+            "1.1.1.1",
+            200,
+            None,
+            "identity",
+            len(self.content),
+            len(self.content),
         )
         return FetchedResource(
             self.content,
@@ -419,7 +422,9 @@ def test_anthropic_approx_tokenizer_freezes_unicode_and_punctuation_vectors() ->
 
 
 @pytest.mark.asyncio
-async def test_request_scoped_token_policies_do_not_leak_between_concurrent_calls() -> None:
+async def test_request_scoped_token_policies_do_not_leak_between_concurrent_calls() -> (
+    None
+):
     fetch = _ResourceFetch(b"abcd efgh!")
     tool = HostedWebFetchTool(fetch=fetch)  # type: ignore[arg-type]
     url = "https://example.com/page"

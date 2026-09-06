@@ -369,77 +369,18 @@ class RuntimeManager:
             raise RuntimeUnavailableError("runtime manager is shutting down")
 
     async def _shutdown_and_publish(self, deadline_at: float) -> None:
-        loop = asyncio.get_running_loop()
         failures: list[str] = []
         try:
             async with self._lock:
                 runtimes = tuple(self._records)
 
             for runtime in runtimes:
-                async with self._lock:
-                    record = self._records[runtime]
-                    lifecycle_task = (
-                        record.load_task
-                        or record.cleanup_task
-                        or record.unload_task
-                    )
-                if lifecycle_task is not None:
-                    remaining = deadline_at - loop.time()
-                    if remaining <= 0:
-                        failures.append(
-                            f"{runtime.model_id}: lifecycle drain timed out"
-                        )
-                        continue
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.shield(lifecycle_task),
-                            timeout=remaining,
-                        )
-                    except TimeoutError:
-                        failures.append(
-                            f"{runtime.model_id}: lifecycle drain timed out"
-                        )
-                        continue
-                    except Exception:
-                        pass
+                failure = await self._shutdown_one_runtime(runtime, deadline_at)
+                if failure is not None:
+                    failures.append(failure)
 
-                remaining = deadline_at - loop.time()
-                async with self._lock:
-                    record = self._records[runtime]
-                    unload_task = record.unload_task
-                    if unload_task is None and record.handle is not None:
-                        unload_task = self._begin_unload_locked(
-                            runtime,
-                            record,
-                            deadline_s=max(0.0, remaining),
-                        )
-                if unload_task is None:
-                    continue
-                if remaining <= 0:
-                    failures.append(f"{runtime.model_id}: unload timed out")
-                    continue
-
-                try:
-                    # The record owns this exact task.  Shielding keeps cleanup
-                    # retryable after the shutdown attempt reaches its deadline.
-                    await asyncio.wait_for(
-                        asyncio.shield(unload_task),
-                        timeout=max(0.0, deadline_at - loop.time()),
-                    )
-                except TimeoutError:
-                    failures.append(f"{runtime.model_id}: unload timed out")
-                except Exception as exc:
-                    failures.append(f"{runtime.model_id}: {self._error_text(exc)}")
-
+            live = await self._shutdown_live_runtime_ids()
             async with self._lock:
-                live = tuple(
-                    runtime.model_id
-                    for runtime, record in self._records.items()
-                    if record.handle is not None
-                    or record.load_task is not None
-                    or record.unload_task is not None
-                    or record.cleanup_task is not None
-                )
                 if not failures and not live:
                     self._closed = True
             if failures or live:
@@ -454,6 +395,76 @@ class RuntimeManager:
                 if self._shutdown_task is asyncio.current_task():
                     self._shutdown_task = None
 
+    async def _shutdown_one_runtime(
+        self,
+        runtime: RuntimeKey,
+        deadline_at: float,
+    ) -> str | None:
+        loop = asyncio.get_running_loop()
+        if await self._lifecycle_drain_timed_out(runtime, deadline_at):
+            return f"{runtime.model_id}: lifecycle drain timed out"
+
+        remaining = deadline_at - loop.time()
+        async with self._lock:
+            record = self._records[runtime]
+            unload_task = record.unload_task
+            if unload_task is None and record.handle is not None:
+                unload_task = self._begin_unload_locked(
+                    runtime,
+                    record,
+                    deadline_s=max(0.0, remaining),
+                )
+        if unload_task is None:
+            return None
+        if remaining <= 0:
+            return f"{runtime.model_id}: unload timed out"
+        try:
+            # The record owns this exact task. Shielding keeps cleanup
+            # retryable after the shutdown attempt reaches its deadline.
+            await asyncio.wait_for(
+                asyncio.shield(unload_task),
+                timeout=max(0.0, deadline_at - loop.time()),
+            )
+        except TimeoutError:
+            return f"{runtime.model_id}: unload timed out"
+        except Exception as exc:
+            return f"{runtime.model_id}: {self._error_text(exc)}"
+        return None
+
+    async def _lifecycle_drain_timed_out(
+        self,
+        runtime: RuntimeKey,
+        deadline_at: float,
+    ) -> bool:
+        async with self._lock:
+            record = self._records[runtime]
+            lifecycle_task = (
+                record.load_task or record.cleanup_task or record.unload_task
+            )
+        if lifecycle_task is None:
+            return False
+        remaining = deadline_at - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return True
+        try:
+            await asyncio.wait_for(asyncio.shield(lifecycle_task), timeout=remaining)
+        except TimeoutError:
+            return True
+        except Exception:
+            pass
+        return False
+
+    async def _shutdown_live_runtime_ids(self) -> tuple[str, ...]:
+        async with self._lock:
+            return tuple(
+                runtime.model_id
+                for runtime, record in self._records.items()
+                if record.handle is not None
+                or record.load_task is not None
+                or record.unload_task is not None
+                or record.cleanup_task is not None
+            )
+
     async def _load_and_publish(
         self,
         runtime: RuntimeKey,
@@ -461,50 +472,83 @@ class RuntimeManager:
         config: LoadConfig,
     ) -> BackendHandle:
         try:
-            factory = self._factories.get(runtime.backend)
-            if factory is None:
-                raise RuntimeUnavailableError(
-                    f"no factory registered for backend {runtime.backend.value!r}"
-                )
-            async with self._load_slots:
-                handle = await factory.load(runtime, config)
-            if handle.runtime_key != runtime:
-                mismatch = RuntimeManagerError(
-                    "backend returned a handle for a different runtime key"
-                )
-                try:
-                    await handle.close(self._rejected_handle_close_deadline_s)
-                except Exception as close_error:
-                    raise RuntimeManagerError(
-                        f"{mismatch}; rejected handle cleanup failed: "
-                        f"{self._error_text(close_error)}"
-                    ) from close_error
-                raise mismatch
-            try:
-                materialization = self._validated_materialization(handle, runtime)
-            except Exception as receipt_error:
-                try:
-                    await handle.close(self._rejected_handle_close_deadline_s)
-                except Exception as close_error:
-                    raise RuntimeManagerError(
-                        f"{self._error_text(receipt_error)}; invalid materialization "
-                        f"handle cleanup failed: {self._error_text(close_error)}"
-                    ) from close_error
-                raise receipt_error
+            handle, materialization = await self._load_validated_handle(runtime, config)
         except Exception as exc:
-            async with self._lock:
-                if record.load_task is asyncio.current_task():
-                    record.load_task = None
-                    record.state = ModelState.DEGRADED
-                    record.error = self._error_text(exc)
-                    record.materialization = None
-            self._mark_roles_degraded(
-                runtime,
-                self._error_text(exc),
-                transition="load_failed",
-            )
+            await self._publish_load_failure(runtime, record, exc)
             raise
 
+        cleanup_task, publication_error = await self._publish_loaded_handle(
+            runtime,
+            record,
+            handle,
+            materialization,
+        )
+        if cleanup_task is not None:
+            await asyncio.shield(cleanup_task)
+            if publication_error is not None:
+                raise publication_error
+            raise RuntimeUnavailableError("runtime load completed during shutdown")
+        return handle
+
+    async def _load_validated_handle(
+        self,
+        runtime: RuntimeKey,
+        config: LoadConfig,
+    ) -> tuple[BackendHandle, TensorMaterializationReceipt | None]:
+        factory = self._factories.get(runtime.backend)
+        if factory is None:
+            raise RuntimeUnavailableError(
+                f"no factory registered for backend {runtime.backend.value!r}"
+            )
+        async with self._load_slots:
+            handle = await factory.load(runtime, config)
+        if handle.runtime_key != runtime:
+            mismatch = RuntimeManagerError(
+                "backend returned a handle for a different runtime key"
+            )
+            try:
+                await handle.close(self._rejected_handle_close_deadline_s)
+            except Exception as close_error:
+                raise RuntimeManagerError(
+                    f"{mismatch}; rejected handle cleanup failed: "
+                    f"{self._error_text(close_error)}"
+                ) from close_error
+            raise mismatch
+        try:
+            materialization = self._validated_materialization(handle, runtime)
+        except Exception as receipt_error:
+            try:
+                await handle.close(self._rejected_handle_close_deadline_s)
+            except Exception as close_error:
+                raise RuntimeManagerError(
+                    f"{self._error_text(receipt_error)}; invalid materialization "
+                    f"handle cleanup failed: {self._error_text(close_error)}"
+                ) from close_error
+            raise
+        return handle, materialization
+
+    async def _publish_load_failure(
+        self,
+        runtime: RuntimeKey,
+        record: _RuntimeRecord,
+        error: BaseException,
+    ) -> None:
+        error_text = self._error_text(error)
+        async with self._lock:
+            if record.load_task is asyncio.current_task():
+                record.load_task = None
+                record.state = ModelState.DEGRADED
+                record.error = error_text
+                record.materialization = None
+        self._mark_roles_degraded(runtime, error_text, transition="load_failed")
+
+    async def _publish_loaded_handle(
+        self,
+        runtime: RuntimeKey,
+        record: _RuntimeRecord,
+        handle: BackendHandle,
+        materialization: TensorMaterializationReceipt | None,
+    ) -> tuple[asyncio.Task[None] | None, BaseException | None]:
         cleanup_task: asyncio.Task[None] | None = None
         publication_error: BaseException | None = None
         async with self._lock:
@@ -553,12 +597,7 @@ class RuntimeManager:
                             ),
                             success_error=error_text,
                         )
-        if cleanup_task is not None:
-            await asyncio.shield(cleanup_task)
-            if publication_error is not None:
-                raise publication_error
-            raise RuntimeUnavailableError("runtime load completed during shutdown")
-        return handle
+        return cleanup_task, publication_error
 
     def _begin_unpublished_cleanup_locked(
         self,

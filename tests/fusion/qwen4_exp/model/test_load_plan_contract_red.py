@@ -257,7 +257,7 @@ def test_open_shard_lease_keeps_consumed_identity_across_path_replacement(
     replacement.write_bytes(b"foreign-checkpoint")
 
     with open_qwen4_exp_shard(plan, name) as lease:
-        os.replace(replacement, original)
+        replacement.replace(original)
         assert lease.stream.read() == b"fixture"
         lease.verify_after_eval()
 

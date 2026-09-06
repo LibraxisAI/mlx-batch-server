@@ -32,10 +32,10 @@ from mlx_batch_server.runtime.fusion.concrete.provider import (
     OmlxMtplxCacheFactory,
     OmlxMtplxExecutorFactory,
 )
+from mlx_batch_server.runtime.fusion.mtp import MtpPolicy
 from mlx_batch_server.runtime.fusion.qwen4_exp.execution import (
     Qwen4ExpExecutionFactoryPort,
 )
-from mlx_batch_server.runtime.fusion.mtp import MtpPolicy
 from mlx_batch_server.runtime.fusion.scheduler import SchedulerConfig
 
 RUNTIME = RuntimeKey(

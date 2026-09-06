@@ -51,7 +51,6 @@ from ..qwen4_exp import (
     Qwen4ExpRequestPreparerPort,
     probe_qwen4_exp,
 )
-from ..qwen4_exp.execution import _TensorMaterializationIssuerAuthority
 from ..scheduler import (
     SchedulerConfig,
     SchedulerPlan,
@@ -67,7 +66,10 @@ if TYPE_CHECKING:
         FusedStepResult,
     )
     from ..mtp import MtpPolicy
-    from ..qwen4_exp.execution import Qwen4ExpPreparedExecutionFactoryPort
+    from ..qwen4_exp.execution import (
+        Qwen4ExpPreparedExecutionFactoryPort,
+        _TensorMaterializationIssuerAuthority,
+    )
 
 
 class Qwen4ExpTensorOwnerError(RuntimeError):

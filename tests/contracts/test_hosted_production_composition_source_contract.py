@@ -130,9 +130,8 @@ def test_production_factory_has_exact_closed_catalog_and_public_fetch_policy() -
     tools = catalog_calls[0].args[0]
     assert isinstance(tools, ast.Name) and tools.id == "tools"
     assert "tools = (search, open_page, find_in_page, web_fetch)" in function_source
-    assert (
-        'acceptance_profile in {"provider-present", "provider-absent"}'
-        in function_source
+    assert "acceptance_profile in {'provider-present', 'provider-absent'}" in (
+        function_source
     )
     assert "tools = (search,)" in function_source
     assert _calls(function, "AsyncClient") == []
@@ -149,10 +148,10 @@ def test_acceptance_evidence_is_localhost_only_and_nonproduction() -> None:
     validator = _function(main_tree, "_validate_hosted_acceptance_bind")
     validator_source = ast.unparse(validator)
 
-    assert 'host not in {"127.0.0.1", "::1"}' in validator_source
+    assert "host not in {'127.0.0.1', '::1'}" in validator_source
     assert "port in PRODUCTION_ROLE_PORTS" in validator_source
     assert "workers != 1" in validator_source
-    assert 'profile not in {"provider-present", "provider-absent"}' in validator_source
+    assert "profile not in {'provider-present', 'provider-absent'}" in validator_source
     assert main_source.count("_validate_hosted_acceptance_bind(") == 3
     assert "hosted_evidence_registry" in main_source
     assert "hosted_acceptance_profile" in main_source

@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from ...contracts import TensorMaterializationReceipt
+
 if TYPE_CHECKING:
     from ...backends.fused_mtp_mlx import FusedStepResult
     from ...contracts import (
@@ -21,7 +23,6 @@ if TYPE_CHECKING:
         ModelSpec,
         PreparedGenerationRequest,
         RuntimeKey,
-        TensorMaterializationReceipt,
     )
     from ..cache import CacheCleanupReceipt, CacheReleaseReason
     from ..mtp import MtpPolicy
@@ -38,8 +39,6 @@ class _TensorMaterializationIssuerAuthority:
         self.__seal = object()
 
     def _issue(self, **fields: Any) -> TensorMaterializationReceipt:
-        from ...contracts import TensorMaterializationReceipt
-
         return TensorMaterializationReceipt(
             **fields,
             _issuer_authority=self.__seal,
