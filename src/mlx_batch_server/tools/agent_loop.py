@@ -6,8 +6,8 @@ import asyncio
 import hashlib
 import uuid
 from collections.abc import Awaitable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .parser import ParsedToolCall
 
@@ -36,11 +36,26 @@ def hosted_agent_loop_policy(*, max_rounds: int = 8) -> AgentLoopPolicy:
 
 @dataclass(frozen=True, slots=True)
 class ToolArgumentSeal:
-    """Immutable proof of the exact validated mapping admitted for execution."""
+    """Owner-authenticated proof of argument admission and its exact outcome.
 
+    A keyed signature covers identity, source, mapping, disposition and final
+    outcome, so the public fields alone cannot mint a valid execution result.
+    """
+
+    call_id: str
+    tool_name: str
     source_digest: str
     canonical_json: str
     value: Mapping[str, Any]
+    disposition: Literal[
+        "admitted",
+        "invalid_tool_arguments",
+        "tool_arguments_too_large",
+        "tool_not_allowed",
+        "runtime_round_limit",
+    ]
+    outcome_digest: str
+    _signature: str = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

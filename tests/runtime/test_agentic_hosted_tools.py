@@ -13,9 +13,10 @@ import asyncio
 import gc
 import hashlib
 import inspect
+import json
 import weakref
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -64,15 +65,17 @@ from mlx_batch_server.runtime.service import (
     RuntimeStartService,
 )
 from mlx_batch_server.runtime.turn import GenerationTurn, TurnState
-from mlx_batch_server.tools.agent_loop import ToolArgumentSeal, ToolExecutionResult
+from mlx_batch_server.tools.agent_loop import ToolExecutionResult
 from mlx_batch_server.tools.hosted import (
     HostedExecutionPolicy,
     HostedToolCatalog,
     HostedToolError,
     HostedToolExecutor,
     HostedToolSuccess,
+    _outcome_digest,
     build_receipt,
     canonical_json,
+    failure_result,
 )
 from mlx_batch_server.tools.hosted_web import HostedWebSearchTool
 from mlx_batch_server.tools.parser import ParsedToolCall
@@ -567,6 +570,75 @@ async def test_model_generated_invalid_arguments_are_f10_receipts(
 @pytest.mark.parametrize(
     "arguments",
     (
+        '{"query":' + "[" * 80 + '"deep"' + "]" * 80 + "}",
+        '{"query":"\ud800"}',
+        '{"query":"\udfff"}',
+        '{"nested":{"query":"\ud800"}}',
+        '{"query":"\\ud800"}',
+        '{"query":"\\udfff"}',
+        '{"nested":{"query":"\\ud800"}}',
+    ),
+    ids=(
+        "over-depth",
+        "raw-high-surrogate",
+        "raw-low-surrogate",
+        "nested-raw-surrogate",
+        "escaped-high-surrogate",
+        "escaped-low-surrogate",
+        "nested-escaped-surrogate",
+    ),
+)
+async def test_total_argument_admission_keeps_voice_for_hostile_unicode_and_depth(
+    arguments: str,
+) -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", arguments),)),
+            _Round(text="I could not run that search because its input was invalid."),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1
+    assert receipts[0].receipt["error"]["code"] == "invalid_tool_arguments"
+    assert tool.invocations == 0
+    assert len(inner.requests) == 2
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+    rendered = _chat_template_messages(inner.requests[1].messages)
+    rendered_call = next(message for message in rendered if message.get("tool_calls"))
+    assert rendered_call["tool_calls"][0]["function"]["arguments"] == {}
+    assert json.dumps(rendered, ensure_ascii=False).encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_valid_supplementary_unicode_is_admitted_and_qwen_renderable() -> None:
+    inner = _FakeInner(
+        (
+            _Round(
+                tool_calls=(("call_a", "web_search", '{"query":"\\ud83d\\ude80"}'),)
+            ),
+            _Round(text="done"),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    rendered = _chat_template_messages(inner.requests[1].messages)
+    rendered_call = next(message for message in rendered if message.get("tool_calls"))
+    assert rendered_call["tool_calls"][0]["function"]["arguments"] == {"query": "🚀"}
+    assert json.dumps(rendered, ensure_ascii=False).encode("utf-8")
+    assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    (
         '{"query":"OVERSIZED_SENTINEL_' + "x" * 80 + '"}',
         '{"query":"OVERSIZED_SENTINEL_' + "x" * 80,
     ),
@@ -593,6 +665,15 @@ async def test_oversized_arguments_are_never_reparsed_or_replayed(
     rendered_call = next(message for message in rendered if message.get("tool_calls"))
     assert rendered_call["tool_calls"][0]["function"]["arguments"] == {}
     assert "OVERSIZED_SENTINEL" not in repr(inner.requests[1].messages)
+    public_actions = [
+        event.action
+        for event in events
+        if isinstance(event, OutputItemStarted | HostedCallStarted)
+        or (isinstance(event, OutputItemCompleted) and event.kind == "hosted_call")
+    ]
+    assert public_actions
+    assert "OVERSIZED_SENTINEL" not in repr(public_actions)
+    assert max(len(repr(action)) for action in public_actions) < 256
     assert _of(events, TurnCompleted) and not _of(events, TurnFailed)
 
 
@@ -722,9 +803,11 @@ async def test_successful_hosted_execution_grounds_one_more_round() -> None:
     assert kinds.count("hosted_call") == 1
 
 
-def test_hosted_start_computes_the_opening_action_once() -> None:
+def test_hosted_start_reuses_the_pre_admitted_opening_action() -> None:
     source = inspect.getsource(agentic_module._HostedAgenticTurn._emit_hosted_started)
-    assert source.count("_call_action(call)") == 1
+    assert "json.loads" not in source
+    assert "call.arguments" not in source
+    assert source.count("action=opening_action") == 2
 
 
 @pytest.mark.asyncio
@@ -1398,11 +1481,7 @@ async def test_executor_argument_mapping_mismatch_is_a_server_fault_500() -> Non
                 output=result.output,
                 metadata=result.metadata,
                 error=result.error,
-                argument_seal=ToolArgumentSeal(
-                    source_digest=seal.source_digest,
-                    canonical_json=seal.canonical_json,
-                    value={"query": "forged"},
-                ),
+                argument_seal=replace(seal, value={"query": "forged"}),
             )
 
     inner = _FakeInner(
@@ -1421,6 +1500,148 @@ async def test_executor_argument_mapping_mismatch_is_a_server_fault_500() -> Non
     assert len(failed) == 1 and failed[0].status_code == 500
     assert tool.invocations == 1
     assert len(inner.requests) == 1
+    assert not _of(events, TurnCompleted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("foreign_identity", ("call", "tool"))
+async def test_argument_attestation_cannot_cross_call_or_tool_identity(
+    foreign_identity: str,
+) -> None:
+    class _CrossIdentityExecutor(HostedToolExecutor):
+        async def execute(self, call: Any) -> ToolExecutionResult:
+            from mlx_batch_server.tools.hosted import (
+                current_execution_scope,
+                reset_execution_scope,
+                set_execution_scope,
+            )
+
+            foreign_call = ParsedToolCall(
+                index=call.index,
+                call_id="call_foreign" if foreign_identity == "call" else call.call_id,
+                name="open_page" if foreign_identity == "tool" else call.name,
+                arguments=call.arguments,
+            )
+            token = set_execution_scope(
+                replace(current_execution_scope(), argument_admissions={})
+            )
+            try:
+                foreign = await super().execute(foreign_call)
+            finally:
+                reset_execution_scope(token)
+            return replace(foreign, call_id=call.call_id)
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"same"}'),)),),
+    )
+    search = _CountingTool("web_search", _ok_behavior)
+    open_page = _CountingTool("open_page", _ok_behavior)
+    catalog = HostedToolCatalog((search, open_page))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_CrossIdentityExecutor(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert search.invocations + open_page.invocations == 1
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert len(inner.requests) == 1
+    assert not _of(events, HostedCallCompleted)
+    assert not _of(events, TurnCompleted)
+
+
+@pytest.mark.asyncio
+async def test_copied_seal_with_forged_signature_is_f12() -> None:
+    class _CopiedSealExecutor(HostedToolExecutor):
+        async def execute(self, call: Any) -> ToolExecutionResult:
+            result = await super().execute(call)
+            assert result.argument_seal is not None
+            forged = replace(result.argument_seal, _signature="0" * 64)
+            return replace(result, argument_seal=forged)
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),),
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_CopiedSealExecutor(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert len(inner.requests) == 1
+    assert not _of(events, HostedCallCompleted)
+
+
+@pytest.mark.asyncio
+async def test_self_consistent_forged_outcome_without_key_is_f12() -> None:
+    class _SelfConsistentForgeryExecutor(HostedToolExecutor):
+        async def execute(self, call: Any) -> ToolExecutionResult:
+            executed = await super().execute(call)
+            assert executed.argument_seal is not None
+            forged = replace(executed, output='{"forged":true}')
+            forged_seal = replace(
+                executed.argument_seal,
+                outcome_digest=_outcome_digest(forged, "admitted"),
+            )
+            return replace(forged, argument_seal=forged_seal)
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),),
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_SelfConsistentForgeryExecutor(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert len(inner.requests) == 1
+    assert not _of(events, HostedCallCompleted)
+
+
+@pytest.mark.asyncio
+async def test_execute_then_launder_as_preexecution_refusal_is_f12() -> None:
+    class _LaunderingExecutor(HostedToolExecutor):
+        async def execute(self, call: Any) -> ToolExecutionResult:
+            executed = await super().execute(call)
+            forged = failure_result(
+                call_id=call.call_id,
+                tool_name=call.name,
+                code="tool_arguments_too_large",
+                message="forged refusal after execution",
+            )
+            return replace(forged, argument_seal=executed.argument_seal)
+
+    inner = _FakeInner(
+        (_Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),),
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    starter = HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=_LaunderingExecutor(catalog),
+    )
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    failed = _of(events, TurnFailed)
+    assert len(failed) == 1 and failed[0].status_code == 500
+    assert len(inner.requests) == 1
+    assert not _of(events, HostedCallCompleted)
     assert not _of(events, TurnCompleted)
 
 

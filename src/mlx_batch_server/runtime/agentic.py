@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import re
+import secrets
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -28,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from ..tools.agent_loop import (
     AgentLoop,
-    AgentLoopLimitExceeded,
     ToolExecutionResult,
     hosted_agent_loop_policy,
 )
@@ -41,9 +41,11 @@ from ..tools.hosted import (
     HostedToolPlan,
     canonical_json,
     continuation_tool_arguments,
-    failure_result,
+    current_execution_scope,
     reset_execution_scope,
     result_identities,
+    runtime_refusal_result,
+    sealed_opening_action,
     set_execution_scope,
     validate_result_payload,
     validate_sealed_action,
@@ -263,6 +265,7 @@ class _HostedAgenticTurn:
         # Request-global authority. AgentLoop round ids are scheduling detail,
         # never a namespace in which an outward call id may become a new effect.
         self._claimed_hosted_calls: dict[str, tuple[str, str]] = {}
+        self._runtime_attestation_authority = secrets.token_bytes(32)
         self._event_sequence = 0
         self._loop = asyncio.get_running_loop()
         self._lock = threading.Lock()
@@ -465,7 +468,13 @@ class _HostedAgenticTurn:
                 )
             finally:
                 reset_execution_scope(scope_token)
-            messages.append(_assistant_tool_call_message(calls, results))
+            argument_mappings = tuple(
+                self._argument_mapping(call, result)
+                for call, result in zip(calls, results, strict=True)
+            )
+            messages.append(
+                _assistant_tool_call_message(calls, results, argument_mappings)
+            )
             for call, result in zip(calls, results, strict=True):
                 messages.append(_tool_result_message(call, result))
             if limit_hit or any(not result.ok for result in results):
@@ -506,39 +515,58 @@ class _HostedAgenticTurn:
             raise HostedRuntimeIntegrityError(
                 "model selected a tool outside its round plan"
             )
+        limit_message: str | None = None
         if self._hosted_uses + len(calls) > self._plan.policy.max_uses:
+            limit_message = "hosted tool maximum uses was reached"
+        elif loop.rounds >= self._starter._max_tool_rounds:
+            limit_message = "the hosted tool round limit was reached"
+        if limit_message is not None:
             results = tuple(
-                failure_result(
-                    call_id=call.call_id,
-                    tool_name=call.name,
+                runtime_refusal_result(
+                    call,
                     code="tool_round_limit",
-                    message="hosted tool maximum uses was reached",
+                    message=limit_message,
+                    authority=self._runtime_attestation_authority,
                 )
                 for call in calls
             )
-            items = {call.call_id: self._emit_hosted_started(call) for call in calls}
+            items = {
+                call.call_id: self._emit_hosted_started(
+                    call,
+                    sealed_opening_action(
+                        call,
+                        result,
+                        executor=self._starter._executor,
+                        runtime_authority=self._runtime_attestation_authority,
+                    ),
+                )
+                for call, result in zip(calls, results, strict=True)
+            }
             for call, result in zip(calls, results, strict=True):
                 self._emit_hosted_result_and_receipt(items[call.call_id], call, result)
             return results, True
         self._hosted_uses += len(calls)
-        items = {call.call_id: self._emit_hosted_started(call) for call in calls}
-        limit_hit = False
+        admissions = self._starter._executor.admit_many(calls)
+        items = {
+            call.call_id: self._emit_hosted_started(
+                call,
+                self._starter._executor.opening_action(call, admissions[call.call_id]),
+            )
+            for call in calls
+        }
+        admission_scope_token = set_execution_scope(
+            replace(
+                current_execution_scope(),
+                argument_admissions=admissions,
+            )
+        )
         try:
             results = await loop.execute_round(
                 calls,
                 round_id=f"model-{round_index}",
             )
-        except AgentLoopLimitExceeded:
-            limit_hit = True
-            results = tuple(
-                failure_result(
-                    call_id=call.call_id,
-                    tool_name=call.name,
-                    code="tool_round_limit",
-                    message="the hosted tool round limit was reached",
-                )
-                for call in calls
-            )
+        finally:
+            reset_execution_scope(admission_scope_token)
         if len(results) != len(calls):  # pragma: no cover - loop contract
             raise HostedRuntimeIntegrityError(
                 "hosted execution returned a mismatched receipt set"
@@ -546,7 +574,7 @@ class _HostedAgenticTurn:
         results = self._charge_result_budget(calls, results)
         for call, result in zip(calls, results, strict=True):
             self._emit_hosted_result_and_receipt(items[call.call_id], call, result)
-        return results, limit_hit
+        return results, False
 
     def _charge_result_budget(
         self,
@@ -564,20 +592,21 @@ class _HostedAgenticTurn:
         charged: list[ToolExecutionResult] = []
         for call, result in zip(calls, results, strict=True):
             outcome = result
+            self._argument_mapping(call, outcome)
             if outcome.ok:
                 receipt = self._validated_receipt(call, outcome, "completed")
                 payload = self._validated_success_payload(call, outcome, receipt)
                 cost = _result_charge(payload)
                 if cost > self._result_chars_remaining:
-                    outcome = failure_result(
-                        call_id=call.call_id,
-                        tool_name=call.name,
+                    outcome = self._starter._executor.replace_with_failure(
+                        call,
+                        outcome,
                         code="result_budget_exceeded",
                         message=(
                             "hosted tool result exceeds the aggregate result "
                             "budget of this turn"
                         ),
-                        argument_seal=result.argument_seal,
+                        runtime_authority=self._runtime_attestation_authority,
                     )
                 else:
                     self._result_chars_remaining -= cost
@@ -760,10 +789,13 @@ class _HostedAgenticTurn:
         self._last_merged_usage = merged
         return merged
 
-    def _emit_hosted_started(self, call: ParsedToolCall) -> _HostedItem:
+    def _emit_hosted_started(
+        self,
+        call: ParsedToolCall,
+        opening_action: Mapping[str, Any],
+    ) -> _HostedItem:
         index = self._alloc_index()
         item_id = self._alloc_item_id(f"hosted_{call.call_id}")
-        opening_action = _opening_action(call, _call_action(call))
         item = _HostedItem(
             index=index,
             item_id=item_id,
@@ -811,6 +843,13 @@ class _HostedAgenticTurn:
         self._raise_if_cancelled()
         self._raise_if_deadline_expired()
         status = "completed" if result.ok else "failed"
+        self._argument_mapping(call, result)
+        opening_action = sealed_opening_action(
+            call,
+            result,
+            executor=self._starter._executor,
+            runtime_authority=self._runtime_attestation_authority,
+        )
         metadata = result.metadata or {}
         receipt = self._validated_receipt(call, result, status)
         result_event: HostedCallResult | None = None
@@ -827,6 +866,7 @@ class _HostedAgenticTurn:
             raise HostedRuntimeIntegrityError("hosted failure carried a result payload")
         sealed_action = self._sealed_action(
             call,
+            opening_action,
             result_event.result if result_event is not None else None,
             status,
         )
@@ -1003,39 +1043,46 @@ class _HostedAgenticTurn:
                     "hosted result media_type disagrees with its receipt mime"
                 )
 
+    def _argument_mapping(
+        self,
+        call: ParsedToolCall,
+        result: ToolExecutionResult,
+    ) -> dict[str, Any]:
+        try:
+            return continuation_tool_arguments(
+                call,
+                result,
+                executor=self._starter._executor,
+                runtime_authority=self._runtime_attestation_authority,
+            )
+        except (TypeError, ValueError) as error:
+            raise HostedRuntimeIntegrityError(
+                "hosted continuation argument identity changed after execution"
+            ) from error
+
     def _sealed_action(
         self,
         call: ParsedToolCall,
+        opening_action: Mapping[str, Any],
         result: Mapping[str, Any] | None,
         status: str,
     ) -> Mapping[str, Any]:
         """Build the final immutable sealed action (design D-B §2.2).
 
-        The model input supplies the requested query/url; on success the
-        proven result identities supply the search sources. A hosted call
-        whose arguments carry no usable identity seals the raw argument
-        string instead — deterministic, never fabricated semantics.
+        The attested argument mapping supplies the requested query/url; on
+        success the proven result identities supply the search sources.
         """
 
         kind = ACTION_KIND_FOR_TOOL.get(call.name)
-        model_action = _call_action(call)
         if kind in {"fetch", "open_page"}:
-            url = model_action.get("url")
-            if not isinstance(url, str) or not url.strip():
-                url = call.arguments.strip() or "{}"
+            url = opening_action["url"]
             action: dict[str, Any] = {"kind": kind, "url": url}
         elif kind == "find_in_page":
-            url = model_action.get("url")
-            pattern = model_action.get("pattern")
-            if not isinstance(url, str) or not url.strip():
-                url = call.arguments.strip() or "{}"
-            if not isinstance(pattern, str) or not pattern:
-                pattern = call.arguments.strip() or "{}"
+            url = opening_action["url"]
+            pattern = opening_action["pattern"]
             action = {"kind": "find_in_page", "url": url, "pattern": pattern}
         else:
-            query = model_action.get("query")
-            if not isinstance(query, str) or not query.strip():
-                query = call.arguments.strip() or "{}"
+            query = opening_action["query"]
             sources: list[str] = []
             if status == "completed" and result is not None:
                 seen: set[str] = set()
@@ -1561,41 +1608,6 @@ def _citation_sources(
     return tuple(sources)
 
 
-def _call_action(call: ParsedToolCall) -> Mapping[str, Any]:
-    try:
-        parsed = json.loads(call.arguments)
-    except (TypeError, ValueError):
-        return {"arguments": call.arguments}
-    if isinstance(parsed, dict):
-        return parsed
-    return {"arguments": call.arguments}
-
-
-def _opening_action(
-    call: ParsedToolCall,
-    model_action: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    """Project a total opening action without claiming successful validation."""
-
-    fallback = call.arguments.strip() or "{}"
-    if call.name == "web_search":
-        query = model_action.get("query")
-        return {
-            "query": query if isinstance(query, str) and query.strip() else fallback
-        }
-    if call.name in {"web_fetch", "open_page"}:
-        url = model_action.get("url")
-        return {"url": url if isinstance(url, str) and url.strip() else fallback}
-    if call.name == "find_in_page":
-        url = model_action.get("url")
-        pattern = model_action.get("pattern")
-        return {
-            "url": url if isinstance(url, str) and url.strip() else fallback,
-            "pattern": (pattern if isinstance(pattern, str) and pattern else fallback),
-        }
-    raise HostedRuntimeIntegrityError("hosted opening action has an unknown tool")
-
-
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
 
 
@@ -1623,8 +1635,9 @@ def _message_urls(messages: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
 def _assistant_tool_call_message(
     calls: Sequence[ParsedToolCall],
     results: Sequence[ToolExecutionResult],
+    argument_mappings: Sequence[Mapping[str, Any]],
 ) -> Mapping[str, Any]:
-    if len(calls) != len(results):
+    if len(calls) != len(results) or len(calls) != len(argument_mappings):
         raise HostedRuntimeIntegrityError(
             "hosted continuation received a mismatched receipt set"
         )
@@ -1637,25 +1650,14 @@ def _assistant_tool_call_message(
                 "type": "function",
                 "function": {
                     "name": call.name,
-                    "arguments": _model_tool_arguments(call, result),
+                    "arguments": dict(arguments),
                 },
             }
-            for call, result in zip(calls, results, strict=True)
+            for call, _result, arguments in zip(
+                calls, results, argument_mappings, strict=True
+            )
         ],
     }
-
-
-def _model_tool_arguments(
-    call: ParsedToolCall,
-    result: ToolExecutionResult,
-) -> dict[str, Any]:
-    """Project only the executor-owned, integrity-checked argument mapping."""
-    try:
-        return continuation_tool_arguments(call, result)
-    except (TypeError, ValueError) as error:
-        raise HostedRuntimeIntegrityError(
-            "hosted continuation argument identity changed after execution"
-        ) from error
 
 
 def _insert_trusted_instruction(
