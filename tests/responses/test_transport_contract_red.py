@@ -1985,7 +1985,7 @@ def test_non_hosted_started_item_goldens_are_unchanged() -> None:
 
 
 def test_hosted_fetch_actions_have_no_responses_item_rendering() -> None:
-    with pytest.raises(ValueError, match="search actions"):
+    with pytest.raises(ValueError, match="no Responses hosted item rendering"):
         render_hosted_call_item("ws_2", "completed", {"kind": "fetch", "url": "u"})
 
 

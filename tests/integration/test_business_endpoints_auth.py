@@ -135,8 +135,9 @@ def test_business_endpoints_accept_static_api_key(
             )
 
     class FakeAnthropicModel:
-        def generate(self, request, *, admission):
+        def generate(self, request, *, admission, trace_id):
             assert admission is not None
+            assert trace_id.startswith("req_")
             return _DumpableResponse(
                 {
                     "id": "msg_test",

@@ -32,7 +32,9 @@ def _state(
 
 
 def test_tracked_state_is_the_exact_w1_contract() -> None:
-    expected = _state()
+    """The historical W1 gate node follows the exact committed phase receipt."""
+
+    expected = _state(phase=phase_gate.RELEASE_PHASE, deferred=())
 
     assert STATE.read_text(encoding="utf-8") == expected
     assert phase_gate.load_index_state() == phase_gate.parse_state_text(expected)

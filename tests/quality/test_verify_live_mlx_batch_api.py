@@ -636,8 +636,19 @@ class _FakeSafeFetcher:
                 "URL target is not a public address",
             )
         final_url = "https://public.example/final?secret=hidden"
-        hop = FetchHopReceipt(
+        redirect_hop = FetchHopReceipt(
             url,
+            ("1.1.1.1",),
+            "1.1.1.1",
+            "1.1.1.1",
+            302,
+            final_url,
+            "identity",
+            0,
+            0,
+        )
+        final_hop = FetchHopReceipt(
+            final_url,
             ("1.1.1.1",),
             "1.1.1.1",
             "1.1.1.1",
@@ -651,7 +662,12 @@ class _FakeSafeFetcher:
             content=b"public fixture",
             media_type="text/plain",
             final_url=final_url,
-            transport_receipt=FetchTransportReceipt(url, final_url, (hop,)),
+            redirect_count=1,
+            transport_receipt=FetchTransportReceipt(
+                url,
+                final_url,
+                (redirect_hop, final_hop),
+            ),
         )
 
 

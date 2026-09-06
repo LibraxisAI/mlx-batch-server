@@ -39,7 +39,13 @@ from mlx_batch_server.runtime.role_manifest import packaged_role_manifest_path
 from mlx_batch_server.runtime.roles import RoleDirectory
 from mlx_batch_server.runtime.service import RuntimeStartService
 from mlx_batch_server.tools.brave_search import BraveSearchProvider
-from mlx_batch_server.tools.hosted import HostedToolExecutor
+from mlx_batch_server.tools.hosted import (
+    HostedExecutionPolicy,
+    HostedExecutionScope,
+    HostedToolExecutor,
+    reset_execution_scope,
+    set_execution_scope,
+)
 from mlx_batch_server.tools.hosted_web import (
     HostedFindInPageTool,
     HostedOpenPageTool,
@@ -595,14 +601,21 @@ async def test_production_catalog_missing_provider_is_a_typed_failure() -> None:
     catalog = compose_production_hosted_catalog(brave_api_key=None)
     executor = HostedToolExecutor(catalog)
 
-    result = await executor.execute(
-        ParsedToolCall(
-            index=0,
-            call_id="search_1",
-            name="web_search",
-            arguments='{"query":"loctree"}',
-        )
+    scope = HostedExecutionScope(
+        policy=HostedExecutionPolicy(protocol="openai_responses")
     )
+    token = set_execution_scope(scope)
+    try:
+        result = await executor.execute(
+            ParsedToolCall(
+                index=0,
+                call_id="search_1",
+                name="web_search",
+                arguments='{"query":"loctree"}',
+            )
+        )
+    finally:
+        reset_execution_scope(token)
 
     assert result.ok is False
     assert result.metadata is not None

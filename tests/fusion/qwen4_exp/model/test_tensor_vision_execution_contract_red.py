@@ -81,11 +81,14 @@ def test_sealed_messages_render_all_roles_parts_and_images_in_order() -> None:
 
 
 def test_owner_thread_builds_existing_vision_components_from_load_plan() -> None:
+    owner_load = _segment(TENSOR_PATH, "_PreparedQwen4ExpExecutionFactory")
     runtime = _segment(TENSOR_PATH, "_Qwen4ExpTensorRuntime")
     prepare = _segment(TENSOR_PATH, "_prepare_vision_prompt")
-    assert "Qwen4ExpTensorPreprocessor.from_load_plan(plan)" in runtime
-    assert "Qwen4ExpVisionTensorTower.from_load_plan(" in runtime
-    assert "shard_set," in runtime
+    assert "Qwen4ExpTensorPreprocessor.from_load_plan(plan)" in owner_load
+    assert "Qwen4ExpVisionTensorTower.from_load_plan(" in owner_load
+    assert "shard_set," in owner_load
+    assert "self._vision_preprocessor = vision_preprocessor" in runtime
+    assert "self._vision_tower = vision_tower" in runtime
     assert "VisionProcessingRequest(" in prepare
     assert "VisionTowerRequest(" in prepare
     assert "build_vision_splice_plan(" in prepare
