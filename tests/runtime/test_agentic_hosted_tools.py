@@ -344,9 +344,13 @@ def _raising_behavior(code: str, message: str):
     return behavior
 
 
-def _request(tools: tuple[Mapping[str, Any], ...]) -> GenerationRequest:
+def _request(
+    tools: tuple[Mapping[str, Any], ...],
+    *,
+    response_id: str = "resp_hosted",
+) -> GenerationRequest:
     return GenerationRequest(
-        response_id="resp_hosted",
+        response_id=response_id,
         runtime=RuntimeKey(model_id="model-x"),
         messages=({"role": "user", "content": "co pisza o loctree?"},),
         tools=tools,
@@ -1362,6 +1366,7 @@ async def test_concurrent_requests_have_isolated_execution_scopes() -> None:
     scope_a, scope_b = scopes["a"], scopes["b"]
     assert scope_a.cancel is token_a
     assert scope_b.cancel is token_b
+    assert scope_a.result_attestation_authority != scope_b.result_attestation_authority
     assert scope_a.deadline is not None and scope_b.deadline is not None
     # The two overlapping requests observed their own absolute budgets.
     assert 3.0 < (scope_b.deadline - scope_a.deadline) < 5.0
@@ -1643,6 +1648,259 @@ async def test_execute_then_launder_as_preexecution_refusal_is_f12() -> None:
     assert len(inner.requests) == 1
     assert not _of(events, HostedCallCompleted)
     assert not _of(events, TurnCompleted)
+
+
+class _TurnReplayExecutor(HostedToolExecutor):
+    """Return one genuine result twice without a second provider effect."""
+
+    def __init__(self, catalog: HostedToolCatalog, *, concurrent: bool = False) -> None:
+        super().__init__(catalog)
+        self.saved: ToolExecutionResult | None = None
+        self.lock = asyncio.Lock() if concurrent else None
+
+    async def execute(self, call: Any) -> ToolExecutionResult:
+        if self.lock is None:
+            if self.saved is None:
+                self.saved = await super().execute(call)
+            return self.saved
+        async with self.lock:
+            if self.saved is None:
+                self.saved = await super().execute(call)
+            return self.saved
+
+
+def _replay_starter(
+    inner: _FakeInner,
+    catalog: HostedToolCatalog,
+    executor: HostedToolExecutor,
+) -> HostedAgenticRuntimeStarter:
+    return HostedAgenticRuntimeStarter(
+        inner,
+        catalog=catalog,
+        executor=executor,
+    )
+
+
+def _assert_failed_result_voice(events: list[Any]) -> None:
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1
+    assert receipts[0].status == "failed"
+    assert receipts[0].receipt["error"]["code"] == "invalid_tool_result"
+    assert not _of(events, HostedCallResult)
+    assert len(_of(events, TurnCompleted)) == 1
+    assert not _of(events, TurnFailed)
+    assert _of(events, TextCompleted)[-1].text
+
+
+@pytest.mark.asyncio
+async def test_genuine_result_seal_cannot_replay_into_a_sequential_turn() -> None:
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_same", "web_search", '{"query":"same"}'),)),
+            _Round(text="first complete"),
+            _Round(tool_calls=(("call_same", "web_search", '{"query":"same"}'),)),
+            _Round(text="second reports the rejected stale result"),
+        )
+    )
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    executor = _TurnReplayExecutor(catalog)
+    starter = _replay_starter(inner, catalog, executor)
+
+    first, _ = await _drive(
+        starter,
+        _request(({"type": "web_search"},), response_id="resp_one"),
+    )
+    second, _ = await _drive(
+        starter,
+        _request(({"type": "web_search"},), response_id="resp_two"),
+    )
+
+    assert tool.invocations == 1
+    assert [event.status for event in _of(first, HostedCallCompleted)] == ["completed"]
+    assert len(_of(first, HostedCallResult)) == 1
+    _assert_failed_result_voice(second)
+    assert len(inner.requests) == 4
+    assert inner.requests[3].tools == ()
+    assert inner.requests[3].sampling["tool_choice"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_genuine_result_seal_cannot_race_into_a_concurrent_turn() -> None:
+    tool = _CountingTool("web_search", _ok_behavior)
+    catalog = HostedToolCatalog((tool,))
+    executor = _TurnReplayExecutor(catalog, concurrent=True)
+    inner_a = _FakeInner(
+        (
+            _Round(tool_calls=(("call_same", "web_search", '{"query":"same"}'),)),
+            _Round(text="turn a final voice"),
+        )
+    )
+    inner_b = _FakeInner(
+        (
+            _Round(tool_calls=(("call_same", "web_search", '{"query":"same"}'),)),
+            _Round(text="turn b final voice"),
+        )
+    )
+
+    (events_a, _), (events_b, _) = await asyncio.gather(
+        _drive(
+            _replay_starter(inner_a, catalog, executor),
+            _request(({"type": "web_search"},), response_id="resp_race_a"),
+        ),
+        _drive(
+            _replay_starter(inner_b, catalog, executor),
+            _request(({"type": "web_search"},), response_id="resp_race_b"),
+        ),
+    )
+
+    assert tool.invocations == 1
+    receipts = [
+        _of(events_a, HostedCallCompleted)[0],
+        _of(events_b, HostedCallCompleted)[0],
+    ]
+    assert sorted(receipt.status for receipt in receipts) == ["completed", "failed"]
+    assert (
+        len(_of(events_a, HostedCallResult)) + len(_of(events_b, HostedCallResult)) == 1
+    )
+    failed_events = events_a if receipts[0].status == "failed" else events_b
+    _assert_failed_result_voice(failed_events)
+    for events in (events_a, events_b):
+        assert len(_of(events, TurnCompleted)) == 1
+        assert not _of(events, TurnFailed)
+        assert _of(events, TextCompleted)[-1].text
+
+
+def _hostile_result_payload(case: str) -> Any:
+    if case in {"over-depth", "at-depth-limit"}:
+        payload: Any = "🚀"
+        depth = 65 if case == "over-depth" else 64
+        for _ in range(depth):
+            payload = [payload]
+    elif case == "self-cycle":
+        payload = []
+        payload.append(payload)
+    elif case == "mutual-cycle":
+        left: list[Any] = []
+        right: list[Any] = [left]
+        left.append(right)
+        payload = left
+    elif case in {"high-surrogate", "low-surrogate"}:
+        payload = {
+            "high-surrogate": "\ud800",
+            "low-surrogate": "\udfff",
+        }[case]
+    elif case in {"nested-high-surrogate", "nested-low-surrogate"}:
+        surrogate = {
+            "nested-high-surrogate": "\ud800",
+            "nested-low-surrogate": "\udfff",
+        }[case]
+        payload = {"nested": [surrogate]}
+    elif case == "nan":
+        payload = {"value": float("nan")}
+    elif case == "infinity":
+        payload = {"value": float("inf")}
+    elif case == "negative-infinity":
+        payload = {"value": float("-inf")}
+    elif case == "finite-encoder-overflow":
+        payload = {"value": 10**5000}
+    elif case == "oversized-scalar":
+        payload = {"value": "RESULT_SECRET_SENTINEL_" + "x" * 1_048_576}
+    elif case == "oversized-container":
+        payload = [None] * 131_073
+    else:
+        raise AssertionError(case)
+    return payload
+
+
+def _success_with_model_payload(payload: Any) -> HostedToolSuccess:
+    success = _search_success("q", _OK_RESULTS)
+    return HostedToolSuccess(
+        payload=payload,
+        receipt_fields=success.receipt_fields,
+        result=success.result,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    (
+        "over-depth",
+        "self-cycle",
+        "mutual-cycle",
+        "high-surrogate",
+        "low-surrogate",
+        "nested-high-surrogate",
+        "nested-low-surrogate",
+        "nan",
+        "infinity",
+        "negative-infinity",
+        "finite-encoder-overflow",
+        "oversized-scalar",
+        "oversized-container",
+    ),
+)
+async def test_total_result_admission_keeps_one_bounded_final_voice(case: str) -> None:
+    payload = _hostile_result_payload(case)
+
+    async def hostile(_arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        return _success_with_model_payload(payload)
+
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),
+            _Round(text="I could not use the invalid tool result."),
+        )
+    )
+    tool = _CountingTool("web_search", hostile)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    _assert_failed_result_voice(events)
+    assert len(inner.requests) == 2
+    continuation = inner.requests[1]
+    assert continuation.tools == ()
+    assert continuation.sampling["tool_choice"] == "none"
+    rendered = _chat_template_messages(continuation.messages)
+    assert json.dumps(rendered, ensure_ascii=False).encode("utf-8")
+    assert "RESULT_SECRET_SENTINEL" not in repr(events)
+    assert "RESULT_SECRET_SENTINEL" not in repr(continuation.messages)
+
+
+@pytest.mark.asyncio
+async def test_result_payload_at_depth_limit_and_supplementary_unicode_is_canonical() -> (
+    None
+):
+    payload = _hostile_result_payload("at-depth-limit")
+
+    async def valid(_arguments: Mapping[str, Any]) -> HostedToolSuccess:
+        return _success_with_model_payload(payload)
+
+    inner = _FakeInner(
+        (
+            _Round(tool_calls=(("call_a", "web_search", '{"query":"q"}'),)),
+            _Round(text="valid result accepted"),
+        )
+    )
+    tool = _CountingTool("web_search", valid)
+    starter, _ = _starter(inner, (tool,))
+    events, _ = await _drive(starter, _request(({"type": "web_search"},)))
+
+    assert tool.invocations == 1
+    receipts = _of(events, HostedCallCompleted)
+    assert len(receipts) == 1 and receipts[0].status == "completed"
+    assert len(_of(events, HostedCallResult)) == 1
+    assert not _of(events, TurnFailed)
+    tool_message = next(
+        message
+        for message in inner.requests[1].messages
+        if message.get("role") == "tool"
+    )
+    assert json.loads(tool_message["content"]) == payload
+    rendered = _chat_template_messages(inner.requests[1].messages)
+    assert json.dumps(rendered, ensure_ascii=False).encode("utf-8")
 
 
 # -- W3-HR2-4 result emission, aggregate budget, citation filter -------------

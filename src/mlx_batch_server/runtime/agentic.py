@@ -35,6 +35,7 @@ from ..tools.agent_loop import (
 from ..tools.hosted import (
     ACTION_KIND_FOR_TOOL,
     HostedExecutionScope,
+    HostedResultScopeMismatch,
     HostedRoundMode,
     HostedToolCatalog,
     HostedToolExecutor,
@@ -266,6 +267,7 @@ class _HostedAgenticTurn:
         # never a namespace in which an outward call id may become a new effect.
         self._claimed_hosted_calls: dict[str, tuple[str, str]] = {}
         self._runtime_attestation_authority = secrets.token_bytes(32)
+        self._result_attestation_authority = secrets.token_bytes(32)
         self._event_sequence = 0
         self._loop = asyncio.get_running_loop()
         self._lock = threading.Lock()
@@ -353,6 +355,7 @@ class _HostedAgenticTurn:
             HostedExecutionScope(
                 deadline=deadline,
                 cancel=self._token,
+                result_attestation_authority=self._result_attestation_authority,
                 policy=(
                     None
                     if self._plan is None
@@ -453,6 +456,7 @@ class _HostedAgenticTurn:
             current_scope = HostedExecutionScope(
                 deadline=self._deadline,
                 cancel=self._token,
+                result_attestation_authority=self._result_attestation_authority,
                 policy=(
                     None
                     if self._plan is None
@@ -537,6 +541,7 @@ class _HostedAgenticTurn:
                         call,
                         result,
                         executor=self._starter._executor,
+                        result_authority=self._result_attestation_authority,
                         runtime_authority=self._runtime_attestation_authority,
                     ),
                 )
@@ -571,10 +576,47 @@ class _HostedAgenticTurn:
             raise HostedRuntimeIntegrityError(
                 "hosted execution returned a mismatched receipt set"
             )
+        results = self._admit_execution_results(calls, results, admissions)
         results = self._charge_result_budget(calls, results)
         for call, result in zip(calls, results, strict=True):
             self._emit_hosted_result_and_receipt(items[call.call_id], call, result)
         return results, False
+
+    def _admit_execution_results(
+        self,
+        calls: tuple[ParsedToolCall, ...],
+        results: tuple[ToolExecutionResult, ...],
+        admissions: Mapping[str, object],
+    ) -> tuple[ToolExecutionResult, ...]:
+        admitted: list[ToolExecutionResult] = []
+        for call, candidate in zip(calls, results, strict=True):
+            admitted_result = candidate
+            try:
+                self._starter._executor.verify_result(
+                    call,
+                    candidate,
+                    result_authority=self._result_attestation_authority,
+                    runtime_authority=self._runtime_attestation_authority,
+                )
+            except HostedResultScopeMismatch:
+                admitted_result = self._starter._executor.invalid_result(
+                    call,
+                    admissions[call.call_id],
+                    result_authority=self._result_attestation_authority,
+                )
+            except (TypeError, ValueError):
+                metadata = candidate.metadata or {}
+                if candidate.argument_seal is not None or not isinstance(
+                    metadata.get("exception_type"), str
+                ):
+                    raise
+                admitted_result = self._starter._executor.invalid_result(
+                    call,
+                    admissions[call.call_id],
+                    result_authority=self._result_attestation_authority,
+                )
+            admitted.append(admitted_result)
+        return tuple(admitted)
 
     def _charge_result_budget(
         self,
@@ -606,6 +648,7 @@ class _HostedAgenticTurn:
                             "hosted tool result exceeds the aggregate result "
                             "budget of this turn"
                         ),
+                        result_authority=self._result_attestation_authority,
                         runtime_authority=self._runtime_attestation_authority,
                     )
                 else:
@@ -848,6 +891,7 @@ class _HostedAgenticTurn:
             call,
             result,
             executor=self._starter._executor,
+            result_authority=self._result_attestation_authority,
             runtime_authority=self._runtime_attestation_authority,
         )
         metadata = result.metadata or {}
@@ -1053,6 +1097,7 @@ class _HostedAgenticTurn:
                 call,
                 result,
                 executor=self._starter._executor,
+                result_authority=self._result_attestation_authority,
                 runtime_authority=self._runtime_attestation_authority,
             )
         except (TypeError, ValueError) as error:

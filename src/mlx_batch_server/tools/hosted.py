@@ -183,6 +183,10 @@ class ResultBudgetExceeded(ValueError):
     """A structurally valid result payload exceeds its per-call bound."""
 
 
+class HostedResultScopeMismatch(ValueError):
+    """An authentic-looking execution result belongs to another turn."""
+
+
 def canonical_json(value: Any) -> str:
     """The one canonical compact/sorted JSON representation used for digests."""
 
@@ -660,6 +664,11 @@ class HostedExecutionScope:
     deadline: float | None = None
     cancel: ExecutionCancelCheck | None = None
     policy: HostedExecutionPolicy | None = None
+    result_attestation_authority: bytes = field(
+        default_factory=lambda: secrets.token_bytes(32),
+        repr=False,
+        compare=False,
+    )
     argument_admissions: Mapping[str, object] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -879,6 +888,8 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
 
 _MAX_ARGUMENT_DEPTH = 64
 _MAX_ARGUMENT_NODES = 131_072
+_MAX_RESULT_PAYLOAD_DEPTH = 64
+_MAX_RESULT_PAYLOAD_NODES = 131_072
 _PUBLIC_ACTION_TEXT_LIMIT = 2_048
 _REJECTED_ACTION_TEXT = "[arguments rejected]"
 _OMITTED_ACTION_TEXT = "[arguments omitted]"
@@ -956,7 +967,8 @@ class HostedToolExecutor:
 
     async def execute(self, call: ParsedToolCall) -> ToolExecutionResult:
         started = time.monotonic()
-        scoped = current_execution_scope().argument_admissions.get(call.call_id)
+        scope = current_execution_scope()
+        scoped = scope.argument_admissions.get(call.call_id)
         admission = (
             self._admit(call) if scoped is None else self._require_pending(call, scoped)
         )
@@ -971,11 +983,24 @@ class HostedToolExecutor:
                 ),
                 "tool_not_allowed": "tool is not an admitted hosted tool",
             }[code]
-            return self._failure(call, code, message, started, admission=admission)
+            return self._failure(
+                call,
+                code,
+                message,
+                started,
+                admission=admission,
+                result_authority=scope.result_attestation_authority,
+            )
         tool = self._catalog.get(call.name)
         if tool is None:  # pragma: no cover - sealed by _admit
             raise ValueError("admitted hosted tool disappeared from its catalog")
-        return await self._invoke(tool, call, admission, started)
+        return await self._invoke(
+            tool,
+            call,
+            admission,
+            started,
+            result_authority=scope.result_attestation_authority,
+        )
 
     def _admit(self, call: ParsedToolCall) -> _PendingArgumentAdmission:
         source_digest = hashlib.sha256(b"").hexdigest()
@@ -1061,6 +1086,8 @@ class HostedToolExecutor:
         call: ParsedToolCall,
         admission: _PendingArgumentAdmission,
         started: float,
+        *,
+        result_authority: bytes,
     ) -> ToolExecutionResult:
         scope = current_execution_scope()
         if scope.cancel is not None and scope.cancel.cancelled:
@@ -1077,13 +1104,19 @@ class HostedToolExecutor:
                 "hosted execution policy is missing",
                 started,
                 admission=refused,
+                result_authority=result_authority,
             )
         try:
             async with asyncio.timeout(self._per_call_timeout_s):
                 success = await tool.invoke(admission.value, policy=scope.policy)
         except HostedToolError as error:
             return self._failure(
-                call, error.code, error.message, started, admission=admission
+                call,
+                error.code,
+                error.message,
+                started,
+                admission=admission,
+                result_authority=result_authority,
             )
         except TimeoutError:
             return self._failure(
@@ -1092,6 +1125,7 @@ class HostedToolExecutor:
                 "hosted tool call exceeded its per-call time budget",
                 started,
                 admission=admission,
+                result_authority=result_authority,
             )
         except asyncio.CancelledError:
             raise
@@ -1102,8 +1136,15 @@ class HostedToolExecutor:
                 UNEXPECTED_EXECUTION_FAILURE_MESSAGE,
                 started,
                 admission=admission,
+                result_authority=result_authority,
             )
-        return self._success(call, success, started, admission)
+        return self._success(
+            call,
+            success,
+            started,
+            admission,
+            result_authority=result_authority,
+        )
 
     def _success(
         self,
@@ -1111,6 +1152,8 @@ class HostedToolExecutor:
         success: HostedToolSuccess,
         started: float,
         admission: _PendingArgumentAdmission,
+        *,
+        result_authority: bytes,
     ) -> ToolExecutionResult:
         if not isinstance(success, HostedToolSuccess):
             return self._failure(
@@ -1119,16 +1162,26 @@ class HostedToolExecutor:
                 "hosted tool returned no explicit success receipt",
                 started,
                 admission=admission,
+                result_authority=result_authority,
             )
         try:
-            output = _encode_json(success.payload)
-        except (TypeError, ValueError):
+            canonical_payload = _canonical_json_copy(
+                success.payload,
+                max_depth=_MAX_RESULT_PAYLOAD_DEPTH,
+                max_nodes=_MAX_RESULT_PAYLOAD_NODES,
+                max_bytes=MAX_RESULT_BYTES,
+            )
+            output = _encode_json(canonical_payload)
+            if len(output.encode("utf-8")) > MAX_RESULT_BYTES:
+                raise ValueError("hosted tool payload exceeds its byte limit")
+        except Exception:
             return self._failure(
                 call,
                 "invalid_tool_result",
                 "hosted tool payload is not JSON-compatible",
                 started,
                 admission=admission,
+                result_authority=result_authority,
             )
         validated_result: dict[str, Any] | None = None
         if success.result is not None:
@@ -1144,6 +1197,7 @@ class HostedToolExecutor:
                     "hosted tool result exceeds its per-call budget",
                     started,
                     admission=admission,
+                    result_authority=result_authority,
                 )
             except (TypeError, ValueError):
                 return self._failure(
@@ -1152,6 +1206,7 @@ class HostedToolExecutor:
                     "hosted tool produced an invalid result payload",
                     started,
                     admission=admission,
+                    result_authority=result_authority,
                 )
         try:
             receipt = build_receipt(
@@ -1168,6 +1223,7 @@ class HostedToolExecutor:
                 "hosted tool produced an invalid success receipt",
                 started,
                 admission=admission,
+                result_authority=result_authority,
             )
         metadata: dict[str, Any] = {"tool_name": call.name, "receipt": receipt}
         if validated_result is not None:
@@ -1177,7 +1233,11 @@ class HostedToolExecutor:
             output=output,
             metadata=metadata,
         )
-        return self._seal_result(admission, result)
+        return self._seal_result(
+            admission,
+            result,
+            result_authority=result_authority,
+        )
 
     def _failure(
         self,
@@ -1187,6 +1247,7 @@ class HostedToolExecutor:
         started: float,
         *,
         admission: _PendingArgumentAdmission,
+        result_authority: bytes,
     ) -> ToolExecutionResult:
         result = failure_result(
             call_id=call.call_id,
@@ -1195,13 +1256,20 @@ class HostedToolExecutor:
             message=message,
             duration_ms=_duration_ms(started),
         )
-        return self._seal_result(admission, result)
+        return self._seal_result(
+            admission,
+            result,
+            result_authority=result_authority,
+        )
 
     def _seal_result(
         self,
         admission: _PendingArgumentAdmission,
         result: ToolExecutionResult,
+        *,
+        result_authority: bytes,
     ) -> ToolExecutionResult:
+        result_authority = _require_attestation_authority(result_authority)
         seal = ToolArgumentSeal(
             call_id=admission.call_id,
             tool_name=admission.tool_name,
@@ -1209,12 +1277,19 @@ class HostedToolExecutor:
             canonical_json=admission.canonical_json,
             value=admission.value,
             disposition=admission.disposition,
+            execution_scope_digest=_authority_digest(result_authority),
             outcome_digest=_outcome_digest(result, admission.disposition),
             _signature="",
         )
         seal = replace(
             seal,
-            _signature=_attestation_signature(self.__attestation_key, seal),
+            _signature=_attestation_signature(
+                _execution_attestation_key(
+                    self.__attestation_key,
+                    result_authority,
+                ),
+                seal,
+            ),
         )
         return replace(result, argument_seal=seal)
 
@@ -1223,12 +1298,14 @@ class HostedToolExecutor:
         call: ParsedToolCall,
         result: ToolExecutionResult,
         *,
+        result_authority: bytes,
         runtime_authority: bytes,
     ) -> dict[str, Any]:
         return _verify_argument_attestation(
             call,
             result,
             executor_key=self.__attestation_key,
+            result_authority=result_authority,
             runtime_authority=runtime_authority,
         )
 
@@ -1239,11 +1316,17 @@ class HostedToolExecutor:
         *,
         code: str,
         message: str,
+        result_authority: bytes,
         runtime_authority: bytes,
     ) -> ToolExecutionResult:
         """Replace an admitted result without losing its execution provenance."""
 
-        self.verify_result(call, result, runtime_authority=runtime_authority)
+        self.verify_result(
+            call,
+            result,
+            result_authority=result_authority,
+            runtime_authority=runtime_authority,
+        )
         seal = result.argument_seal
         if seal is None or seal.disposition != "admitted":
             raise ValueError("only admitted execution results may be replaced")
@@ -1262,7 +1345,30 @@ class HostedToolExecutor:
             code=code,
             message=message,
         )
-        return self._seal_result(admission, replacement)
+        return self._seal_result(
+            admission,
+            replacement,
+            result_authority=result_authority,
+        )
+
+    def invalid_result(
+        self,
+        call: ParsedToolCall,
+        admission: object,
+        *,
+        result_authority: bytes,
+    ) -> ToolExecutionResult:
+        """Author a fresh typed failure for an untrusted execution result."""
+
+        pending = self._require_pending(call, admission)
+        return self._failure(
+            call,
+            "invalid_tool_result",
+            "hosted tool produced an invalid execution result",
+            time.monotonic(),
+            admission=pending,
+            result_authority=result_authority,
+        )
 
 
 def build_receipt(
@@ -1424,6 +1530,159 @@ def _plain_json_value(value: Any) -> Any:
     return value
 
 
+_NOT_JSON_SCALAR = object()
+_JsonCopyFrame = tuple[str, Any, int, Any, Any]
+
+
+def _charge_json_bytes(remaining: list[int], amount: int) -> None:
+    remaining[0] -= amount
+    if remaining[0] < 0:
+        raise ValueError("hosted tool payload exceeds its byte limit")
+
+
+def _copy_json_scalar(value: Any, remaining_bytes: list[int]) -> Any:
+    value_type = type(value)
+    if value_type is str:
+        _charge_json_bytes(remaining_bytes, len(value.encode("utf-8")) + 2)
+        return value
+    if value_type is float:
+        if not math.isfinite(value):
+            raise ValueError("non-finite JSON number is forbidden")
+        _charge_json_bytes(remaining_bytes, len(_encode_json(value)))
+        return value
+    if value_type is int:
+        _charge_json_bytes(remaining_bytes, len(str(value)))
+        return value
+    if value is None or value_type is bool:
+        _charge_json_bytes(remaining_bytes, len(_encode_json(value)))
+        return value
+    return _NOT_JSON_SCALAR
+
+
+def _push_json_mapping(
+    item: Mapping[str, Any],
+    *,
+    depth: int,
+    destination: Any,
+    key: Any,
+    active: set[int],
+    pending: list[_JsonCopyFrame],
+    nodes_remaining: int,
+    remaining_bytes: list[int],
+) -> None:
+    identity = id(item)
+    if identity in active:
+        raise ValueError("hosted tool payload contains a cycle")
+    if len(item) > nodes_remaining:
+        raise ValueError("hosted tool payload exceeds the structural node limit")
+    _charge_json_bytes(remaining_bytes, 2 if not item else len(item) + 1)
+    copied: dict[str, Any] = {}
+    destination[key] = copied
+    active.add(identity)
+    pending.append(("exit", identity, depth, None, None))
+    for child_key, child in reversed(tuple(item.items())):
+        if type(child_key) is not str:
+            raise ValueError("hosted tool payload object keys must be strings")
+        _charge_json_bytes(
+            remaining_bytes,
+            len(child_key.encode("utf-8")) + 3,
+        )
+        pending.append(("visit", child, depth + 1, copied, child_key))
+
+
+def _push_json_sequence(
+    item: list[Any] | tuple[Any, ...],
+    *,
+    depth: int,
+    destination: Any,
+    key: Any,
+    active: set[int],
+    pending: list[_JsonCopyFrame],
+    nodes_remaining: int,
+    remaining_bytes: list[int],
+) -> None:
+    identity = id(item)
+    if identity in active:
+        raise ValueError("hosted tool payload contains a cycle")
+    if len(item) > nodes_remaining:
+        raise ValueError("hosted tool payload exceeds the structural node limit")
+    _charge_json_bytes(remaining_bytes, 2 if not item else len(item) + 1)
+    copied: list[Any] = [None] * len(item)
+    destination[key] = copied
+    active.add(identity)
+    pending.append(("exit", identity, depth, None, None))
+    for index in range(len(item) - 1, -1, -1):
+        pending.append(("visit", item[index], depth + 1, copied, index))
+
+
+def _canonical_json_copy(
+    value: Any,
+    *,
+    max_depth: int,
+    max_nodes: int,
+    max_bytes: int,
+) -> Any:
+    """Copy one closed JSON value iteratively while rejecting cycles.
+
+    The returned tree contains only exact JSON scalar/container types.  The
+    explicit stack keeps adversarial depth and cycles outside Python's encoder
+    recursion, and the active-path set rejects both self and mutual cycles
+    without rejecting a finite shared subtree.
+    """
+
+    root: list[Any] = [None]
+    active: set[int] = set()
+    nodes = 0
+    remaining_bytes = [max_bytes]
+    # operation, source, depth, destination container, destination key/index
+    pending: list[_JsonCopyFrame] = [("visit", value, 0, root, 0)]
+
+    while pending:
+        operation, item, depth, destination, key = pending.pop()
+        if operation == "exit":
+            active.remove(item)
+            continue
+
+        nodes += 1
+        if nodes > max_nodes:
+            raise ValueError("hosted tool payload exceeds the structural node limit")
+        if depth > max_depth:
+            raise ValueError("hosted tool payload exceeds the nesting limit")
+
+        scalar = _copy_json_scalar(item, remaining_bytes)
+        if scalar is not _NOT_JSON_SCALAR:
+            destination[key] = scalar
+            continue
+
+        item_type = type(item)
+        if item_type is dict:
+            _push_json_mapping(
+                item,
+                depth=depth,
+                destination=destination,
+                key=key,
+                active=active,
+                pending=pending,
+                nodes_remaining=max_nodes - nodes + 1,
+                remaining_bytes=remaining_bytes,
+            )
+        elif item_type is list:
+            _push_json_sequence(
+                item,
+                depth=depth,
+                destination=destination,
+                key=key,
+                active=active,
+                pending=pending,
+                nodes_remaining=max_nodes - nodes + 1,
+                remaining_bytes=remaining_bytes,
+            )
+        else:
+            raise ValueError("hosted tool payload contains a non-JSON value")
+
+    return root[0]
+
+
 def _outcome_digest(result: ToolExecutionResult, disposition: str) -> str:
     payload = {
         "call_id": result.call_id,
@@ -1449,6 +1708,7 @@ def _attestation_signature(key: bytes, seal: ToolArgumentSeal) -> str:
         "source_digest": seal.source_digest,
         "canonical_json": seal.canonical_json,
         "disposition": seal.disposition,
+        "execution_scope_digest": seal.execution_scope_digest,
         "outcome_digest": seal.outcome_digest,
     }
     encoded = json.dumps(
@@ -1459,6 +1719,48 @@ def _attestation_signature(key: bytes, seal: ToolArgumentSeal) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hmac.new(key, encoded, hashlib.sha256).hexdigest()
+
+
+def _require_attestation_authority(authority: bytes) -> bytes:
+    if not isinstance(authority, bytes) or len(authority) != 32:
+        raise ValueError("hosted result attestation authority is invalid")
+    return authority
+
+
+def _authority_digest(authority: bytes) -> str:
+    return hashlib.sha256(_require_attestation_authority(authority)).hexdigest()
+
+
+def _execution_attestation_key(executor_key: bytes, authority: bytes) -> bytes:
+    """Derive a turn-only key; neither process nor turn key works alone."""
+
+    return hmac.new(
+        executor_key,
+        b"mlx-batch-server:hosted-result:v1\x00"
+        + _require_attestation_authority(authority),
+        hashlib.sha256,
+    ).digest()
+
+
+def _verification_attestation_key(
+    seal: ToolArgumentSeal,
+    *,
+    executor_key: bytes,
+    result_authority: bytes,
+    runtime_authority: bytes,
+) -> bytes:
+    if seal.disposition == "runtime_round_limit":
+        authority = _require_attestation_authority(runtime_authority)
+        if seal.execution_scope_digest != _authority_digest(authority):
+            raise ValueError("runtime refusal attestation scope changed")
+        return authority
+
+    authority = _require_attestation_authority(result_authority)
+    if seal.execution_scope_digest != _authority_digest(authority):
+        raise HostedResultScopeMismatch(
+            "hosted execution result belongs to another turn"
+        )
+    return _execution_attestation_key(executor_key, authority)
 
 
 def _bounded_action_text(value: Any, *, fallback: str) -> str:
@@ -1519,6 +1821,7 @@ def runtime_refusal_result(
         canonical_json="{}",
         value=MappingProxyType({}),
         disposition="runtime_round_limit",
+        execution_scope_digest=_authority_digest(authority),
         outcome_digest=_outcome_digest(result, "runtime_round_limit"),
         _signature="",
     )
@@ -1531,16 +1834,18 @@ def _verify_argument_attestation(
     result: ToolExecutionResult,
     *,
     executor_key: bytes,
+    result_authority: bytes,
     runtime_authority: bytes,
 ) -> dict[str, Any]:
     try:
         seal = result.argument_seal
         if not isinstance(seal, ToolArgumentSeal):
             raise ValueError("hosted execution result has no argument attestation")
-        expected_key = (
-            runtime_authority
-            if seal.disposition == "runtime_round_limit"
-            else executor_key
+        expected_key = _verification_attestation_key(
+            seal,
+            executor_key=executor_key,
+            result_authority=result_authority,
+            runtime_authority=runtime_authority,
         )
         expected_signature = _attestation_signature(expected_key, seal)
         if not hmac.compare_digest(seal._signature, expected_signature):
@@ -1600,6 +1905,7 @@ def continuation_tool_arguments(
     result: ToolExecutionResult,
     *,
     executor: HostedToolExecutor,
+    result_authority: bytes,
     runtime_authority: bytes,
 ) -> dict[str, Any]:
     """Return the sole attested mapping without reparsing the raw arguments."""
@@ -1607,6 +1913,7 @@ def continuation_tool_arguments(
     return executor.verify_result(
         call,
         result,
+        result_authority=result_authority,
         runtime_authority=runtime_authority,
     )
 
@@ -1616,12 +1923,14 @@ def sealed_opening_action(
     result: ToolExecutionResult,
     *,
     executor: HostedToolExecutor,
+    result_authority: bytes,
     runtime_authority: bytes,
 ) -> Mapping[str, Any]:
     arguments = continuation_tool_arguments(
         call,
         result,
         executor=executor,
+        result_authority=result_authority,
         runtime_authority=runtime_authority,
     )
     seal = result.argument_seal
@@ -1649,6 +1958,7 @@ __all__ = [
     "ExecutionCancelCheck",
     "HostedExecutionPolicy",
     "HostedExecutionScope",
+    "HostedResultScopeMismatch",
     "HostedRoundMode",
     "HostedTool",
     "HostedToolCatalog",

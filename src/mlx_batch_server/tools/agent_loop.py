@@ -54,6 +54,7 @@ class ToolArgumentSeal:
         "tool_not_allowed",
         "runtime_round_limit",
     ]
+    execution_scope_digest: str
     outcome_digest: str
     _signature: str = field(repr=False, compare=False)
 
