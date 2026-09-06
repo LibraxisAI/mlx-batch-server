@@ -286,7 +286,7 @@ def test_typed_call_reaches_the_template_as_a_tool_call_not_assistant_text() -> 
                 "type": "function",
                 "function": {
                     "name": "inspect_region",
-                    "arguments": '{"region":"top"}',
+                    "arguments": {"region": "top"},
                 },
             }
         ],
@@ -297,11 +297,30 @@ def test_typed_call_reaches_the_template_as_a_tool_call_not_assistant_text() -> 
     assert [message["role"] for message in rendered] == ["user", "assistant", "tool"]
 
 
-def test_arguments_are_forwarded_byte_exact_without_re_encoding() -> None:
+def test_arguments_are_decoded_only_at_the_private_template_boundary() -> None:
     arguments = '{"region": "top", "note": "\u017c\u00f3\u0142w"}'
     rendered = _chat_template_messages(({**_TYPED_CALL, "arguments": arguments},))
 
-    assert rendered[0]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert rendered[0]["tool_calls"][0]["function"]["arguments"] == {
+        "region": "top",
+        "note": "\u017c\u00f3\u0142w",
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        "[]",
+        "{not json",
+        '{"region":"top","region":"bottom"}',
+        '{"count":NaN}',
+    ),
+)
+def test_template_projection_rejects_non_object_or_ambiguous_arguments(
+    arguments: str,
+) -> None:
+    with pytest.raises(ValueError, match=r"function_call|duplicate|non-finite"):
+        _chat_template_messages(({**_TYPED_CALL, "arguments": arguments},))
 
 
 @pytest.mark.parametrize(

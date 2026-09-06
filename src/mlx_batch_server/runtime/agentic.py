@@ -664,8 +664,22 @@ class _HostedAgenticTurn:
         mode: HostedRoundMode,
     ) -> _ChildRound:
         started_ns = time.monotonic_ns()
+        # The tensor owner intentionally tombstones every completed request id.
+        # A hosted turn is one public response but multiple independent model
+        # executions, so only the first child may use the public id.  Later
+        # rounds need private identities or the owner correctly rejects them as
+        # duplicate tensor requests before the model can answer.
+        child_response_id = (
+            self._request.response_id
+            if round_index == 0
+            else f"{self._request.response_id}-hosted-round-{round_index}"
+        )
         if self._plan is None:
-            child_request = replace(self._request, messages=tuple(messages))
+            child_request = replace(
+                self._request,
+                response_id=child_response_id,
+                messages=tuple(messages),
+            )
         else:
             sampling = dict(self._request.sampling)
             if mode is HostedRoundMode.FAILURE_CONTINUATION:
@@ -677,6 +691,7 @@ class _HostedAgenticTurn:
                     sampling["tool_choice"] = "auto"
             child_request = replace(
                 self._request,
+                response_id=child_response_id,
                 messages=tuple(messages),
                 tools=tools,
                 sampling=sampling,

@@ -463,6 +463,8 @@ async def test_tool_failure_yields_one_receipt_and_one_terminal_continuation(
     if isinstance(tool, _CountingTool):
         assert tool.invocations == 1
     assert len(inner.requests) == 2
+    assert inner.requests[0].response_id == "resp_hosted"
+    assert inner.requests[1].response_id == "resp_hosted-hosted-round-1"
     assert inner.requests[1].tools == ()
     assert inner.requests[1].sampling["tool_choice"] == "none"
 

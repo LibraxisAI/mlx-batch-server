@@ -5121,8 +5121,10 @@ def _render_chat_template_function_call(
     """Hand the checkpoint one typed tool call, never an assistant text turn.
 
     The call is projected onto the tool-call object the installed chat template
-    consumes. `arguments` is forwarded as the exact string the client sent, so
-    it is never re-encoded and never becomes visible assistant content.
+    consumes. Canonical Responses keeps `arguments` as the exact client JSON
+    string, while the pinned Qwen template iterates argument object pairs. Parse
+    only at this private template boundary; arguments never become assistant
+    text and canonical storage remains byte-exact.
     """
 
     call_id = message.get("call_id")
@@ -5134,6 +5136,16 @@ def _render_chat_template_function_call(
         raise ValueError("function_call name must not be empty")
     if not isinstance(arguments, str):
         raise ValueError("function_call arguments must be text")
+    try:
+        template_arguments = json.loads(
+            arguments,
+            object_pairs_hook=_chat_template_unique_object,
+            parse_constant=_chat_template_reject_constant,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("function_call arguments must encode a JSON object") from error
+    if not isinstance(template_arguments, dict):
+        raise ValueError("function_call arguments must encode a JSON object")
     if message.get("content"):
         raise ValueError("function_call cannot carry message content")
     return {
@@ -5143,10 +5155,23 @@ def _render_chat_template_function_call(
             {
                 "id": call_id,
                 "type": "function",
-                "function": {"name": name, "arguments": arguments},
+                "function": {"name": name, "arguments": template_arguments},
             }
         ],
     }
+
+
+def _chat_template_unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate function_call argument key: {key}")
+        result[key] = value
+    return result
+
+
+def _chat_template_reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite function_call argument is forbidden: {value}")
 
 
 def _render_chat_template_message(message: Mapping[str, Any]) -> dict[str, object]:
