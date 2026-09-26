@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -220,11 +219,42 @@ def test_preserves_multiple_media_parts_without_stringifying_them() -> None:
     assert file_b not in str(prepared.request.messages)
 
 
+PHOTO_TOOL_CONTINUATION: dict = {
+    "type": "response.create",
+    "stream_id": "studio.photo",
+    "model": "buddy",
+    "store": False,
+    "previous_response_id": "${PHOTO_RESPONSE_ID}",
+    "input": [
+        {
+            "type": "function_call_output",
+            "call_id": "${INSPECT_CANVAS_CALL_ID}",
+            "output": "${INSPECT_CANVAS_JSON_RECEIPT}",
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Widok kanwy po inspect_canvas. Ocen go wzrokiem.",
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "${CANVAS_VIEW_DATA_URL}",
+                    "detail": "high",
+                },
+            ],
+        },
+    ],
+    "tools": [],
+    "tool_choice": "none",
+}
+
+
 def test_preserves_function_output_before_typed_message_and_image() -> None:
     mapper, _, _ = _mapper()
-    fixture_path = Path(__file__).parents[1] / "fixtures" / "another_local_app_north_star.json"
-    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-    command = fixture["commands"]["photo_tool_continuation"]
+    command = PHOTO_TOOL_CONTINUATION
     payload = {
         key: value for key, value in command.items() if key not in {"type", "stream_id"}
     }
